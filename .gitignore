@@ -2,6 +2,7 @@
 
 # dependencies
 node_modules/
+**/node_modules/
 
 # Expo
 .expo/
@@ -17,26 +18,6 @@ expo-env.d.ts
 *.p12
 *.key
 *.mobileprovision
-
-# Metro
-.metro-health-check*
-
-# debug
-npm-debug.*
-yarn-debug.*
-yarn-error.*
-
-# macOS
-.DS_Store
-*.pem
-
-# local env files
-.env*.local
-
-# typescript
-*.tsbuildinfo
-
-# generated native folders
 /ios
 /android
 
@@ -44,4 +25,27 @@ yarn-error.*
 build/
 **/build/
 .gradle/
-**/node_modules/
+**/build/
+**/android/build/
+**/ios/build/
+
+# Metro
+.metro-health-check*
+
+# debug / logs
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+*.log
+jest_output*.txt
+*.txt.bak
+
+# typescript
+*.tsbuildinfo
+
+# local env files
+.env*.local
+
+# macOS
+.DS_Store
+*.pem
