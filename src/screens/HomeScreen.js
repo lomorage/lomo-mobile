@@ -234,7 +234,10 @@ export default function HomeScreen({ navigation }) {
 
             {error && (
                 <View style={styles.errorBanner}>
-                    <Text style={styles.errorText}>{error}</Text>
+                    <Text style={styles.errorText} numberOfLines={1}>{error}</Text>
+                    <TouchableOpacity onPress={loadAndSync} style={styles.retryButton}>
+                        <Text style={styles.retryText}>Retry</Text>
+                    </TouchableOpacity>
                 </View>
             )}
 
@@ -294,9 +297,31 @@ const styles = StyleSheet.create({
         margin: 16,
         borderRadius: 8,
     },
+    errorBanner: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: '#FFEBEE',
+        padding: 10,
+        marginHorizontal: 15,
+        borderRadius: 8,
+        marginBottom: 10,
+    },
     errorText: {
+        flex: 1,
         color: '#D32F2F',
         fontSize: 14,
+    },
+    retryButton: {
+        backgroundColor: '#D32F2F',
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+        borderRadius: 4,
+        marginLeft: 10,
+    },
+    retryText: {
+        color: 'white',
+        fontSize: 12,
+        fontWeight: 'bold',
     },
     progressText: {
         fontSize: 12,

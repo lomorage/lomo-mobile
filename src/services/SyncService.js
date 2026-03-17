@@ -317,10 +317,24 @@ class SyncService {
     }
   }
 
+  async ensureCacheDir() {
+    const cacheDir = this.getCacheDir();
+    if (!cacheDir) return false;
+    try {
+      const info = await FileSystem.getInfoAsync(cacheDir);
+      if (!info.exists) {
+        await FileSystem.makeDirectoryAsync(cacheDir, { intermediates: true });
+      }
+      return true;
+    } catch (e) {
+      console.error('[SyncService] Failed to ensure cache directory', e);
+      return false;
+    }
+  }
+
   getCacheDir() {
     const docDir = FileSystem.documentDirectory;
     if (!docDir) {
-      console.warn('[SyncService] FileSystem.documentDirectory is undefined, using fallback');
       return null;
     }
     return docDir + (docDir.endsWith('/') ? '' : '/') + 'merkle/';
@@ -347,6 +361,9 @@ class SyncService {
   async saveLocalHashCache() {
     const cacheDir = this.getCacheDir();
     if (!cacheDir) return;
+
+    if (!(await this.ensureCacheDir())) return;
+
     try {
       const path = `${cacheDir}local_hash_cache_v2.json`;
       await FileSystem.writeAsStringAsync(path, JSON.stringify(this.localHashCache));
@@ -443,8 +460,8 @@ class SyncService {
   }
 
   async saveRemoteTree() {
+    if (!(await this.ensureCacheDir())) return;
     const cacheDir = this.getCacheDir();
-    if (!cacheDir) return;
 
     try {
       console.log('[SyncService] Saving remote tree: checking info');
@@ -493,7 +510,8 @@ class SyncService {
 
     try {
       const response = await axios.get(`${url}/assets/merkletree?all=1`, {
-        headers: { Authorization: `token=${token}` }
+        headers: { Authorization: `token=${token}` },
+        timeout: 10000
       });
       
       const remoteRoot = new AssetMerkleRoot();
@@ -545,7 +563,8 @@ class SyncService {
 
     try {
       const response = await axios.get(`${url}/assets/merkletree/${year}/${month}`, {
-        headers: { Authorization: `token=${token}` }
+        headers: { Authorization: `token=${token}` },
+        timeout: 10000
       });
       return response.data; // { Month: X, Hash: "...", Days: [...] }
     } catch (e) {
@@ -561,7 +580,8 @@ class SyncService {
 
     try {
       const response = await axios.get(`${url}/assets/merkletree/${year}/${month}/${day}`, {
-        headers: { Authorization: `token=${token}` }
+        headers: { Authorization: `token=${token}` },
+        timeout: 10000
       });
       return response.data; // { Day: X, Hash: "...", Assets: [...] }
     } catch (e) {
