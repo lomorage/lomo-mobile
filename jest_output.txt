@@ -1,0 +1,143 @@
+  console.log
+    Building local Merkle Tree for 1 assets...
+
+      at SyncService.log (src/services/SyncService.js:316:13)
+
+  console.log
+    [SyncService] Built local tree with 1/1 hashed assets
+
+      at SyncService.log (src/services/SyncService.js:390:13)
+
+  console.log
+    Building local Merkle Tree for 1 assets...
+
+      at SyncService.log (src/services/SyncService.js:316:13)
+
+  console.log
+    [SyncService] Built local tree with 1/1 hashed assets
+
+      at SyncService.log (src/services/SyncService.js:390:13)
+
+  console.log
+    Building local Merkle Tree for 1 assets...
+
+      at SyncService.log (src/services/SyncService.js:316:13)
+
+  console.log
+    [SyncService] Built local tree with 1/1 hashed assets
+
+      at SyncService.log (src/services/SyncService.js:390:13)
+
+  console.log
+    Building local Merkle Tree for 3 assets...
+
+      at SyncService.log (src/services/SyncService.js:316:13)
+
+  console.log
+    [SyncService] Built local tree with 3/3 hashed assets
+
+      at SyncService.log (src/services/SyncService.js:390:13)
+
+  console.log
+    Building local Merkle Tree for 3 assets...
+
+      at SyncService.log (src/services/SyncService.js:316:13)
+
+  console.log
+    [SyncService] Built local tree with 3/3 hashed assets
+
+      at SyncService.log (src/services/SyncService.js:390:13)
+
+  console.log
+    Building local Merkle Tree for 1 assets...
+
+      at SyncService.log (src/services/SyncService.js:316:13)
+
+  console.log
+    [SyncService] Built local tree with 1/1 hashed assets
+
+      at SyncService.log (src/services/SyncService.js:390:13)
+
+FAIL src/services/__tests__/MerkleTree.test.js
+  MerkleNode — basics
+    √ addChild inserts in sorted order by id (2 ms)
+    √ getChild finds by id (1 ms)
+    √ setTag and setDate are stored on the node
+  MerkleNode — updateHash
+    √ leaf node (asset) keeps its hash unchanged by updateHash (1 ms)
+    √ day node computes hash from concatenated sorted child hashes
+    × updateHash sets a non-null hash on a tree root after full build (22 ms)
+    √ two identical trees produce the same root hash
+    × two different asset sets produce different hashes (2 ms)
+  MerkleNode — compareNodeList
+    √ all local → all upload when remote is empty
+    √ all remote → all download when local is empty (1 ms)
+    √ matching ids with same hash → no diff
+    √ matching ids with different hash → pending (drill-down needed) (4 ms)
+    √ hash comparison is case-insensitive
+    √ null hash on either side → pending (conservative) (1 ms)
+    √ mixed case: upload + download + pending
+  MerkleNode — serialization (toJSON / fromJSON)
+    √ toJSON captures all fields
+    √ fromJSON reconstructs the tree with same structure (1 ms)
+    √ fromJSON round-trip preserves asset hashes and tags
+  AssetMerkleRoot — addAsset
+    √ creates year → month → day → asset hierarchy
+    √ adding same hash twice does not duplicate (1 ms)
+    √ asset hashes are stored lower-case
+    √ assets within a day are sorted by hash
+    √ addAsset updates assetsMap
+  AssetMerkleRoot — findDiff
+    √ identical trees → no upload, no download (1 ms)
+    √ local has extra asset → appears in uploadAssets
+    √ remote has extra asset → appears in downloadAssets
+    √ both sides have unique assets → upload and download
+    √ empty local vs populated remote → all download (1 ms)
+    √ populated local vs empty remote → all upload
+    √ different assets in same day → correct upload and download
+  SyncService.buildLocalTree
+    √ correctly groups assets by year/month/day (2 ms)
+    √ assets with pre-existing hashes skip calculateHash (1 ms)
+    √ persists hash back to asset.hash field (lowercase) (1 ms)
+
+  ● MerkleNode — updateHash › updateHash sets a non-null hash on a tree root after full build
+
+    expect(received).toBeTruthy()
+
+    Received: null
+
+    [0m [90m 139 |[39m     [36mconst[39m root [33m=[39m [36mawait[39m [33mSyncService[39m[33m.[39mbuildLocalTree(assets)[33m;[39m
+     [90m 140 |[39m     [90m// buildLocalTree calls updateHash internally — root hash should be set[39m
+    [31m[1m>[22m[39m[90m 141 |[39m     expect(root[33m.[39mhash)[33m.[39mtoBeTruthy()[33m;[39m
+     [90m     |[39m                       [31m[1m^[22m[39m
+     [90m 142 |[39m     expect([36mtypeof[39m root[33m.[39mhash)[33m.[39mtoBe([32m'string'[39m)[33m;[39m
+     [90m 143 |[39m   })[33m;[39m
+     [90m 144 |[39m[0m
+
+      at Object.toBeTruthy (src/services/__tests__/MerkleTree.test.js:141:23)
+      at asyncGeneratorStep (node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at _next (node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+
+  ● MerkleNode — updateHash › two different asset sets produce different hashes
+
+    expect(received).not.toBe(expected) // Object.is equality
+
+    Expected: not null
+
+    [0m [90m 177 |[39m     [36mconst[39m rootB [33m=[39m [36mawait[39m [33mSyncService[39m[33m.[39mbuildLocalTree(assetsB)[33m;[39m
+     [90m 178 |[39m
+    [31m[1m>[22m[39m[90m 179 |[39m     expect(rootA[33m.[39mhash)[33m.[39mnot[33m.[39mtoBe(rootB[33m.[39mhash)[33m;[39m
+     [90m     |[39m                            [31m[1m^[22m[39m
+     [90m 180 |[39m   })[33m;[39m
+     [90m 181 |[39m
+     [90m 182 |[39m })[33m;[39m[0m
+
+      at Object.toBe (src/services/__tests__/MerkleTree.test.js:179:28)
+      at asyncGeneratorStep (node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at _next (node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+
+Test Suites: 1 failed, 1 total
+Tests:       2 failed, 31 passed, 33 total
+Snapshots:   0 total
+Time:        0.795 s, estimated 1 s
+Ran all test suites matching /src\\services\\__tests__\\MerkleTree.test.js/i.

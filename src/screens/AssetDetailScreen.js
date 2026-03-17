@@ -7,6 +7,14 @@ const { width, height } = Dimensions.get('window');
 export default function AssetDetailScreen({ route, navigation }) {
     const { asset } = route.params;
 
+    let uri = asset.uri;
+    if (asset.status === 'remote' && (!uri || !uri.includes('token='))) {
+        const baseUrl = AuthService.getServerUrl();
+        const token = AuthService.getToken();
+        const assetId = asset.hash || asset.id;
+        uri = `${baseUrl}/asset/preview/${assetId}?token=${token}`;
+    }
+
     return (
         <View style={styles.container}>
             <View style={styles.header}>
@@ -20,9 +28,10 @@ export default function AssetDetailScreen({ route, navigation }) {
 
             <View style={styles.imageContainer}>
                 <Image
-                    source={{ uri: asset.uri }}
+                    source={{ uri }}
                     style={styles.image}
                     resizeMode="contain"
+                    onError={(e) => console.log(`[AssetDetail] Image load error for ${asset.status} asset ${asset.id}:`, e.nativeEvent.error)}
                 />
             </View>
 
