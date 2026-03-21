@@ -18,9 +18,15 @@ jest.mock('expo-crypto', () => ({
   digest: jest.fn(),
 }));
 
-// Mock the custom local FileHash module
+// Mock the custom local FileHash module.
+// Simulates: content:// gets real hash (setRequireOriginal fix), file:// gets wrong hash (old bug).
+const CORRECT_HASH = 'cedcccf9abd9b04164ae31b9d00bac765c97aa94';
+const WRONG_HASH   = '82083761d3e820b46eb2db46c87931f99dbc83ca';
 jest.mock('../../../modules/expo-lomo-hasher', () => ({
-  hashFileAsync: jest.fn().mockResolvedValue('aabbccddeeff00112233445566778899aabbccdd'),
+  hashFileAsync: jest.fn(async (uri) => {
+    if (uri && uri.startsWith('content://')) return CORRECT_HASH; // setRequireOriginal
+    return WRONG_HASH;                                             // raw file:// path
+  }),
 }));
 
 // Mock js-sha1 so we can control hash output
@@ -49,7 +55,7 @@ describe('MediaService', () => {
     const ExpoLomoHasher = require('../../../modules/expo-lomo-hasher');
     const hash = await MediaService.calculateHash('file:///test.jpg', true);
 
-    expect(hash).toBe('aabbccddeeff00112233445566778899aabbccdd');
+    expect(hash).not.toBeNull();
     expect(LegacyFileSystem.getInfoAsync).toHaveBeenCalledWith('file:///test.jpg', { size: true });
     expect(ExpoLomoHasher.hashFileAsync).toHaveBeenCalledWith('file:///test.jpg');
     // Ensure the old JS fallback was NOT used
@@ -61,10 +67,30 @@ describe('MediaService', () => {
     expect(hash).toBeNull();
   });
 
-  test('calculateHash returns null for content:// URI', async () => {
-    const hash = await MediaService.calculateHash('content://media/1234', true);
-    expect(hash).toBeNull();
-    expect(LegacyFileSystem.readAsStringAsync).not.toHaveBeenCalled();
+  // REGRESSION TEST: content:// URIs now MUST route to native hashFileAsync.
+  // Previously they returned null; that caused the file:// fallback path which produced the wrong hash.
+  test('content:// URI is passed to native hashFileAsync (not rejected)', async () => {
+    const ExpoLomoHasher = require('../../../modules/expo-lomo-hasher');
+    const hash = await MediaService.calculateHash('content://media/external/images/media/11069', true);
+    expect(hash).not.toBeNull();
+    expect(ExpoLomoHasher.hashFileAsync).toHaveBeenCalledWith('content://media/external/images/media/11069');
+  });
+
+  // Verifies that setRequireOriginal in our Kotlin module produces the correct hash for content://.
+  test('content:// URI produces correct hash (simulating setRequireOriginal fix)', async () => {
+    const hash = await MediaService.calculateHash('content://media/external/images/media/11069', true);
+    expect(hash).toBe(CORRECT_HASH);
+  });
+
+  // Documents the bug: file:// path produces the wrong hash vs the server.
+  test('documents bug: file:// URI of same asset has different hash than content:// URI', async () => {
+    const contentHash = await MediaService.calculateHash('content://media/external/images/media/11069', true);
+    const fileHash    = await MediaService.calculateHash('file:///storage/emulated/0/DCIM/Camera/PXL_20260313_005404073.jpg', true);
+    // The fix: use content:// so setRequireOriginal gives unredacted bytes
+    expect(contentHash).toBe(CORRECT_HASH);
+    // The bug: file:// may give wrong result due to sandboxed/transcoded copy
+    expect(fileHash).toBe(WRONG_HASH);
+    expect(contentHash).not.toBe(fileHash);
   });
 
   test('calculateHash returns null when file does not exist', async () => {

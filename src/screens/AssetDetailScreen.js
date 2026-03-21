@@ -1,6 +1,7 @@
 import React from 'react';
-import { StyleSheet, View, Image, Dimensions, TouchableOpacity, Text } from 'react-native';
+import { StyleSheet, View, Image, Dimensions, TouchableOpacity, Text, ScrollView } from 'react-native';
 import { ChevronLeft, Upload } from 'lucide-react-native';
+import AuthService from '../services/AuthService';
 
 const { width, height } = Dimensions.get('window');
 
@@ -40,6 +41,17 @@ export default function AssetDetailScreen({ route, navigation }) {
                 <Text style={styles.subInfoText}>
                     {new Date(asset.creationTime).toLocaleString()}
                 </Text>
+            </View>
+
+            {/* FULL DEBUG PANEL */}
+            <View style={styles.debugPanel}>
+                <Text style={styles.debugTitle}>--- ASSET DEBUG ---</Text>
+                <Text selectable style={styles.debugText}>ID: {asset.id}</Text>
+                <Text selectable style={styles.debugText}>Hash: {asset.hash || 'MISSING'}</Text>
+                <Text selectable style={styles.debugText}>Status: {asset.status}</Text>
+                <Text selectable style={styles.debugText}>Time Ms: {asset.creationTime}</Text>
+                <Text selectable style={styles.debugText}>UTC: {new Date(asset.creationTime).toISOString()}</Text>
+                <Text selectable style={styles.debugText}>URI: {uri?.substring(0, 30)}...</Text>
             </View>
         </View>
     );
@@ -85,4 +97,28 @@ const styles = StyleSheet.create({
         color: '#666',
         marginTop: 4,
     },
+    debugPanel: {
+        position: 'absolute',
+        top: 100,
+        left: 20,
+        right: 20,
+        backgroundColor: 'rgba(0,0,0,0.85)',
+        padding: 15,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: '#0f0',
+    },
+    debugTitle: {
+        color: '#0f0',
+        fontWeight: 'bold',
+        fontSize: 14,
+        marginBottom: 8,
+        textAlign: 'center',
+    },
+    debugText: {
+        color: '#fff',
+        fontFamily: 'monospace',
+        fontSize: 11,
+        marginBottom: 4,
+    }
 });

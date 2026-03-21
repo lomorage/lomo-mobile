@@ -364,6 +364,8 @@ class SyncService {
 
     if (!(await this.ensureCacheDir())) return;
 
+    // Await to avoid concurrent writes to the same JSON file
+    // which can corrupt the file in Expo FileSystem
     try {
       const path = `${cacheDir}local_hash_cache_v2.json`;
       await FileSystem.writeAsStringAsync(path, JSON.stringify(this.localHashCache));
@@ -379,12 +381,10 @@ class SyncService {
     await this.loadLocalHashCache();
     let cacheUpdated = false;
     let hashedCount = 0;
+    let lastUiUpdateTime = Date.now();
     
     for (let i = 0; i < assets.length; i++) {
       const asset = assets[i];
-      if (onProgress && i % Math.max(1, Math.floor(assets.length / 100)) === 0) {
-          onProgress({ current: i, total: assets.length, message: 'Processing local assets...' });
-      }
 
       if (!asset.uri && !asset.localUri) {
         console.warn(`[SyncService] Asset ${asset.id} has no URI, skipping hash calculation`);
@@ -403,27 +403,38 @@ class SyncService {
           hash = cached.hash;
         } else {
           try {
+            // Prefer the original content:// URI (asset.uri on Android). 
+            // Our native hasher calls MediaStore.setRequireOriginal() on content:// URIs,
+            // which bypasses Android's EXIF byte redaction and reads the original file.
+            // Fall back to file:// localUri if asset.uri is missing.
             let uri = asset.uri || asset.localUri;
-            console.log(`[SyncService] Attempting hash for asset ${asset.id} with URI: ${uri}`);
-            // First attempt - be silent because many URIs from getAssets are not hashable directly
-            hash = await MediaService.calculateHash(uri, true);
+            console.log(`[SyncService] Hashing asset ${asset.id} (${asset.filename}) via URI: ${uri}`);
+            hash = await MediaService.calculateHash(uri);
             
             if (!hash) {
-              // Fallback attempt - this one should log if it fails
-              console.log(`[SyncService] Initial hash failed for ${asset.id}, trying full asset info...`);
+              // Fallback: try file:// path from full asset info
+              console.log(`[SyncService] Hash attempt 1 failed for ${asset.id}, resolving full asset info...`);
               const info = await MediaService.getAssetInfo(asset.id);
-              if (info && (info.localUri || info.uri)) {
-                hash = await MediaService.calculateHash(info.localUri || info.uri);
+              if (info) {
+                const fallbackUri = info.uri || info.localUri;
+                if (fallbackUri) {
+                  console.log(`[SyncService] Fallback URI for ${asset.id}: ${fallbackUri}`);
+                  hash = await MediaService.calculateHash(fallbackUri);
+                }
               }
             }
           } catch (hashError) {
             console.error(`[SyncService] Error during hash calculation for ${asset.id}:`, hashError);
           }
+
           
           if (hash) {
             this.localHashCache[asset.id] = {
               hash,
-              modificationTime: asset.modificationTime
+              modificationTime: asset.modificationTime,
+              // Add human-readable metadata for debugging
+              filename: asset.filename || 'unknown',
+              size: asset.mediaSubtypes?.[0] || asset.mediaType // Expo doesn't provide size natively in getAssetsAsync, but this helps
             };
             cacheUpdated = true;
           }
@@ -438,13 +449,26 @@ class SyncService {
         
         // Save cache periodically so we don't start from scratch if app restarts
         if (hashedCount % 20 === 0 && cacheUpdated) {
-          this.saveLocalHashCache(); // fire and forget
+          await this.saveLocalHashCache(); // Await to prevent Expo FS race conditions
           cacheUpdated = false;
         }
       } else {
         // Log skip without being too spammy if it's many assets
         if (hashedCount % 100 === 0) {
           console.log(`[SyncService] No hash for asset ${asset.id} yet, count: ${hashedCount}`);
+        }
+      }
+
+      if (onProgress) {
+        const now = Date.now();
+        if (now - lastUiUpdateTime > 250 || i === assets.length - 1) {
+          lastUiUpdateTime = now;
+          onProgress({ 
+            current: i + 1, 
+            total: assets.length, 
+            message: `Hashing local assets...`,
+            triggerUiUpdate: true 
+          });
         }
       }
     }

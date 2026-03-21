@@ -14,7 +14,7 @@ export default function HomeScreen({ navigation }) {
     const [syncing, setSyncing] = useState(false);
     const [syncProgress, setSyncProgress] = useState(null);
     const [error, setError] = useState(null);
-    const [permissionStatus, setPermissionStatus] = useState('unknown');
+    const [permissionStatus, setPermissionStatus] = useState('granted');
     const [loading, setLoading] = useState(true);
 
     const isMounted = React.useRef(true);
@@ -58,20 +58,15 @@ export default function HomeScreen({ navigation }) {
             let localAssets = localResult.assets;
 
             // 2. Perform Heuristic Deduplication for initial render
-            // Since we haven't hashed the local files yet (which takes seconds), we blindly match
-            // Local Creation Time vs Remote Date to initially hide the remote duplicate.
             const serverUrl = AuthService.getServerUrl();
             const token = AuthService.getToken();
             
             const initialAssets = localAssets.map(a => ({
                 ...a,
-                status: 'local' // Assume local until cryptographically proved
+                status: 'local'
             }));
 
-            const localDateSet = new Set(localAssets.map(a => {
-                // Round to nearest 2 seconds down to deal with EXIF precision drift
-                return Math.floor(a.creationTime / 2000); 
-            }));
+            const localDates = localAssets.map(a => a.creationTime);
 
             let remoteAssets = [];
             if (remoteRoot) {
@@ -84,10 +79,10 @@ export default function HomeScreen({ navigation }) {
 
                 remoteAssets = allRemoteNodes
                     .filter(node => {
-                        if (!node.date) return true; // Can't heuristic match without a date, assume distinct
-                        const remoteRound = Math.floor(node.date.getTime() / 2000);
-                        // If a local asset exists with exactly the same rounded timestamp, hide the remote version for now
-                        return !localDateSet.has(remoteRound);
+                        if (!node.date) return true;
+                        const remoteTime = node.date.getTime();
+                        const hasNearbyLocal = localDates.some(localTime => Math.abs(localTime - remoteTime) <= 2000);
+                        return !hasNearbyLocal;
                     })
                     .map(node => ({
                         id: `remote-${node.hash}`,
@@ -102,19 +97,42 @@ export default function HomeScreen({ navigation }) {
 
             if (isMounted.current) {
                 setAssets(combinedInitial);
-                setLoading(false); // Stop main loading spinner, UI is fully visible instantly
+                setLoading(false);
                 setSyncing(true);
                 setSyncProgress({ message: 'Starting deep crypto-sync...' });
             }
 
-            console.log(`[HomeScreen] Instant render complete: ${initialAssets.length} local, ${remoteAssets.length} remote-only (heuristically filtered)`);
-
-            // 3. Perform Deep Hash Crypto-Sync asynchronously (non-blocking) in the background loop
+            // 3. Perform Deep Hash Crypto-Sync asynchronously
              setTimeout(async () => {
+                let diff = null;
                  try {
-                    // Deep sync calculates hashes and verifies identical bytes
-                    const diff = await SyncService.sync(localAssets, (progress) => {
-                        if (isMounted.current) setSyncProgress(progress);
+                    diff = await SyncService.sync(localAssets, (progress) => {
+                        if (!isMounted.current) return;
+                        setSyncProgress(progress);
+                        
+                        if (progress.triggerUiUpdate) {
+                            // Efficiently update only the items that got new hashes
+                            const localHashMap = new Map(localAssets.map(a => [a.id, a.hash]));
+                            setAssets(currentAssets => {
+                                let changed = false;
+                                const next = currentAssets.map(item => {
+                                    if (item.status === 'local' || item.status === 'synced') {
+                                        const latestHash = localHashMap.get(item.id);
+                                        if (latestHash !== undefined && latestHash !== item.hash) {
+                                            changed = true;
+                                            const remoteNode = SyncService.remoteTree?.getNodeByHash(latestHash);
+                                            return { 
+                                                ...item, 
+                                                hash: latestHash,
+                                                status: remoteNode ? 'synced' : 'local'
+                                            };
+                                        }
+                                    }
+                                    return item;
+                                });
+                                return changed ? next : currentAssets;
+                            });
+                        }
                     });
 
                     if (!isMounted.current) return;
@@ -124,48 +142,47 @@ export default function HomeScreen({ navigation }) {
                         upload: diff?.uploadAssets?.length,
                         download: diff?.downloadAssets?.length,
                         localWithHash,
-                        localMissingHash: localAssets.length - localWithHash
                     });
                     
-                    // 4. Merge assets with TRULY verified cryptographically synced/remote status 
-                    const merged = localAssets.map(a => {
-                        const hash = a.hash;
-                        if (!hash) return { ...a, status: 'local' };
-                        
-                        const remoteNode = SyncService.remoteTree.getNodeByHash(hash);
-                        return {
-                            ...a,
-                            hash,
-                            status: remoteNode ? 'synced' : 'local'
-                        };
-                    });
-
-                    // Re-add true remote-only assets from diff
-                    if (diff && diff.downloadAssets) {
-                        const localHashes = new Set(merged.filter(a => a.hash).map(a => a.hash));
-
-                        const trueRemoteOnly = diff.downloadAssets
-                            .filter(node => !localHashes.has(node.hash))
-                            .map(node => ({
-                                id: `remote-${node.hash}`,
-                                hash: node.hash,
-                                uri: `${serverUrl}/asset/preview/${node.hash}?token=${token}`,
-                                status: 'remote',
-                                creationTime: node.date ? node.date.getTime() : 0,
-                            }));
-                        
-                        merged.push(...trueRemoteOnly);
-                    }
-
-                    merged.sort((a, b) => (b.creationTime || 0) - (a.creationTime || 0));
-                    setAssets(merged);
                  } catch (syncErr) {
                      console.error('Error during async sync:', syncErr);
                      if (isMounted.current) setError(syncErr.message);
                  } finally {
                      if (isMounted.current) {
-                         setSyncing(false);
-                         setSyncProgress(null);
+                          // Final merge to catch any remainder and true download assets
+                          const merged = localAssets.map(a => {
+                              const hash = a.hash;
+                              if (!hash) return { ...a, status: 'local' };
+                              const remoteNode = SyncService.remoteTree?.getNodeByHash(hash);
+                              return {
+                                  ...a,
+                                  hash,
+                                  status: remoteNode ? 'synced' : 'local'
+                              };
+                          });
+
+                          const localHashes = new Set(merged.filter(a => a.hash).map(a => a.hash));
+                          let trueRemoteOnly = [];
+                          if (diff && diff.downloadAssets) {
+                              trueRemoteOnly = diff.downloadAssets
+                                  .filter(node => !localHashes.has(node.hash))
+                                  .map(node => ({
+                                      id: `remote-${node.hash}`,
+                                      hash: node.hash,
+                                      uri: `${serverUrl}/asset/preview/${node.hash}?token=${token}`,
+                                      status: 'remote',
+                                      creationTime: node.date ? node.date.getTime() : 0,
+                                  }));
+                          } else {
+                              trueRemoteOnly = remoteAssets.filter(ra => !localHashes.has(ra.hash));
+                          }
+
+                          merged.push(...trueRemoteOnly);
+                          merged.sort((a, b) => (b.creationTime || 0) - (a.creationTime || 0));
+                          
+                          setAssets(merged);
+                          setSyncing(false);
+                          setSyncProgress(null);
                      }
                  }
              }, 100);
@@ -174,7 +191,7 @@ export default function HomeScreen({ navigation }) {
             console.error('Error in loadAndSync:', err);
             if (isMounted.current) setError(err.message);
         } finally {
-            if (isMounted.current && loading) { // only if we didn't already clear it
+            if (isMounted.current && loading) {
                  setLoading(false);
             }
         }
@@ -207,6 +224,13 @@ export default function HomeScreen({ navigation }) {
             {item.status === 'remote' && (
                 <View style={[styles.imageOverlay, { backgroundColor: 'rgba(0,0,0,0.1)' }]} />
             )}
+            {/* DEBUG OVERLAY */}
+            <View style={styles.debugOverlay}>
+                <Text style={styles.debugText}>{item.status[0].toUpperCase()}</Text>
+                <Text style={styles.debugText}>
+                  {item.hash ? item.hash.substring(0, 6) : 'hash?'} 
+                </Text>
+            </View>
         </TouchableOpacity>
     );
 
@@ -292,12 +316,6 @@ const styles = StyleSheet.create({
         marginTop: 2,
     },
     errorBanner: {
-        backgroundColor: '#FFEBEE',
-        padding: 12,
-        margin: 16,
-        borderRadius: 8,
-    },
-    errorBanner: {
         flexDirection: 'row',
         alignItems: 'center',
         backgroundColor: '#FFEBEE',
@@ -365,4 +383,19 @@ const styles = StyleSheet.create({
         padding: 5,
         marginLeft: 10,
     },
+    debugOverlay: {
+        position: 'absolute',
+        top: 2,
+        left: 2,
+        backgroundColor: 'rgba(0,0,0,0.6)',
+        paddingHorizontal: 4,
+        paddingVertical: 2,
+        borderRadius: 4,
+    },
+    debugText: {
+        color: '#fff',
+        fontSize: 10,
+        fontWeight: 'bold',
+        textAlign: 'center'
+    }
 });

@@ -103,25 +103,21 @@ class MediaService {
         }
       }
 
-      // content:// URIs cannot be read by the legacy FileSystem API either.
-      // Caller (SyncService) should resolve to localUri via getAssetInfoAsync first.
-      if (normalizedUri.startsWith('content://')) {
-        if (!silent) console.log(`[MediaService] content:// URI cannot be hashed directly. Resolve to localUri first.`);
-        return null;
-      }
-
       if (!silent) console.log(`[MediaService] Hashing: ${normalizedUri}`);
 
-      // Check file info (size) via legacy API
-      const fileInfo = await LegacyFileSystem.getInfoAsync(normalizedUri, { size: true });
-      if (!fileInfo.exists) {
-        if (!silent) console.log(`[MediaService] File does not exist: ${normalizedUri}`);
-        return null;
-      }
-      const fileSize = fileInfo.size || 0;
-      if (fileSize === 0) {
-        if (!silent) console.log(`[MediaService] File size is 0, skipping: ${normalizedUri}`);
-        return null;
+      let fileSize = 0;
+      if (!normalizedUri.startsWith('content://')) {
+        // Check file info (size) via legacy API — only works for file:// URIs
+        const fileInfo = await LegacyFileSystem.getInfoAsync(normalizedUri, { size: true });
+        if (!fileInfo.exists) {
+          if (!silent) console.log(`[MediaService] File does not exist: ${normalizedUri}`);
+          return null;
+        }
+        fileSize = fileInfo.size || 0;
+        if (fileSize === 0) {
+          if (!silent) console.log(`[MediaService] File size is 0, skipping: ${normalizedUri}`);
+          return null;
+        }
       }
 
       // If in standard Expo Go (not custom dev client), Native Modules don't work reliably.
@@ -138,7 +134,7 @@ class MediaService {
         if (digest) {
            usedNative = true;
            digest = digest.toLowerCase(); // Consistent matching
-           if (!silent) console.log(`[MediaService] Native Hash complete in ${duration}ms (${fileSize} bytes): ${digest.substring(0, 8)}...`);
+           if (!silent) console.log(`[MediaService] NATIVE Hash complete: ${digest} (duration: ${duration}ms, bytes: ${fileSize})`);
            return digest;
         }
       } catch (nativeError) {

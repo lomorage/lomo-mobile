@@ -11,8 +11,15 @@ android {
   defaultConfig {
     versionCode 1
     versionName "0.7.9"
+    testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
   }
   lintOptions {
     abortOnError false
   }
+}
+
+dependencies {
+  androidTestImplementation 'androidx.test.ext:junit:1.1.5'
+  androidTestImplementation 'androidx.test:runner:1.5.2'
+  androidTestImplementation 'androidx.test:rules:1.5.0'
 }
