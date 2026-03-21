@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
-import { View, ActivityIndicator, SafeAreaView, StatusBar, Platform } from 'react-native';
+import { View, ActivityIndicator, StatusBar, Platform } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { AuthProvider, useAuth } from '../context/AuthContext';
 
 import HomeScreen from '../screens/HomeScreen';

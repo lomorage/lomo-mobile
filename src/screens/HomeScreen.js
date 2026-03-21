@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { StyleSheet, View, FlatList, Image, Dimensions, TouchableOpacity, Text, ActivityIndicator, RefreshControl } from 'react-native';
-import { Cloud, CheckCircle, Smartphone, Trash2 } from 'lucide-react-native';
+import { Cloud, CheckCircle, Smartphone, Trash2, PlayCircle } from 'lucide-react-native';
 import MediaService from '../services/MediaService';
 import SyncService from '../services/SyncService';
 import AuthService from '../services/AuthService';
@@ -57,6 +57,12 @@ export default function HomeScreen({ navigation }) {
             ]);
             let localAssets = localResult.assets;
 
+            const isVideoExtension = (filename) => {
+                if (!filename) return false;
+                const ext = filename.split('.').pop().toLowerCase();
+                return ['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext);
+            };
+
             // 2. Perform Heuristic Deduplication for initial render
             const serverUrl = AuthService.getServerUrl();
             const token = AuthService.getToken();
@@ -90,6 +96,7 @@ export default function HomeScreen({ navigation }) {
                         uri: `${serverUrl}/asset/preview/${node.hash}?token=${token}`,
                         status: 'remote',
                         creationTime: node.date ? node.date.getTime() : 0,
+                        mediaType: isVideoExtension(node.tag) ? 'video' : 'photo'
                     }));
             }
 
@@ -172,6 +179,7 @@ export default function HomeScreen({ navigation }) {
                                       uri: `${serverUrl}/asset/preview/${node.hash}?token=${token}`,
                                       status: 'remote',
                                       creationTime: node.date ? node.date.getTime() : 0,
+                                      mediaType: isVideoExtension(node.tag) ? 'video' : 'photo'
                                   }));
                           } else {
                               trueRemoteOnly = remoteAssets.filter(ra => !localHashes.has(ra.hash));
@@ -221,6 +229,11 @@ export default function HomeScreen({ navigation }) {
                 onError={(e) => console.log(`[HomeScreen] Image load error for ${item.status} asset ${item.id}:`, e.nativeEvent.error)}
             />
             <StatusIcon status={item.status} />
+            {item.mediaType === 'video' && (
+                <View style={[styles.imageOverlay, styles.videoOverlay]}>
+                    <PlayCircle color="#fff" size={32} />
+                </View>
+            )}
             {item.status === 'remote' && (
                 <View style={[styles.imageOverlay, { backgroundColor: 'rgba(0,0,0,0.1)' }]} />
             )}
@@ -297,7 +310,7 @@ const styles = StyleSheet.create({
     },
     header: {
         paddingHorizontal: 20,
-        paddingTop: 60,
+        paddingTop: 15,
         paddingBottom: 15,
         flexDirection: 'row',
         justifyContent: 'space-between',
@@ -368,6 +381,11 @@ const styles = StyleSheet.create({
     },
     imageOverlay: {
         ...StyleSheet.absoluteFillObject,
+    },
+    videoOverlay: {
+        justifyContent: 'center',
+        alignItems: 'center',
+        backgroundColor: 'rgba(0,0,0,0.2)',
     },
     statusIcon: {
         position: 'absolute',

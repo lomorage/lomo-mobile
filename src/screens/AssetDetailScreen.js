@@ -1,9 +1,25 @@
 import React from 'react';
 import { StyleSheet, View, Image, Dimensions, TouchableOpacity, Text, ScrollView } from 'react-native';
 import { ChevronLeft, Upload } from 'lucide-react-native';
+import { useVideoPlayer, VideoView } from 'expo-video';
 import AuthService from '../services/AuthService';
 
 const { width, height } = Dimensions.get('window');
+
+function AssetVideoPlayer({ uri, style }) {
+    const player = useVideoPlayer(uri, player => {
+        player.loop = true;
+        player.play();
+    });
+
+    return (
+        <VideoView 
+            style={style} 
+            player={player}
+            allowsPictureInPicture 
+        />
+    );
+}
 
 export default function AssetDetailScreen({ route, navigation }) {
     const { asset } = route.params;
@@ -28,12 +44,16 @@ export default function AssetDetailScreen({ route, navigation }) {
             </View>
 
             <View style={styles.imageContainer}>
-                <Image
-                    source={{ uri }}
-                    style={styles.image}
-                    resizeMode="contain"
-                    onError={(e) => console.log(`[AssetDetail] Image load error for ${asset.status} asset ${asset.id}:`, e.nativeEvent.error)}
-                />
+                {asset.mediaType === 'video' ? (
+                    <AssetVideoPlayer uri={uri} style={styles.image} />
+                ) : (
+                    <Image
+                        source={{ uri }}
+                        style={styles.image}
+                        resizeMode="contain"
+                        onError={(e) => console.log(`[AssetDetail] Image load error for ${asset.status} asset ${asset.id}:`, e.nativeEvent.error)}
+                    />
+                )}
             </View>
 
             <View style={styles.footer}>
@@ -65,7 +85,7 @@ const styles = StyleSheet.create({
     header: {
         flexDirection: 'row',
         justifyContent: 'space-between',
-        paddingTop: 50,
+        paddingTop: 10,
         paddingHorizontal: 15,
         paddingBottom: 10,
         backgroundColor: 'rgba(255,255,255,0.9)',
