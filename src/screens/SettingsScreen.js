@@ -6,6 +6,24 @@ import SyncService from '../services/SyncService';
 
 export default function SettingsScreen({ navigation }) {
     const { debugMode, toggleDebugMode } = useSettings();
+    const [stats, setStats] = React.useState({ local: 0, remote: 0 });
+
+    React.useEffect(() => {
+        loadStats();
+    }, []);
+
+    const loadStats = async () => {
+        const s = await SyncService.getCacheStats();
+        setStats(s);
+    };
+
+    const formatSize = (bytes) => {
+        if (!bytes) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    };
 
     return (
         <View style={styles.container}>
@@ -37,16 +55,17 @@ export default function SettingsScreen({ navigation }) {
                     style={styles.settingRow}
                     onPress={() => {
                         Alert.alert(
-                            "Clear Cache",
-                            "Are you sure you want to clear the local hash cache? This will force a full rescan.",
+                            "Clear Hash Cache",
+                            "Wipes your local hashing history. Next scan will take much longer. Proceed?",
                             [
                                 { text: "Cancel", style: "cancel" },
                                 { 
                                     text: "Clear", 
                                     style: "destructive",
                                     onPress: async () => {
-                                        await SyncService.clearCache();
-                                        Alert.alert("Success", "Cache cleared. Please pull down to refresh the gallery.");
+                                        await SyncService.clearLocalHashCache();
+                                        await loadStats();
+                                        Alert.alert("Success", "Local hash cache cleared.");
                                     }
                                 }
                             ]
@@ -54,8 +73,36 @@ export default function SettingsScreen({ navigation }) {
                     }}
                 >
                     <View style={styles.settingTextContainer}>
-                        <Text style={styles.settingLabelDanger}>Clear Local Hash Cache</Text>
-                        <Text style={styles.settingDescription}>Wipes the SQLite and file hashing cache. Next sync will take significantly longer.</Text>
+                        <Text style={styles.settingLabelDanger}>Local Hash Cache ({formatSize(stats.local)})</Text>
+                        <Text style={styles.settingDescription}>Wipes the local file hashing history. Forces a full re-scan of all media.</Text>
+                    </View>
+                    <Trash2 color="#ef4444" size={20} />
+                </TouchableOpacity>
+
+                <TouchableOpacity 
+                    style={styles.settingRow}
+                    onPress={() => {
+                        Alert.alert(
+                            "Clear Remote Cache",
+                            "Wipes the remote asset list cache. Will be refetched from server on next sync.",
+                            [
+                                { text: "Cancel", style: "cancel" },
+                                { 
+                                    text: "Clear", 
+                                    style: "destructive",
+                                    onPress: async () => {
+                                        await SyncService.clearRemoteTreeCache();
+                                        await loadStats();
+                                        Alert.alert("Success", "Remote tree cache cleared.");
+                                    }
+                                }
+                            ]
+                        );
+                    }}
+                >
+                    <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabelDanger}>Remote Asset Cache ({formatSize(stats.remote)})</Text>
+                        <Text style={styles.settingDescription}>Wipes the cached remote Merkle tree. Forces a full fetch from server.</Text>
                     </View>
                     <Trash2 color="#ef4444" size={20} />
                 </TouchableOpacity>

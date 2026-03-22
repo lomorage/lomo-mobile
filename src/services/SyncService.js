@@ -301,20 +301,57 @@ class SyncService {
   }
 
   async clearCache() {
+    await this.clearLocalHashCache();
+    await this.clearRemoteTreeCache();
+  }
+
+  async clearLocalHashCache() {
     const cacheDir = this.getCacheDir();
     if (!cacheDir) return;
     try {
-      const info = await FileSystem.getInfoAsync(cacheDir);
+      const path = `${cacheDir}local_hash_cache_v2.json`;
+      const info = await FileSystem.getInfoAsync(path);
       if (info.exists) {
-        await FileSystem.deleteAsync(cacheDir);
-        console.log('[SyncService] Merkle cache directory cleared');
+        await FileSystem.deleteAsync(path);
+        console.log('[SyncService] Local hash cache cleared');
       }
-      this.localTree = new AssetMerkleRoot();
-      this.remoteTree = new AssetMerkleRoot();
       this.localHashCache = {};
     } catch (e) {
-      console.error('[SyncService] Failed to clear cache', e);
+      console.error('[SyncService] Failed to clear local hash cache', e);
     }
+  }
+
+  async clearRemoteTreeCache() {
+    const cacheDir = this.getCacheDir();
+    if (!cacheDir) return;
+    try {
+      const path = `${cacheDir}remote_tree_v2.json`;
+      const info = await FileSystem.getInfoAsync(path);
+      if (info.exists) {
+        await FileSystem.deleteAsync(path);
+        console.log('[SyncService] Remote tree cache cleared');
+      }
+      this.remoteTree = new AssetMerkleRoot();
+    } catch (e) {
+      console.error('[SyncService] Failed to clear remote tree cache', e);
+    }
+  }
+
+  async getCacheStats() {
+    const cacheDir = this.getCacheDir();
+    if (!cacheDir) return { local: 0, remote: 0 };
+    
+    const stats = { local: 0, remote: 0 };
+    try {
+      const localInfo = await FileSystem.getInfoAsync(`${cacheDir}local_hash_cache_v2.json`);
+      if (localInfo.exists) stats.local = localInfo.size;
+      
+      const remoteInfo = await FileSystem.getInfoAsync(`${cacheDir}remote_tree_v2.json`);
+      if (remoteInfo.exists) stats.remote = remoteInfo.size;
+    } catch (e) {
+      console.error('[SyncService] Failed to get cache stats', e);
+    }
+    return stats;
   }
 
   async ensureCacheDir() {

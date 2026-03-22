@@ -5,6 +5,7 @@ import { useVideoPlayer, VideoView } from 'expo-video';
 import AuthService from '../services/AuthService';
 import MediaService from '../services/MediaService';
 import SyncService from '../services/SyncService';
+import UploadService from '../services/UploadService';
 import { useSettings } from '../context/SettingsContext';
 import GalleryStore from '../store/GalleryStore';
 
@@ -38,9 +39,40 @@ export default function AssetDetailScreen({ route, navigation }) {
     
     const { debugMode } = useSettings();
     const [useOriginalVideo, setUseOriginalVideo] = useState(false);
+    const [isUploading, setIsUploading] = useState(false);
+    const [uploadProgress, setUploadProgress] = useState(0);
     const [currentIndex, setCurrentIndex] = useState(initialIndex || 0);
     
     const currentAsset = assets[currentIndex] || {};
+
+    const handleUpload = async () => {
+        if (!currentAsset || currentAsset.status === 'remote' || currentAsset.status === 'synced') return;
+        
+        setIsUploading(true);
+        setUploadProgress(0);
+        try {
+            const result = await UploadService.uploadAsset(currentAsset, (progress) => {
+                setUploadProgress(progress);
+            });
+            if (result.success) {
+                // Update local state and store
+                const updatedAsset = { ...currentAsset, status: 'synced', hash: result.hash };
+                const newAssets = [...assets];
+                newAssets[currentIndex] = updatedAsset;
+                GalleryStore.setAssets(newAssets);
+                setAssets(newAssets);
+                DeviceEventEmitter.emit('assetUpdated', updatedAsset);
+                
+                // If it wasn't a duplicate, we should theoretically update the Merkle tree
+                // but for now, the UI update is enough. The next background sync will fix the tree.
+                Alert.alert("Success", "Photo uploaded successfully!");
+            }
+        } catch (e) {
+            Alert.alert("Upload Failed", e.message);
+        } finally {
+            setIsUploading(false);
+        }
+    };
 
     const handleDelete = async () => {
         if (!currentAsset || !currentAsset.id) return;
@@ -179,9 +211,15 @@ export default function AssetDetailScreen({ route, navigation }) {
                             </Text>
                         </TouchableOpacity>
                     ) : null}
-                    <TouchableOpacity style={styles.iconButton}>
-                        <Upload color="#007AFF" size={24} />
-                    </TouchableOpacity>
+                    {currentAsset.status === 'local' ? (
+                        <TouchableOpacity 
+                            onPress={handleUpload} 
+                            style={styles.iconButton}
+                            disabled={isUploading}
+                        >
+                            <Upload color={isUploading ? "#ccc" : "#007AFF"} size={24} />
+                        </TouchableOpacity>
+                    ) : null}
                     <TouchableOpacity onPress={handleDelete} style={styles.iconButton}>
                         <Trash2 color="#ef4444" size={24} />
                     </TouchableOpacity>
@@ -213,6 +251,15 @@ export default function AssetDetailScreen({ route, navigation }) {
                     {new Date(currentAsset.creationTime || 0).toLocaleString()}
                 </Text>
             </View>
+
+            {isUploading && (
+                <View style={styles.progressOverlay}>
+                    <Text style={styles.progressText}>Uploading... {Math.round(uploadProgress * 100)}%</Text>
+                    <View style={styles.progressBarBg}>
+                        <View style={[styles.progressBarFill, { width: `${uploadProgress * 100}%` }]} />
+                    </View>
+                </View>
+            )}
 
             {debugMode && currentAsset.id ? (
                 <View style={styles.debugPanel}>
@@ -268,6 +315,33 @@ const styles = StyleSheet.create({
         fontSize: 14,
         color: '#666',
         marginTop: 4,
+    },
+    progressOverlay: {
+        position: 'absolute',
+        bottom: 100,
+        left: 20,
+        right: 20,
+        backgroundColor: 'rgba(0,0,0,0.85)',
+        padding: 15,
+        borderRadius: 12,
+        alignItems: 'center',
+    },
+    progressText: {
+        color: '#fff',
+        fontSize: 14,
+        fontWeight: 'bold',
+        marginBottom: 8,
+    },
+    progressBarBg: {
+        height: 6,
+        width: '100%',
+        backgroundColor: '#444',
+        borderRadius: 3,
+        overflow: 'hidden',
+    },
+    progressBarFill: {
+        height: '100%',
+        backgroundColor: '#007AFF',
     },
     debugPanel: {
         position: 'absolute',
