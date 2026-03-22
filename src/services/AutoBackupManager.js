@@ -11,6 +11,7 @@ class AutoBackupManager {
         this.isPaused = false;
         this.autoBackupEnabled = true;
         this.wifiOnlyBackup = true;
+        this.consecutiveErrors = 0;
 
         this.initSettings();
         
@@ -103,11 +104,20 @@ class AutoBackupManager {
                     
                     // Tell the UI this specific asset finished
                     DeviceEventEmitter.emit('assetUpdated', updatedAsset);
+                    this.consecutiveErrors = 0; // Reset on success
                 }
             } catch (error) {
                 console.error(`[AutoBackup] Failed to backup asset ${asset.id}:`, error);
-                // On failure, we might pause or just skip and retry later. 
-                // For now, let's just move to the next one to avoid blocking the queue.
+                this.consecutiveErrors++;
+                
+                // If we hit 3 consecutive failures, something is wrong with the network.
+                // Pause automatically to save battery and avoid spamming error popups.
+                if (this.consecutiveErrors >= 3) {
+                    console.log('[AutoBackup] Too many consecutive errors, pausing.');
+                    this.pause();
+                    DeviceEventEmitter.emit('backupError', 'Backup paused due to persistent connection issues.');
+                    break; // Exit the loop
+                }
             }
 
             this.currentIndex++;

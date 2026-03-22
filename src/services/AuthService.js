@@ -2,6 +2,8 @@ import * as SecureStore from 'expo-secure-store';
 import axios from 'axios';
 import Argon2 from 'react-native-argon2';
 
+axios.defaults.timeout = 10000; // Global 10s fallback to prevent native Java SocketTimeout popups
+
 const TOKEN_KEY = 'lomo_auth_token';
 const SERVER_KEY = 'lomo_server_url';
 const USERNAME_KEY = 'lomo_username';

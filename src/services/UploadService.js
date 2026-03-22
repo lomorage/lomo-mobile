@@ -90,6 +90,7 @@ class UploadService {
                 xhr.open('POST', uploadUrl);
                 xhr.setRequestHeader('Authorization', `token=${token}`);
                 xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+                xhr.timeout = 30000; // 30s timeout for large file uploads
 
                 xhr.upload.onprogress = (event) => {
                     if (onProgress) {
@@ -114,8 +115,14 @@ class UploadService {
                     }
                 };
 
-                xhr.onerror = () => {
-                    reject(new Error('Upload failed due to network error.'));
+                xhr.onerror = (e) => {
+                    console.error('[UploadService] XHR Error:', e);
+                    reject(new Error('Network error or server unreachable.'));
+                };
+
+                xhr.ontimeout = () => {
+                    console.error('[UploadService] XHR Timeout');
+                    reject(new Error('Upload timed out. Check your connection.'));
                 };
 
                 // In React Native, passing an object with a `uri` key and `type` directly

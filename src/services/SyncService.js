@@ -687,6 +687,10 @@ class SyncService {
       if (onProgress) onProgress({ message: 'Fetching remote asset layout...' });
       await this.fetchRemoteOverview();
       
+      if (!this.remoteTree) {
+        throw new Error('Server unreachable or not configured');
+      }
+
       if (onProgress) onProgress({ message: 'Comparing local and remote assets...' });
       const uploadAssets = [];
       const downloadAssets = [];
@@ -701,6 +705,7 @@ class SyncService {
   }
 
   async findDiffWithDrillDown(localNode, remoteNode, upload, download, level) {
+    if (!localNode || !remoteNode) return;
     const diff = localNode.compareNodeList(localNode.children, remoteNode.children, level === 'asset' ? 'hash' : 'id');
 
     // 1. New local assets -> Upload

@@ -39,9 +39,31 @@ export default function HomeScreen({ navigation }) {
     const scrubTooltipY = useRef(new Animated.Value(0)).current;
     const timelineDataRef = useRef([]);
     const stickyHeaderIndicesRef = useRef([]);
+    const lastJumpTimeRef = useRef(0);
+
+    const safeUri = useCallback((uri) => {
+        if (!uri) return null;
+        if (uri.startsWith('http')) return uri;
+        if (uri.startsWith('content://')) return uri;
+        
+        let path = uri;
+        if (path.startsWith('file://')) {
+            path = path.substring(7);
+        }
+        
+        // Ensure path starts with / on Android
+        if (!path.startsWith('/')) {
+            path = '/' + path;
+        }
+        
+        // Encode the path to handle spaces and dots correctly
+        // We use split and map to only encode the segments, not the slashes
+        const segments = path.split('/').map(segment => encodeURIComponent(segment));
+        return 'file://' + segments.join('/');
+    }, []);
 
     const formatDateHeader = (timestamp) => {
-        if (!timestamp) return 'Unknown Date';
+        if (!timestamp || timestamp === 0) return 'Unknown Date';
         const date = new Date(timestamp);
         const now = new Date();
         const isToday = date.getDate() === now.getDate() && date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear();
@@ -64,7 +86,16 @@ export default function HomeScreen({ navigation }) {
         const indices = [];
         if (!assets || assets.length === 0) return { timelineData: data, stickyHeaderIndices: indices };
 
-        let currentHeader = null;
+        // Pre-sort assets by fallback date (CreationTime -> ModificationTime -> 0)
+        // This ensures the 18,000 photo array is chronologically aligned before grouping.
+        const sortedAssets = [...assets].sort((a, b) => {
+            const timeA = a.creationTime || a.modificationTime || 0;
+            const timeB = b.creationTime || b.modificationTime || 0;
+            return timeB - timeA; // Descending (Newest first)
+        });
+
+        const dateCache = new Map();
+        let currentHeaderKey = null;
         let currentRowItems = [];
         let currentOffset = 0;
 
@@ -76,15 +107,42 @@ export default function HomeScreen({ navigation }) {
             }
         };
 
-        assets.forEach((asset, globalIndex) => {
-            const headerSplit = formatDateHeader(asset.creationTime || 0);
-            if (headerSplit !== currentHeader) {
+        sortedAssets.forEach((asset, globalIndex) => {
+            // Priority: 1. CreationTime (EXIF), 2. ModificationTime (File Metadata), 3. 0 fallback
+            const time = asset.creationTime || asset.modificationTime || 0;
+            const d = new Date(time);
+            
+            // Fast integer-based key for grouping (YYYYMMDD for Today/Yesterday, otherwise YYYYMM)
+            const now = new Date();
+            const isToday = d.getDate() === now.getDate() && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+            const yesterday = new Date(now);
+            yesterday.setDate(now.getDate() - 1);
+            const isYesterday = d.getDate() === yesterday.getDate() && d.getMonth() === yesterday.getMonth() && d.getFullYear() === yesterday.getFullYear();
+            
+            let headerKey;
+            if (isToday) headerKey = 'today';
+            else if (isYesterday) headerKey = 'yesterday';
+            else {
+                // Monthly grouping for everything else to eliminate gaps
+                headerKey = d.getFullYear() * 100 + (d.getMonth() + 1);
+            }
+
+            if (headerKey !== currentHeaderKey) {
                 pushRow();
-                currentHeader = headerSplit;
+                currentHeaderKey = headerKey;
+                
+                // Only call expensive formatting once per unique headerKey
+                let headerTitle = dateCache.get(headerKey);
+                if (!headerTitle) {
+                    headerTitle = formatDateHeader(time);
+                    dateCache.set(headerKey, headerTitle);
+                }
+
                 indices.push(data.length);
-                data.push({ type: 'header', id: `header-${data.length}`, title: currentHeader, length: 48, offset: currentOffset });
+                data.push({ type: 'header', id: `header-${data.length}`, title: headerTitle, length: 48, offset: currentOffset });
                 currentOffset += 48;
             }
+
             currentRowItems.push({ ...asset, globalIndex });
             if (currentRowItems.length === COLUMN_COUNT) {
                 pushRow();
@@ -138,8 +196,15 @@ export default function HomeScreen({ navigation }) {
         }
         setScrubText(text);
 
-        if (listRef.current) {
-            listRef.current.scrollToIndex({ index: targetIndex, animated: false });
+        // Throttle gallery jumps to 50ms. 
+        // This stops "Gesture Flooding" where every pixel of movement tries to jump the native list,
+        // which is the cause of the multi-second UI freezes.
+        const now = Date.now();
+        if (now - lastJumpTimeRef.current > 50) {
+            lastJumpTimeRef.current = now;
+            if (listRef.current) {
+                listRef.current.scrollToIndex({ index: targetIndex, animated: false });
+            }
         }
     }, [scrubThumbY, scrubTooltipY]);
 
@@ -292,8 +357,13 @@ export default function HomeScreen({ navigation }) {
                 setSyncing(true);
             }
 
-            // 3. Update Remote Knowledge on network background
-            await SyncService.fetchRemoteOverview();
+            // 3. Update Remote Knowledge on network background (gracefully handle failures)
+            try {
+                await SyncService.fetchRemoteOverview();
+            } catch (err) {
+                console.warn('[HomeScreen] Remote overview failed:', err.message);
+                // We don't throw here, just continue with local assets and let deep sync handle it
+            }
 
             // 4. Perform Deep Hash Crypto-Sync asynchronously
              setTimeout(async () => {
@@ -341,7 +411,7 @@ export default function HomeScreen({ navigation }) {
                     
                  } catch (syncErr) {
                      console.error('Error during async sync:', syncErr);
-                     if (isMounted.current) setError(syncErr.message);
+                     if (isMounted.current) setError(String(syncErr.message || syncErr));
                  } finally {
                      if (isMounted.current) {
                           // Final merge to catch any remainder and true download assets
@@ -394,8 +464,8 @@ export default function HomeScreen({ navigation }) {
              }, 100);
 
         } catch (err) {
-            console.error('Error in loadAndSync:', err);
-            if (isMounted.current) setError(err.message);
+            console.error('Initial load error:', err);
+            if (isMounted.current) setError(String(err.message || err));
         } finally {
             if (isMounted.current && loading) {
                  setLoading(false);
@@ -418,42 +488,75 @@ export default function HomeScreen({ navigation }) {
         }
     });
 
-    const RenderAsset = memo(({ asset, globalIndex, navigation, debugMode, currentAssetId }) => (
-        <TouchableOpacity
-            key={`asset-${asset.id}`}
-            style={styles.itemContainer}
-            onPress={() => navigation.navigate('AssetDetail', { initialIndex: globalIndex })}
-        >
-            <Image
-                source={{ uri: asset.uri }}
-                style={styles.image}
-                resizeMethod="resize"
-                onError={(e) => console.log(`[HomeScreen] Image load error for ${asset.status} asset ${asset.id}:`, e.nativeEvent.error)}
-            />
-            <StatusIcon item={asset} currentAssetId={currentAssetId} />
-            {asset.mediaType === 'video' ? (
-                <View style={[styles.imageOverlay, styles.videoOverlay]}>
-                    <PlayCircle color="#fff" size={32} />
-                </View>
-            ) : null}
-            {asset.status === 'remote' ? (
-                <View style={[styles.imageOverlay, { backgroundColor: 'rgba(0,0,0,0.1)' }]} />
-            ) : null}
-            {debugMode ? (
-                <View style={styles.debugOverlay}>
-                    <Text style={styles.debugText}>{asset.status[0].toUpperCase()}</Text>
-                    <Text style={styles.debugText}>
-                      {asset.hash ? asset.hash.substring(0, 6) : 'hash?'} 
-                    </Text>
-                </View>
-            ) : null}
-        </TouchableOpacity>
-    ), (prevProps, nextProps) => {
+    const RenderAsset = memo(({ asset, globalIndex, navigation, debugMode, currentAssetId, isScrubbing }) => {
+        // Scrub-Lock: Skip remote photo fetching while scrubbing to prevent network congestion.
+        // Local assets are fine to render because they are fast and don't hit the server.
+        const shouldShowImage = !isScrubbing || asset.status === 'local';
+
+        return (
+            <TouchableOpacity
+                key={`asset-${asset.id}`}
+                style={styles.itemContainer}
+                onPress={() => navigation.navigate('AssetDetail', { initialIndex: globalIndex })}
+            >
+                {shouldShowImage ? (
+                    <Image
+                        source={{ uri: safeUri(asset.uri) }}
+                        style={styles.image}
+                        resizeMethod="resize"
+                        onError={(e) => {
+                             // Only log if not a common ENOENT on a weird filename (too verbose)
+                             if (debugMode) console.log(`[HomeScreen] Image load error for ${asset.status} asset ${asset.id}:`, e.nativeEvent.error);
+                        }}
+                    />
+                ) : (
+                    <View style={[styles.image, { backgroundColor: '#f0f0f0' }]} />
+                )}
+                <StatusIcon item={asset} currentAssetId={currentAssetId} />
+                {asset.mediaType === 'video' ? (
+                    <View style={[styles.imageOverlay, styles.videoOverlay]}>
+                        <PlayCircle color="#fff" size={32} />
+                    </View>
+                ) : null}
+                {asset.status === 'remote' ? (
+                    <View style={[styles.imageOverlay, { backgroundColor: 'rgba(0,0,0,0.1)' }]} />
+                ) : null}
+                {debugMode ? (
+                    <View style={styles.debugOverlay}>
+                        <Text style={styles.debugText}>{asset.status[0].toUpperCase()}</Text>
+                        <Text style={styles.debugText}>
+                          {asset.hash ? asset.hash.substring(0, 6) : 'hash?'} 
+                        </Text>
+                    </View>
+                ) : null}
+            </TouchableOpacity>
+        );
+    }, (prevProps, nextProps) => {
+        if (prevProps.isScrubbing !== nextProps.isScrubbing) return false;
         if (prevProps.asset.id !== nextProps.asset.id || prevProps.asset.status !== nextProps.asset.status) return false;
         if (prevProps.debugMode !== nextProps.debugMode) return false;
         if (prevProps.currentAssetId !== nextProps.currentAssetId && (prevProps.asset.id === prevProps.currentAssetId || prevProps.asset.id === nextProps.currentAssetId)) return false;
         return true;
     });
+
+    const TimelineRow = memo(({ item, navigation, debugMode, currentAssetId, isScrubbing }) => (
+        <View style={styles.row}>
+            {item.items.map((asset) => (
+                <RenderAsset 
+                    key={asset.id}
+                    asset={asset} 
+                    globalIndex={asset.globalIndex} 
+                    navigation={navigation}
+                    debugMode={debugMode}
+                    currentAssetId={currentAssetId}
+                    isScrubbing={isScrubbing}
+                />
+            ))}
+            {Array.from({ length: COLUMN_COUNT - item.items.length }).map((_, i) => (
+                <View key={`empty-${i}`} style={styles.itemContainer} />
+            ))}
+        </View>
+    ));
 
     const renderItem = useCallback(({ item }) => {
         if (item.type === 'header') {
@@ -463,25 +566,16 @@ export default function HomeScreen({ navigation }) {
                 </View>
             );
         }
-        
         return (
-            <View style={{ flexDirection: 'row', width }}>
-                {item.items.map(asset => (
-                    <RenderAsset 
-                        key={`asset-${asset.id}`}
-                        asset={asset}
-                        globalIndex={asset.globalIndex}
-                        navigation={navigation}
-                        debugMode={debugMode}
-                        currentAssetId={backupState.currentAssetId}
-                    />
-                ))}
-                {Array.from({ length: COLUMN_COUNT - item.items.length }).map((_, i) => (
-                    <View key={`empty-${i}`} style={styles.itemContainer} />
-                ))}
-            </View>
+            <TimelineRow 
+                item={item}
+                navigation={navigation}
+                debugMode={debugMode}
+                currentAssetId={backupState.currentAssetId}
+                isScrubbing={isScrubbing}
+            />
         );
-    }, [navigation, debugMode, backupState.currentAssetId]);
+    }, [navigation, debugMode, backupState.currentAssetId, isScrubbing]);
 
     return (
         <View style={styles.container}>
@@ -489,7 +583,7 @@ export default function HomeScreen({ navigation }) {
                 <View style={{ flex: 1 }}>
                     <Text style={styles.title}>Lomorage</Text>
                     <Text style={styles.subtitle}>
-                        {`${assets.length} items${syncing ? ` • ${debugMode ? (syncProgress?.message || 'Syncing...') : 'Looking for new photos...'}` : ''}`}
+                        {`${assets.length} items${syncing ? ` • ${debugMode ? (syncProgress?.message || 'Syncing...') : 'Looking for new photos...'}` : error ? ' • Offline' : ''}`}
                     </Text>
                     {debugMode && syncing && syncProgress?.total > 0 && syncProgress?.current !== undefined ? (
                         <Text style={styles.progressText}>
@@ -577,7 +671,7 @@ export default function HomeScreen({ navigation }) {
                         keyExtractor={item => item.id}
                         stickyHeaderIndices={stickyHeaderIndices}
                         getItemLayout={getItemLayout}
-                        removeClippedSubviews={true}
+                        removeClippedSubviews={false}
                         initialNumToRender={10}
                         maxToRenderPerBatch={10}
                         windowSize={5}
@@ -626,6 +720,9 @@ const styles = StyleSheet.create({
     container: {
         flex: 1,
         backgroundColor: '#fff',
+    },
+    row: {
+        flexDirection: 'row',
     },
     header: {
         paddingHorizontal: 20,
