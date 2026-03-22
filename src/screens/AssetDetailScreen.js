@@ -1,17 +1,25 @@
-import React, { useState } from 'react';
-import { StyleSheet, View, Image, Dimensions, TouchableOpacity, Text, ScrollView } from 'react-native';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { StyleSheet, View, Image, Dimensions, TouchableOpacity, Text, FlatList } from 'react-native';
 import { ChevronLeft, Upload } from 'lucide-react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import AuthService from '../services/AuthService';
 import { useSettings } from '../context/SettingsContext';
+import GalleryStore from '../store/GalleryStore';
 
 const { width, height } = Dimensions.get('window');
 
-function AssetVideoPlayer({ uri, style }) {
+function AssetVideoPlayer({ uri, style, shouldPlay }) {
     const player = useVideoPlayer(uri, player => {
         player.loop = true;
-        player.play();
     });
+
+    useEffect(() => {
+        if (shouldPlay) {
+            player.play();
+        } else {
+            player.pause();
+        }
+    }, [shouldPlay, player]);
 
     return (
         <VideoView 
@@ -23,23 +31,55 @@ function AssetVideoPlayer({ uri, style }) {
 }
 
 export default function AssetDetailScreen({ route, navigation }) {
-    const { asset } = route.params;
+    const { initialIndex } = route.params;
+    const assets = GalleryStore.getAssets();
+    
     const { debugMode } = useSettings();
     const [useOriginalVideo, setUseOriginalVideo] = useState(false);
+    const [currentIndex, setCurrentIndex] = useState(initialIndex || 0);
+    
+    const currentAsset = assets[currentIndex] || {};
 
-    let uri = asset.uri;
-    // We must overwrite the URI if it's missing, missing a token, or is a /preview/ thumbnail
-    if (asset.status === 'remote' && (!uri || !uri.includes('token=') || uri.includes('/preview/'))) {
-        const baseUrl = AuthService.getServerUrl();
-        const token = AuthService.getToken();
-        const assetId = asset.hash || asset.id;
-        // Append &ext=mp4 so ExoPlayer can infer the MIME type from the URL string
-        uri = `${baseUrl}/asset/${assetId}?token=${token}&ext=mp4`;
-        
-        if (useOriginalVideo && asset.mediaType === 'video') {
-            uri += '&orig=1';
+    const onViewableItemsChanged = useRef(({ viewableItems }) => {
+        if (viewableItems.length > 0) {
+            const newIndex = viewableItems[0].index;
+            if (newIndex !== currentIndex) {
+                setCurrentIndex(newIndex);
+                setUseOriginalVideo(false);
+            }
         }
-    }
+    }).current;
+
+    const renderItem = ({ item, index }) => {
+        let uri = item.uri;
+        if (item.status === 'remote' && (!uri || !uri.includes('token=') || uri.includes('/preview/'))) {
+            const baseUrl = AuthService.getServerUrl();
+            const token = AuthService.getToken();
+            const assetId = item.hash || item.id;
+            uri = `${baseUrl}/asset/${assetId}?token=${token}&ext=mp4`;
+            
+            // Only apply HD to the currently active video to save bandwidth
+            if (useOriginalVideo && item.mediaType === 'video' && index === currentIndex) {
+                uri += '&orig=1';
+            }
+        }
+
+        const isVisible = index === currentIndex;
+
+        return (
+            <View style={{ width, height: height * 0.7, justifyContent: 'center', alignItems: 'center' }}>
+                {item.mediaType === 'video' ? (
+                    <AssetVideoPlayer uri={uri} style={styles.image} shouldPlay={isVisible} />
+                ) : (
+                    <Image
+                        source={{ uri }}
+                        style={styles.image}
+                        resizeMode="contain"
+                    />
+                )}
+            </View>
+        );
+    };
 
     return (
         <View style={styles.container}>
@@ -48,7 +88,7 @@ export default function AssetDetailScreen({ route, navigation }) {
                     <ChevronLeft color="#000" size={28} />
                 </TouchableOpacity>
                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                    {asset.mediaType === 'video' && asset.status === 'remote' && (
+                    {currentAsset.mediaType === 'video' && currentAsset.status === 'remote' && (
                         <TouchableOpacity 
                             onPress={() => setUseOriginalVideo(!useOriginalVideo)}
                             style={[
@@ -69,35 +109,38 @@ export default function AssetDetailScreen({ route, navigation }) {
             </View>
 
             <View style={styles.imageContainer}>
-                {asset.mediaType === 'video' ? (
-                    <AssetVideoPlayer uri={uri} style={styles.image} />
-                ) : (
-                    <Image
-                        source={{ uri }}
-                        style={styles.image}
-                        resizeMode="contain"
-                        onError={(e) => console.log(`[AssetDetail] Image load error for ${asset.status} asset ${asset.id}:`, e.nativeEvent.error)}
-                    />
-                )}
+                <FlatList
+                    data={assets}
+                    keyExtractor={item => item.id}
+                    horizontal
+                    pagingEnabled
+                    showsHorizontalScrollIndicator={false}
+                    initialScrollIndex={initialIndex}
+                    getItemLayout={(data, index) => ({ length: width, offset: width * index, index })}
+                    onViewableItemsChanged={onViewableItemsChanged}
+                    viewabilityConfig={{ itemVisiblePercentThreshold: 50 }}
+                    renderItem={renderItem}
+                    windowSize={5}
+                    extraData={{ useOriginalVideo, currentIndex }}
+                />
             </View>
 
             <View style={styles.footer}>
-                <Text style={styles.infoText}>{asset.filename}</Text>
+                <Text style={styles.infoText}>{currentAsset.filename}</Text>
                 <Text style={styles.subInfoText}>
-                    {new Date(asset.creationTime).toLocaleString()}
+                    {new Date(currentAsset.creationTime || 0).toLocaleString()}
                 </Text>
             </View>
 
-            {/* FULL DEBUG PANEL */}
-            {debugMode && (
+            {debugMode && currentAsset.id && (
                 <View style={styles.debugPanel}>
                     <Text style={styles.debugTitle}>--- ASSET DEBUG ---</Text>
-                    <Text selectable style={styles.debugText}>ID: {asset.id}</Text>
-                    <Text selectable style={styles.debugText}>Hash: {asset.hash || 'MISSING'}</Text>
-                    <Text selectable style={styles.debugText}>Status: {asset.status}</Text>
-                    <Text selectable style={styles.debugText}>Time Ms: {asset.creationTime}</Text>
-                    <Text selectable style={styles.debugText}>UTC: {new Date(asset.creationTime).toISOString()}</Text>
-                    <Text selectable style={styles.debugText}>URI: {uri?.substring(0, 30)}...</Text>
+                    <Text selectable style={styles.debugText}>ID: {currentAsset.id}</Text>
+                    <Text selectable style={styles.debugText}>Hash: {currentAsset.hash || 'MISSING'}</Text>
+                    <Text selectable style={styles.debugText}>Status: {currentAsset.status}</Text>
+                    <Text selectable style={styles.debugText}>Time Ms: {currentAsset.creationTime}</Text>
+                    <Text selectable style={styles.debugText}>UTC: {new Date(currentAsset.creationTime).toISOString()}</Text>
+                    <Text selectable style={styles.debugText}>Index: {currentIndex} / {assets.length}</Text>
                 </View>
             )}
         </View>

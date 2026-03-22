@@ -5,6 +5,7 @@ import MediaService from '../services/MediaService';
 import SyncService from '../services/SyncService';
 import AuthService from '../services/AuthService';
 import { useSettings } from '../context/SettingsContext';
+import GalleryStore from '../store/GalleryStore';
 
 const { width } = Dimensions.get('window');
 const COLUMN_COUNT = 3;
@@ -27,20 +28,9 @@ export default function HomeScreen({ navigation }) {
         return () => { isMounted.current = false; };
     }, []);
 
-    const handleClearCache = async () => {
-        try {
-            setSyncing(true);
-            setSyncProgress({ message: 'Clearing cache...' });
-            await SyncService.clearCache();
-            await loadAndSync();
-        } catch (err) {
-            console.error('Failed to clear cache:', err);
-            setError('Failed to clear cache: ' + err.message);
-        } finally {
-            setSyncing(false);
-            setSyncProgress(null);
-        }
-    };
+    useEffect(() => {
+        GalleryStore.setAssets(assets);
+    }, [assets]);
 
     const loadAndSync = async () => {
         setLoading(true);
@@ -221,10 +211,10 @@ export default function HomeScreen({ navigation }) {
         }
     };
 
-    const renderItem = ({ item }) => (
+    const renderItem = ({ item, index }) => (
         <TouchableOpacity
             style={styles.itemContainer}
-            onPress={() => navigation.navigate('AssetDetail', { asset: item })}
+            onPress={() => navigation.navigate('AssetDetail', { initialIndex: index })}
         >
             <Image
                 source={{ uri: item.uri }}
