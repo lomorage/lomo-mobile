@@ -4,6 +4,8 @@ import * as Crypto from 'expo-crypto';
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
 import { hashFileAsync } from '../../modules/expo-lomo-hasher';
+import axios from 'axios';
+import AuthService from './AuthService';
 
 class MediaService {
   async requestPermissions() {
@@ -184,6 +186,44 @@ class MediaService {
     } catch (error) {
       console.error(`[MediaService] calculateHash failed for ${fileUri}:`, error.message);
       return null;
+    }
+  }
+
+  async deleteRemoteAsset(id, isHash = false) {
+    try {
+      const serverUrl = AuthService.getServerUrl();
+      const token = AuthService.getToken();
+      
+      const payload = {
+        List: [{
+           ID: id,
+           Type: isHash ? 1 : 0
+        }]
+      };
+
+      console.log(`[MediaService] Deleting remote asset: ${id} (isHash=${isHash})`);
+      
+      const response = await axios.delete(`${serverUrl}/asset`, {
+        headers: { Authorization: `token=${token}` },
+        data: payload
+      });
+
+      return response.status === 200;
+    } catch (error) {
+      console.error('[MediaService] Error deleting remote asset:', error.message);
+      throw error;
+    }
+  }
+
+  async deleteLocalAsset(localId) {
+    try {
+      const realId = localId.startsWith('local-') ? localId.replace('local-', '') : localId;
+      console.log(`[MediaService] Deleting local asset natively: ${realId}`);
+      await MediaLibrary.deleteAssetsAsync([realId]);
+      return true;
+    } catch (error) {
+      console.error('[MediaService] Error deleting local asset:', error.message);
+      throw error;
     }
   }
 }

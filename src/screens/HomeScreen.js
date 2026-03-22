@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { StyleSheet, View, FlatList, Image, Dimensions, TouchableOpacity, Text, ActivityIndicator, RefreshControl } from 'react-native';
+import { StyleSheet, View, FlatList, Image, Dimensions, TouchableOpacity, Text, ActivityIndicator, RefreshControl, DeviceEventEmitter } from 'react-native';
 import { Cloud, CheckCircle, Smartphone, PlayCircle, Settings as SettingsIcon } from 'lucide-react-native';
 import MediaService from '../services/MediaService';
 import SyncService from '../services/SyncService';
@@ -25,7 +25,20 @@ export default function HomeScreen({ navigation }) {
     useEffect(() => {
         isMounted.current = true;
         loadAndSync();
-        return () => { isMounted.current = false; };
+        
+        const subDelete = DeviceEventEmitter.addListener('assetDeleted', (deletedId) => {
+            setAssets(prev => prev.filter(a => a.id !== deletedId));
+        });
+        
+        const subUpdate = DeviceEventEmitter.addListener('assetUpdated', (updatedAsset) => {
+            setAssets(prev => prev.map(a => a.id === updatedAsset.id ? updatedAsset : a));
+        });
+
+        return () => { 
+            isMounted.current = false; 
+            subDelete.remove();
+            subUpdate.remove();
+        };
     }, []);
 
     useEffect(() => {
@@ -43,10 +56,11 @@ export default function HomeScreen({ navigation }) {
                 return;
             }
 
-            // 1. Load Local and Remote assets concurrently for instant UI rendering
-            const [localResult, remoteRoot] = await Promise.all([
+            // 1. Load Local assets and Disk Caches concurrently for instant UI rendering
+            const [localResult] = await Promise.all([
                 MediaService.getAssets(5000),
-                SyncService.fetchRemoteOverview()
+                SyncService.loadLocalHashCache(),
+                SyncService.loadRemoteTree()
             ]);
             let localAssets = localResult.assets;
 
@@ -56,32 +70,46 @@ export default function HomeScreen({ navigation }) {
                 return ['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext);
             };
 
-            // 2. Perform Heuristic Deduplication for initial render
+            // 2. Perform Intelligent Heuristic Deduplication for instant render
             const serverUrl = AuthService.getServerUrl();
             const token = AuthService.getToken();
             
-            const initialAssets = localAssets.map(a => ({
-                ...a,
-                status: 'local'
-            }));
+            // Use local hash cache to identify synced items even before deep sync
+            const initialAssets = localAssets.map(a => {
+                const cached = SyncService.localHashCache[a.id];
+                const hash = a.hash || cached?.hash;
+                const isSynced = hash && SyncService.remoteTree?.getNodeByHash(hash);
+                return {
+                    ...a,
+                    hash: hash || a.hash,
+                    status: isSynced ? 'synced' : 'local'
+                };
+            });
 
+            const localHashes = new Set(initialAssets.filter(a => a.hash).map(a => a.hash));
             const localDates = localAssets.map(a => a.creationTime);
 
             let remoteAssets = [];
-            if (remoteRoot) {
+            if (SyncService.remoteTree) {
                 const allRemoteNodes = [];
                 const collectNodes = (node) => {
                     if (node.tag) { allRemoteNodes.push(node); return; }
                     node.children.forEach(collectNodes);
                 };
-                collectNodes(remoteRoot);
+                collectNodes(SyncService.remoteTree);
 
                 remoteAssets = allRemoteNodes
                     .filter(node => {
-                        if (!node.date) return true;
-                        const remoteTime = node.date.getTime();
-                        const hasNearbyLocal = localDates.some(localTime => Math.abs(localTime - remoteTime) <= 2000);
-                        return !hasNearbyLocal;
+                        // 100% Match: Hash already exists in local list
+                        if (localHashes.has(node.hash)) return false;
+                        
+                        // Heuristic Match: Date proximity (fallback for unhashed items)
+                        if (node.date) {
+                            const remoteTime = node.date.getTime();
+                            const hasNearbyLocal = localDates.some(localTime => Math.abs(localTime - remoteTime) <= 2000);
+                            if (hasNearbyLocal) return false;
+                        }
+                        return true;
                     })
                     .map(node => ({
                         id: `remote-${node.hash}`,
@@ -99,13 +127,17 @@ export default function HomeScreen({ navigation }) {
                 setAssets(combinedInitial);
                 setLoading(false);
                 setSyncing(true);
-                setSyncProgress({ message: 'Starting deep crypto-sync...' });
             }
 
-            // 3. Perform Deep Hash Crypto-Sync asynchronously
+            // 3. Update Remote Knowledge on network background
+            await SyncService.fetchRemoteOverview();
+
+            // 4. Perform Deep Hash Crypto-Sync asynchronously
              setTimeout(async () => {
                 let diff = null;
+                const initialAssetsJson = JSON.stringify(combinedInitial.map(a => ({ id: a.id, status: a.status })));
                  try {
+                     setSyncProgress({ message: 'Syncing with server...' });
                     diff = await SyncService.sync(localAssets, (progress) => {
                         if (!isMounted.current) return;
                         setSyncProgress(progress);
@@ -175,16 +207,22 @@ export default function HomeScreen({ navigation }) {
                                       mediaType: isVideoExtension(node.tag) ? 'video' : 'photo'
                                   }));
                           } else {
+                              // Fallback: If sync failed, use precisely the same heuristic as before
                               trueRemoteOnly = remoteAssets.filter(ra => !localHashes.has(ra.hash));
                           }
 
                           merged.push(...trueRemoteOnly);
-                          merged.sort((a, b) => (b.creationTime || 0) - (a.creationTime || 0));
-                          
-                          setAssets(merged);
-                          setSyncing(false);
-                          setSyncProgress(null);
-                     }
+                           merged.sort((a, b) => (b.creationTime || 0) - (a.creationTime || 0));
+                           
+                           // No-Op Detection: Only trigger expensive re-render if something actually changed
+                           const finalJson = JSON.stringify(merged.map(a => ({ id: a.id, status: a.status })));
+                           if (finalJson !== initialAssetsJson) {
+                               setAssets(merged);
+                           }
+                           
+                           setSyncing(false);
+                           setSyncProgress(null);
+                      }
                  }
              }, 100);
 
@@ -222,23 +260,23 @@ export default function HomeScreen({ navigation }) {
                 onError={(e) => console.log(`[HomeScreen] Image load error for ${item.status} asset ${item.id}:`, e.nativeEvent.error)}
             />
             <StatusIcon status={item.status} />
-            {item.mediaType === 'video' && (
+            {item.mediaType === 'video' ? (
                 <View style={[styles.imageOverlay, styles.videoOverlay]}>
                     <PlayCircle color="#fff" size={32} />
                 </View>
-            )}
-            {item.status === 'remote' && (
+            ) : null}
+            {item.status === 'remote' ? (
                 <View style={[styles.imageOverlay, { backgroundColor: 'rgba(0,0,0,0.1)' }]} />
-            )}
+            ) : null}
             {/* DEBUG OVERLAY */}
-            {debugMode && (
+            {debugMode ? (
                 <View style={styles.debugOverlay}>
                     <Text style={styles.debugText}>{item.status[0].toUpperCase()}</Text>
                     <Text style={styles.debugText}>
                       {item.hash ? item.hash.substring(0, 6) : 'hash?'} 
                     </Text>
                 </View>
-            )}
+            ) : null}
         </TouchableOpacity>
     );
 
@@ -248,32 +286,32 @@ export default function HomeScreen({ navigation }) {
                 <View style={{ flex: 1 }}>
                     <Text style={styles.title}>Lomorage</Text>
                     <Text style={styles.subtitle}>
-                        {assets.length} items • {syncing ? (syncProgress?.message || 'Syncing...') : 'Up to date'}
+                        {`${assets.length} items • ${syncing ? (syncProgress?.message || 'Syncing...') : 'Up to date'}`}
                     </Text>
-                    {syncing && syncProgress && syncProgress.total > 0 && syncProgress.current !== undefined ? (
+                    {syncing && syncProgress?.total > 0 && syncProgress?.current !== undefined ? (
                         <Text style={styles.progressText}>
-                             ({syncProgress.current}/{syncProgress.total})
+                             {`(${syncProgress.current}/${syncProgress.total})`}
                         </Text>
                     ) : null}
                 </View>
                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                    {syncing && <ActivityIndicator size="small" color="#007AFF" style={{ marginRight: 10 }} />}
+                    {syncing ? <ActivityIndicator size="small" color="#007AFF" style={{ marginRight: 10 }} /> : null}
                     <TouchableOpacity onPress={() => navigation.navigate('Settings')} style={styles.settingsButton}>
                         <SettingsIcon size={24} color="#333" />
                     </TouchableOpacity>
                 </View>
             </View>
 
-            {error && (
+            {error ? (
                 <View style={styles.errorBanner}>
                     <Text style={styles.errorText} numberOfLines={1}>{error}</Text>
                     <TouchableOpacity onPress={loadAndSync} style={styles.retryButton}>
                         <Text style={styles.retryText}>Retry</Text>
                     </TouchableOpacity>
                 </View>
-            )}
+            ) : null}
 
-            {loading && assets.length === 0 ? (
+            {(loading && assets.length === 0) ? (
                 <View style={styles.centered}>
                     <ActivityIndicator size="large" color="#007AFF" />
                     <Text style={styles.loadingText}>Loading your gallery...</Text>

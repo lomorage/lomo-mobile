@@ -14,7 +14,7 @@ export default function SettingsScreen({ navigation }) {
                     <ChevronLeft color="#000" size={28} />
                 </TouchableOpacity>
                 <Text style={styles.title}>Settings</Text>
-                <View style={{ width: 44 }} /> {/* Spacer to center title */}
+                <View style={{ width: 44 }} />
             </View>
 
             <View style={styles.section}>
@@ -23,9 +23,7 @@ export default function SettingsScreen({ navigation }) {
                 <View style={styles.settingRow}>
                     <View style={styles.settingTextContainer}>
                         <Text style={styles.settingLabel}>Asset Debug Mode</Text>
-                        <Text style={styles.settingDescription}>
-                            Show cryptographic hashes and synchronization status directly on photos in the gallery and detail views.
-                        </Text>
+                        <Text style={styles.settingDescription}>Show cryptographic hashes and synchronization status directly on photos in the gallery and detail views.</Text>
                     </View>
                     <Switch
                         value={debugMode}
@@ -57,9 +55,7 @@ export default function SettingsScreen({ navigation }) {
                 >
                     <View style={styles.settingTextContainer}>
                         <Text style={styles.settingLabelDanger}>Clear Local Hash Cache</Text>
-                        <Text style={styles.settingDescription}>
-                            Wipes the SQLite and file hashing cache. Next sync will take significantly longer.
-                        </Text>
+                        <Text style={styles.settingDescription}>Wipes the SQLite and file hashing cache. Next sync will take significantly longer.</Text>
                     </View>
                     <Trash2 color="#ef4444" size={20} />
                 </TouchableOpacity>

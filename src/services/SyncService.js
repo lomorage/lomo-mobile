@@ -614,6 +614,24 @@ class SyncService {
     }
   }
 
+  async removeRemoteAsset(hash) {
+    if (!hash) return;
+    const normalizedHash = hash.toLowerCase();
+    const node = this.remoteTree.getNodeByHash(normalizedHash);
+    if (node) {
+      const parent = node.parentNode;
+      if (parent) {
+        parent.children = parent.children.filter(c => c.hash !== normalizedHash);
+      }
+      this.remoteTree.assetsMap.delete(normalizedHash);
+      // We don't strictly need to recalculate all parent hashes here because
+      // fetchRemoteOverview will eventually replace the whole tree,
+      // but we do need to save the updated JSON so relaunch doesn't show it.
+      await this.saveRemoteTree();
+      console.log(`[SyncService] Removed ${normalizedHash} from remote tree cache`);
+    }
+  }
+
   /**
    * Performs full synchronization logic:
    * 1. Build local tree

@@ -1,8 +1,10 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { StyleSheet, View, Image, Dimensions, TouchableOpacity, Text, FlatList } from 'react-native';
-import { ChevronLeft, Upload } from 'lucide-react-native';
+import { StyleSheet, View, Image, Dimensions, TouchableOpacity, Text, FlatList, Alert, DeviceEventEmitter } from 'react-native';
+import { ChevronLeft, Upload, Trash2 } from 'lucide-react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import AuthService from '../services/AuthService';
+import MediaService from '../services/MediaService';
+import SyncService from '../services/SyncService';
 import { useSettings } from '../context/SettingsContext';
 import GalleryStore from '../store/GalleryStore';
 
@@ -32,13 +34,79 @@ function AssetVideoPlayer({ uri, style, shouldPlay }) {
 
 export default function AssetDetailScreen({ route, navigation }) {
     const { initialIndex } = route.params;
-    const assets = GalleryStore.getAssets();
+    const [assets, setAssets] = useState(GalleryStore.getAssets());
     
     const { debugMode } = useSettings();
     const [useOriginalVideo, setUseOriginalVideo] = useState(false);
     const [currentIndex, setCurrentIndex] = useState(initialIndex || 0);
     
     const currentAsset = assets[currentIndex] || {};
+
+    const handleDelete = async () => {
+        if (!currentAsset || !currentAsset.id) return;
+        
+        const executeDelete = async (scope) => {
+            try {
+                let isFullyDeleted = false;
+                let newStatus = currentAsset.status;
+
+                if (scope === 'local' || scope === 'both') {
+                    await MediaService.deleteLocalAsset(currentAsset.id);
+                    if (currentAsset.status === 'local' || scope === 'both') isFullyDeleted = true;
+                    else if (currentAsset.status === 'synced') newStatus = 'remote';
+                }
+                
+                if (scope === 'remote' || scope === 'both') {
+                    await MediaService.deleteRemoteAsset(currentAsset.hash || currentAsset.id, !!currentAsset.hash);
+                    if (currentAsset.hash) {
+                        await SyncService.removeRemoteAsset(currentAsset.hash);
+                    }
+                    if (currentAsset.status === 'remote' || scope === 'both') isFullyDeleted = true;
+                    else if (currentAsset.status === 'synced') newStatus = 'local';
+                }
+                
+                if (isFullyDeleted) {
+                    const newAssets = assets.filter(a => a.id !== currentAsset.id);
+                    GalleryStore.setAssets(newAssets);
+                    setAssets(newAssets);
+                    DeviceEventEmitter.emit('assetDeleted', currentAsset.id);
+                    
+                    if (newAssets.length === 0) {
+                        navigation.goBack();
+                    } else if (currentIndex >= newAssets.length) {
+                        setCurrentIndex(newAssets.length - 1);
+                    }
+                } else {
+                    const updatedAsset = { ...currentAsset, status: newStatus };
+                    const newAssets = [...assets];
+                    newAssets[currentIndex] = updatedAsset;
+                    GalleryStore.setAssets(newAssets);
+                    setAssets(newAssets);
+                    DeviceEventEmitter.emit('assetUpdated', updatedAsset);
+                }
+            } catch (e) {
+                Alert.alert("Error", "Deletion failed: " + e.message);
+            }
+        };
+
+        if (currentAsset.status === 'local') {
+            Alert.alert("Delete Photo", "Delete this item from your device?", [
+                { text: "Cancel", style: "cancel" },
+                { text: "Delete", style: "destructive", onPress: () => executeDelete('local') }
+            ]);
+        } else if (currentAsset.status === 'remote') {
+            Alert.alert("Delete Photo", "Delete this item from Lomorage backup?", [
+                { text: "Cancel", style: "cancel" },
+                { text: "Delete", style: "destructive", onPress: () => executeDelete('remote') }
+            ]);
+        } else if (currentAsset.status === 'synced') {
+            Alert.alert("Delete Photo", "Where would you like to delete this from?", [
+                { text: "Device Only", onPress: () => executeDelete('local') },
+                { text: "Lomorage Only", onPress: () => executeDelete('remote') },
+                { text: "Both", style: "destructive", onPress: () => executeDelete('both') }
+            ], { cancelable: true });
+        }
+    };
 
     const onViewableItemsChanged = useRef(({ viewableItems }) => {
         if (viewableItems.length > 0) {
@@ -52,27 +120,36 @@ export default function AssetDetailScreen({ route, navigation }) {
 
     const renderItem = ({ item, index }) => {
         let uri = item.uri;
+        let isRemote = false;
+
         if (item.status === 'remote' && (!uri || !uri.includes('token=') || uri.includes('/preview/'))) {
+            isRemote = true;
             const baseUrl = AuthService.getServerUrl();
             const token = AuthService.getToken();
             const assetId = item.hash || item.id;
-            uri = `${baseUrl}/asset/${assetId}?token=${token}&ext=mp4`;
+            uri = `${baseUrl}/asset/${assetId}?token=${token}`;
             
-            // Only apply HD to the currently active video to save bandwidth
-            if (useOriginalVideo && item.mediaType === 'video' && index === currentIndex) {
-                uri += '&orig=1';
+            if (item.mediaType === 'video') {
+                uri += '&ext=mp4';
+                // Only apply HD to the currently active video to save bandwidth
+                if (useOriginalVideo && index === currentIndex) {
+                    uri += '&orig=1';
+                }
             }
         }
 
         const isVisible = index === currentIndex;
 
+        // Prevent Android OutOfMemoryError (MediaCodec): Unmount ExoPlayer for off-screen videos
+        const shouldMountVideo = item.mediaType === 'video' && isVisible;
+
         return (
             <View style={{ width, height: height * 0.7, justifyContent: 'center', alignItems: 'center' }}>
-                {item.mediaType === 'video' ? (
+                {shouldMountVideo ? (
                     <AssetVideoPlayer uri={uri} style={styles.image} shouldPlay={isVisible} />
                 ) : (
                     <Image
-                        source={{ uri }}
+                        source={{ uri: (item.mediaType === 'video' && isRemote) ? item.uri : uri }}
                         style={styles.image}
                         resizeMode="contain"
                     />
@@ -88,7 +165,7 @@ export default function AssetDetailScreen({ route, navigation }) {
                     <ChevronLeft color="#000" size={28} />
                 </TouchableOpacity>
                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                    {currentAsset.mediaType === 'video' && currentAsset.status === 'remote' && (
+                    {currentAsset.mediaType === 'video' && currentAsset.status === 'remote' ? (
                         <TouchableOpacity 
                             onPress={() => setUseOriginalVideo(!useOriginalVideo)}
                             style={[
@@ -101,28 +178,33 @@ export default function AssetDetailScreen({ route, navigation }) {
                                 {useOriginalVideo ? 'HD' : 'SD'}
                             </Text>
                         </TouchableOpacity>
-                    )}
+                    ) : null}
                     <TouchableOpacity style={styles.iconButton}>
                         <Upload color="#007AFF" size={24} />
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={handleDelete} style={styles.iconButton}>
+                        <Trash2 color="#ef4444" size={24} />
                     </TouchableOpacity>
                 </View>
             </View>
 
             <View style={styles.imageContainer}>
-                <FlatList
-                    data={assets}
-                    keyExtractor={item => item.id}
-                    horizontal
-                    pagingEnabled
-                    showsHorizontalScrollIndicator={false}
-                    initialScrollIndex={initialIndex}
-                    getItemLayout={(data, index) => ({ length: width, offset: width * index, index })}
-                    onViewableItemsChanged={onViewableItemsChanged}
-                    viewabilityConfig={{ itemVisiblePercentThreshold: 50 }}
-                    renderItem={renderItem}
-                    windowSize={5}
-                    extraData={{ useOriginalVideo, currentIndex }}
-                />
+                {assets.length > 0 ? (
+                    <FlatList
+                        data={assets}
+                        keyExtractor={item => item.id}
+                        horizontal
+                        pagingEnabled
+                        showsHorizontalScrollIndicator={false}
+                        initialScrollIndex={Math.min(initialIndex, assets.length - 1)}
+                        getItemLayout={(data, index) => ({ length: width, offset: width * index, index })}
+                        onViewableItemsChanged={onViewableItemsChanged}
+                        viewabilityConfig={{ itemVisiblePercentThreshold: 50 }}
+                        renderItem={renderItem}
+                        windowSize={5}
+                        extraData={{ useOriginalVideo, currentIndex }}
+                    />
+                ) : null}
             </View>
 
             <View style={styles.footer}>
@@ -132,7 +214,7 @@ export default function AssetDetailScreen({ route, navigation }) {
                 </Text>
             </View>
 
-            {debugMode && currentAsset.id && (
+            {debugMode && currentAsset.id ? (
                 <View style={styles.debugPanel}>
                     <Text style={styles.debugTitle}>--- ASSET DEBUG ---</Text>
                     <Text selectable style={styles.debugText}>ID: {currentAsset.id}</Text>
@@ -142,7 +224,7 @@ export default function AssetDetailScreen({ route, navigation }) {
                     <Text selectable style={styles.debugText}>UTC: {new Date(currentAsset.creationTime).toISOString()}</Text>
                     <Text selectable style={styles.debugText}>Index: {currentIndex} / {assets.length}</Text>
                 </View>
-            )}
+            ) : null}
         </View>
     );
 }

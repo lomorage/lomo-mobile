@@ -111,12 +111,12 @@ export default function LoginScreen({ navigation }) {
                         <View style={styles.inputGroup}>
                             <View style={styles.labelContainer}>
                                 <Text style={styles.label}>Server Address</Text>
-                                {isScanning && (
+                                {isScanning ? (
                                     <View style={styles.scanningBadge}>
                                         <ActivityIndicator size="small" color="#007AFF" />
                                         <Text style={styles.scanningText}>Scanning...</Text>
                                     </View>
-                                )}
+                                ) : null}
                             </View>
                             <TextInput
                                 style={styles.input}
