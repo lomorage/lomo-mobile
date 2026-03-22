@@ -4,10 +4,12 @@ import { createStackNavigator } from '@react-navigation/stack';
 import { View, ActivityIndicator, StatusBar, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { AuthProvider, useAuth } from '../context/AuthContext';
+import { SettingsProvider } from '../context/SettingsContext';
 
 import HomeScreen from '../screens/HomeScreen';
 import AssetDetailScreen from '../screens/AssetDetailScreen';
 import LoginScreen from '../screens/LoginScreen';
+import SettingsScreen from '../screens/SettingsScreen';
 import AuthService from '../services/AuthService';
 
 const Stack = createStackNavigator();
@@ -57,6 +59,11 @@ function Navigation() {
                             component={AssetDetailScreen}
                             options={{ headerShown: false }}
                         />
+                        <Stack.Screen 
+                            name="Settings" 
+                            component={SettingsScreen} 
+                            options={{ headerShown: false }}
+                        />
                     </>
                 )}
             </Stack.Navigator>
@@ -67,10 +74,12 @@ function Navigation() {
 export default function RootNavigator() {
     return (
         <AuthProvider>
-            <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }}>
-                <StatusBar barStyle="dark-content" />
-                <Navigation />
-            </SafeAreaView>
+            <SettingsProvider>
+                <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }}>
+                    <StatusBar barStyle="dark-content" />
+                    <Navigation />
+                </SafeAreaView>
+            </SettingsProvider>
         </AuthProvider>
     );
 }

@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { StyleSheet, View, FlatList, Image, Dimensions, TouchableOpacity, Text, ActivityIndicator, RefreshControl } from 'react-native';
-import { Cloud, CheckCircle, Smartphone, Trash2, PlayCircle } from 'lucide-react-native';
+import { Cloud, CheckCircle, Smartphone, PlayCircle, Settings as SettingsIcon } from 'lucide-react-native';
 import MediaService from '../services/MediaService';
 import SyncService from '../services/SyncService';
 import AuthService from '../services/AuthService';
+import { useSettings } from '../context/SettingsContext';
 
 const { width } = Dimensions.get('window');
 const COLUMN_COUNT = 3;
@@ -16,6 +17,8 @@ export default function HomeScreen({ navigation }) {
     const [error, setError] = useState(null);
     const [permissionStatus, setPermissionStatus] = useState('granted');
     const [loading, setLoading] = useState(true);
+    
+    const { debugMode } = useSettings();
 
     const isMounted = React.useRef(true);
     useEffect(() => {
@@ -93,7 +96,7 @@ export default function HomeScreen({ navigation }) {
                     .map(node => ({
                         id: `remote-${node.hash}`,
                         hash: node.hash,
-                        uri: `${serverUrl}/asset/preview/${node.hash}?token=${token}`,
+                        uri: `${serverUrl}/preview/${node.hash}?width=500&height=-1&token=${token}`,
                         status: 'remote',
                         creationTime: node.date ? node.date.getTime() : 0,
                         mediaType: isVideoExtension(node.tag) ? 'video' : 'photo'
@@ -176,7 +179,7 @@ export default function HomeScreen({ navigation }) {
                                   .map(node => ({
                                       id: `remote-${node.hash}`,
                                       hash: node.hash,
-                                      uri: `${serverUrl}/asset/preview/${node.hash}?token=${token}`,
+                                      uri: `${serverUrl}/preview/${node.hash}?width=500&height=-1&token=${token}`,
                                       status: 'remote',
                                       creationTime: node.date ? node.date.getTime() : 0,
                                       mediaType: isVideoExtension(node.tag) ? 'video' : 'photo'
@@ -238,12 +241,14 @@ export default function HomeScreen({ navigation }) {
                 <View style={[styles.imageOverlay, { backgroundColor: 'rgba(0,0,0,0.1)' }]} />
             )}
             {/* DEBUG OVERLAY */}
-            <View style={styles.debugOverlay}>
-                <Text style={styles.debugText}>{item.status[0].toUpperCase()}</Text>
-                <Text style={styles.debugText}>
-                  {item.hash ? item.hash.substring(0, 6) : 'hash?'} 
-                </Text>
-            </View>
+            {debugMode && (
+                <View style={styles.debugOverlay}>
+                    <Text style={styles.debugText}>{item.status[0].toUpperCase()}</Text>
+                    <Text style={styles.debugText}>
+                      {item.hash ? item.hash.substring(0, 6) : 'hash?'} 
+                    </Text>
+                </View>
+            )}
         </TouchableOpacity>
     );
 
@@ -255,18 +260,18 @@ export default function HomeScreen({ navigation }) {
                     <Text style={styles.subtitle}>
                         {assets.length} items • {syncing ? (syncProgress?.message || 'Syncing...') : 'Up to date'}
                     </Text>
-                    {syncing && syncProgress && syncProgress.total && syncProgress.current !== undefined && (
+                    {syncing && syncProgress && syncProgress.total > 0 && syncProgress.current !== undefined ? (
                         <Text style={styles.progressText}>
                              ({syncProgress.current}/{syncProgress.total})
                         </Text>
-                    )}
+                    ) : null}
                 </View>
-                {syncing && <ActivityIndicator size="small" color="#007AFF" />}
-                {!syncing && (
-                    <TouchableOpacity onPress={handleClearCache} style={styles.clearButton}>
-                        <Trash2 size={20} color="#666" />
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    {syncing && <ActivityIndicator size="small" color="#007AFF" style={{ marginRight: 10 }} />}
+                    <TouchableOpacity onPress={() => navigation.navigate('Settings')} style={styles.settingsButton}>
+                        <SettingsIcon size={24} color="#333" />
                     </TouchableOpacity>
-                )}
+                </View>
             </View>
 
             {error && (

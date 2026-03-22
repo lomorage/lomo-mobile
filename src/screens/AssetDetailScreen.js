@@ -1,8 +1,9 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { StyleSheet, View, Image, Dimensions, TouchableOpacity, Text, ScrollView } from 'react-native';
 import { ChevronLeft, Upload } from 'lucide-react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import AuthService from '../services/AuthService';
+import { useSettings } from '../context/SettingsContext';
 
 const { width, height } = Dimensions.get('window');
 
@@ -23,13 +24,21 @@ function AssetVideoPlayer({ uri, style }) {
 
 export default function AssetDetailScreen({ route, navigation }) {
     const { asset } = route.params;
+    const { debugMode } = useSettings();
+    const [useOriginalVideo, setUseOriginalVideo] = useState(false);
 
     let uri = asset.uri;
-    if (asset.status === 'remote' && (!uri || !uri.includes('token='))) {
+    // We must overwrite the URI if it's missing, missing a token, or is a /preview/ thumbnail
+    if (asset.status === 'remote' && (!uri || !uri.includes('token=') || uri.includes('/preview/'))) {
         const baseUrl = AuthService.getServerUrl();
         const token = AuthService.getToken();
         const assetId = asset.hash || asset.id;
-        uri = `${baseUrl}/asset/preview/${assetId}?token=${token}`;
+        // Append &ext=mp4 so ExoPlayer can infer the MIME type from the URL string
+        uri = `${baseUrl}/asset/${assetId}?token=${token}&ext=mp4`;
+        
+        if (useOriginalVideo && asset.mediaType === 'video') {
+            uri += '&orig=1';
+        }
     }
 
     return (
@@ -38,9 +47,25 @@ export default function AssetDetailScreen({ route, navigation }) {
                 <TouchableOpacity onPress={() => navigation.goBack()} style={styles.iconButton}>
                     <ChevronLeft color="#000" size={28} />
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.iconButton}>
-                    <Upload color="#007AFF" size={24} />
-                </TouchableOpacity>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    {asset.mediaType === 'video' && asset.status === 'remote' && (
+                        <TouchableOpacity 
+                            onPress={() => setUseOriginalVideo(!useOriginalVideo)}
+                            style={[
+                                styles.qualityToggle, 
+                                useOriginalVideo ? styles.qualityToggleActive : styles.qualityToggleInactive
+                            ]}
+                            activeOpacity={0.7}
+                        >
+                            <Text style={useOriginalVideo ? styles.qualityTextActive : styles.qualityTextInactive}>
+                                {useOriginalVideo ? 'HD' : 'SD'}
+                            </Text>
+                        </TouchableOpacity>
+                    )}
+                    <TouchableOpacity style={styles.iconButton}>
+                        <Upload color="#007AFF" size={24} />
+                    </TouchableOpacity>
+                </View>
             </View>
 
             <View style={styles.imageContainer}>
@@ -64,15 +89,17 @@ export default function AssetDetailScreen({ route, navigation }) {
             </View>
 
             {/* FULL DEBUG PANEL */}
-            <View style={styles.debugPanel}>
-                <Text style={styles.debugTitle}>--- ASSET DEBUG ---</Text>
-                <Text selectable style={styles.debugText}>ID: {asset.id}</Text>
-                <Text selectable style={styles.debugText}>Hash: {asset.hash || 'MISSING'}</Text>
-                <Text selectable style={styles.debugText}>Status: {asset.status}</Text>
-                <Text selectable style={styles.debugText}>Time Ms: {asset.creationTime}</Text>
-                <Text selectable style={styles.debugText}>UTC: {new Date(asset.creationTime).toISOString()}</Text>
-                <Text selectable style={styles.debugText}>URI: {uri?.substring(0, 30)}...</Text>
-            </View>
+            {debugMode && (
+                <View style={styles.debugPanel}>
+                    <Text style={styles.debugTitle}>--- ASSET DEBUG ---</Text>
+                    <Text selectable style={styles.debugText}>ID: {asset.id}</Text>
+                    <Text selectable style={styles.debugText}>Hash: {asset.hash || 'MISSING'}</Text>
+                    <Text selectable style={styles.debugText}>Status: {asset.status}</Text>
+                    <Text selectable style={styles.debugText}>Time Ms: {asset.creationTime}</Text>
+                    <Text selectable style={styles.debugText}>UTC: {new Date(asset.creationTime).toISOString()}</Text>
+                    <Text selectable style={styles.debugText}>URI: {uri?.substring(0, 30)}...</Text>
+                </View>
+            )}
         </View>
     );
 }
@@ -140,5 +167,35 @@ const styles = StyleSheet.create({
         fontFamily: 'monospace',
         fontSize: 11,
         marginBottom: 4,
+    },
+    qualityToggle: {
+        paddingHorizontal: 16,
+        paddingVertical: 6,
+        borderRadius: 16,
+        marginRight: 15,
+        borderWidth: 1,
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.1,
+        shadowRadius: 1,
+        elevation: 2,
+    },
+    qualityToggleActive: {
+        backgroundColor: '#007AFF',
+        borderColor: '#007AFF',
+    },
+    qualityToggleInactive: {
+        backgroundColor: '#fff',
+        borderColor: '#d1d5db',
+    },
+    qualityTextActive: {
+        fontSize: 11,
+        fontWeight: 'bold',
+        color: '#fff',
+    },
+    qualityTextInactive: {
+        fontSize: 11,
+        fontWeight: 'bold',
+        color: '#4b5563',
     }
 });
