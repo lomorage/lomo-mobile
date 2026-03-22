@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { StyleSheet, View, FlatList, Image, Dimensions, TouchableOpacity, Text, ActivityIndicator, RefreshControl, DeviceEventEmitter, AppState } from 'react-native';
+import React, { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
+import { StyleSheet, View, FlatList, Image, Dimensions, TouchableOpacity, Text, ActivityIndicator, RefreshControl, DeviceEventEmitter, AppState, PanResponder, Animated } from 'react-native';
 import { Cloud, CheckCircle, Smartphone, PlayCircle, PauseCircle, Settings as SettingsIcon, UploadCloud } from 'lucide-react-native';
 import MediaService from '../services/MediaService';
 import SyncService from '../services/SyncService';
@@ -26,6 +26,147 @@ export default function HomeScreen({ navigation }) {
 
     const isMounted = useRef(true);
     const appState = useRef(AppState.currentState);
+
+    const listRef = useRef(null);
+    const containerRef = useRef(null);
+    const scrubberPageYRef = useRef(0);
+    const containerHeightRef = useRef(0);
+    const [isScrubbing, setIsScrubbing] = useState(false);
+    const [scrubText, setScrubText] = useState('');
+    const isScrubbingRef = useRef(false);
+    const lastScrubIndexRef = useRef(-1);
+    const scrubThumbY = useRef(new Animated.Value(0)).current;
+    const scrubTooltipY = useRef(new Animated.Value(0)).current;
+    const timelineDataRef = useRef([]);
+    const stickyHeaderIndicesRef = useRef([]);
+
+    const formatDateHeader = (timestamp) => {
+        if (!timestamp) return 'Unknown Date';
+        const date = new Date(timestamp);
+        const now = new Date();
+        const isToday = date.getDate() === now.getDate() && date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear();
+        const yesterday = new Date(now);
+        yesterday.setDate(now.getDate() - 1);
+        const isYesterday = date.getDate() === yesterday.getDate() && date.getMonth() === yesterday.getMonth() && date.getFullYear() === yesterday.getFullYear();
+
+        if (isToday) return 'Today';
+        if (isYesterday) return 'Yesterday';
+        
+        // Group everything else by Month to eliminate excessive white space from daily 1-photo rows
+        if (date.getFullYear() === now.getFullYear()) {
+             return date.toLocaleDateString(undefined, { month: 'long' });
+        }
+        return date.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+    };
+
+    const { timelineData, stickyHeaderIndices } = useMemo(() => {
+        const data = [];
+        const indices = [];
+        if (!assets || assets.length === 0) return { timelineData: data, stickyHeaderIndices: indices };
+
+        let currentHeader = null;
+        let currentRowItems = [];
+        let currentOffset = 0;
+
+        const pushRow = () => {
+            if (currentRowItems.length > 0) {
+                data.push({ type: 'row', id: `row-${data.length}`, items: currentRowItems, length: ITEM_SIZE, offset: currentOffset });
+                currentOffset += ITEM_SIZE;
+                currentRowItems = [];
+            }
+        };
+
+        assets.forEach((asset, globalIndex) => {
+            const headerSplit = formatDateHeader(asset.creationTime || 0);
+            if (headerSplit !== currentHeader) {
+                pushRow();
+                currentHeader = headerSplit;
+                indices.push(data.length);
+                data.push({ type: 'header', id: `header-${data.length}`, title: currentHeader, length: 48, offset: currentOffset });
+                currentOffset += 48;
+            }
+            currentRowItems.push({ ...asset, globalIndex });
+            if (currentRowItems.length === COLUMN_COUNT) {
+                pushRow();
+            }
+        });
+        pushRow();
+
+        timelineDataRef.current = data;
+        stickyHeaderIndicesRef.current = indices;
+
+        return { timelineData: data, stickyHeaderIndices: indices };
+    }, [assets]);
+
+    const getItemLayout = useCallback((data, index) => {
+        const item = data ? data[index] : null;
+        if (!item) return { length: ITEM_SIZE, offset: 0, index };
+        return { length: item.length, offset: item.offset, index };
+    }, []);
+
+    const handleScrub = useCallback((pageY) => {
+        const currentData = timelineDataRef.current;
+        if (!containerHeightRef.current || currentData.length === 0) return;
+        
+        let relativeY = pageY - scrubberPageYRef.current;
+        if (relativeY < 0) relativeY = 0;
+        if (relativeY > containerHeightRef.current) relativeY = containerHeightRef.current;
+        
+        const percentage = relativeY / containerHeightRef.current;
+        
+        let targetIndex = Math.floor(percentage * currentData.length);
+        if (targetIndex >= currentData.length) targetIndex = currentData.length - 1;
+        if (targetIndex < 0) targetIndex = 0;
+        
+        scrubThumbY.setValue(percentage * (containerHeightRef.current - 40));
+        scrubTooltipY.setValue(Math.max(0, percentage * (containerHeightRef.current - 40) - 10));
+        
+        if (lastScrubIndexRef.current === targetIndex) return;
+        lastScrubIndexRef.current = targetIndex;
+        
+        let text = '...';
+        for (let i = targetIndex; i >= 0; i--) {
+            if (currentData[i] && currentData[i].type === 'header') {
+                text = currentData[i].title;
+                break;
+            }
+        }
+        if (text === '...' && currentData.length > 0) {
+           for (let i = 0; i < currentData.length; i++) {
+               if (currentData[i].type === 'header') { text = currentData[i].title; break; }
+           }
+        }
+        setScrubText(text);
+
+        if (listRef.current) {
+            listRef.current.scrollToIndex({ index: targetIndex, animated: false });
+        }
+    }, [scrubThumbY, scrubTooltipY]);
+
+    const panResponder = useRef(
+        PanResponder.create({
+            onStartShouldSetPanResponder: () => true,
+            onStartShouldSetPanResponderCapture: () => true,
+            onMoveShouldSetPanResponder: () => true,
+            onMoveShouldSetPanResponderCapture: () => true,
+            onPanResponderGrant: (evt, gestureState) => {
+                setIsScrubbing(true);
+                isScrubbingRef.current = true;
+                handleScrub(gestureState.y0);
+            },
+            onPanResponderMove: (evt, gestureState) => {
+                handleScrub(gestureState.moveY);
+            },
+            onPanResponderRelease: () => {
+                setIsScrubbing(false);
+                isScrubbingRef.current = false;
+            },
+            onPanResponderTerminate: () => {
+                setIsScrubbing(false);
+                isScrubbingRef.current = false;
+            }
+        })
+    ).current;
 
     useEffect(() => {
         isMounted.current = true;
@@ -262,8 +403,8 @@ export default function HomeScreen({ navigation }) {
         }
     };
 
-    const StatusIcon = ({ item }) => {
-        if (item.id === backupState.currentAssetId) {
+    const StatusIcon = memo(({ item, currentAssetId }) => {
+        if (item.id === currentAssetId) {
             return <ActivityIndicator size="small" color="#007AFF" style={styles.statusIcon} />;
         }
         switch (item.status) {
@@ -275,38 +416,72 @@ export default function HomeScreen({ navigation }) {
             default:
                 return null;
         }
-    };
+    });
 
-    const renderItem = ({ item, index }) => (
+    const RenderAsset = memo(({ asset, globalIndex, navigation, debugMode, currentAssetId }) => (
         <TouchableOpacity
+            key={`asset-${asset.id}`}
             style={styles.itemContainer}
-            onPress={() => navigation.navigate('AssetDetail', { initialIndex: index })}
+            onPress={() => navigation.navigate('AssetDetail', { initialIndex: globalIndex })}
         >
             <Image
-                source={{ uri: item.uri }}
+                source={{ uri: asset.uri }}
                 style={styles.image}
-                onError={(e) => console.log(`[HomeScreen] Image load error for ${item.status} asset ${item.id}:`, e.nativeEvent.error)}
+                resizeMethod="resize"
+                onError={(e) => console.log(`[HomeScreen] Image load error for ${asset.status} asset ${asset.id}:`, e.nativeEvent.error)}
             />
-            <StatusIcon item={item} />
-            {item.mediaType === 'video' ? (
+            <StatusIcon item={asset} currentAssetId={currentAssetId} />
+            {asset.mediaType === 'video' ? (
                 <View style={[styles.imageOverlay, styles.videoOverlay]}>
                     <PlayCircle color="#fff" size={32} />
                 </View>
             ) : null}
-            {item.status === 'remote' ? (
+            {asset.status === 'remote' ? (
                 <View style={[styles.imageOverlay, { backgroundColor: 'rgba(0,0,0,0.1)' }]} />
             ) : null}
-            {/* DEBUG OVERLAY */}
             {debugMode ? (
                 <View style={styles.debugOverlay}>
-                    <Text style={styles.debugText}>{item.status[0].toUpperCase()}</Text>
+                    <Text style={styles.debugText}>{asset.status[0].toUpperCase()}</Text>
                     <Text style={styles.debugText}>
-                      {item.hash ? item.hash.substring(0, 6) : 'hash?'} 
+                      {asset.hash ? asset.hash.substring(0, 6) : 'hash?'} 
                     </Text>
                 </View>
             ) : null}
         </TouchableOpacity>
-    );
+    ), (prevProps, nextProps) => {
+        if (prevProps.asset.id !== nextProps.asset.id || prevProps.asset.status !== nextProps.asset.status) return false;
+        if (prevProps.debugMode !== nextProps.debugMode) return false;
+        if (prevProps.currentAssetId !== nextProps.currentAssetId && (prevProps.asset.id === prevProps.currentAssetId || prevProps.asset.id === nextProps.currentAssetId)) return false;
+        return true;
+    });
+
+    const renderItem = useCallback(({ item }) => {
+        if (item.type === 'header') {
+            return (
+                <View style={styles.dateHeaderContainer}>
+                    <Text style={styles.dateHeaderText}>{item.title}</Text>
+                </View>
+            );
+        }
+        
+        return (
+            <View style={{ flexDirection: 'row', width }}>
+                {item.items.map(asset => (
+                    <RenderAsset 
+                        key={`asset-${asset.id}`}
+                        asset={asset}
+                        globalIndex={asset.globalIndex}
+                        navigation={navigation}
+                        debugMode={debugMode}
+                        currentAssetId={backupState.currentAssetId}
+                    />
+                ))}
+                {Array.from({ length: COLUMN_COUNT - item.items.length }).map((_, i) => (
+                    <View key={`empty-${i}`} style={styles.itemContainer} />
+                ))}
+            </View>
+        );
+    }, [navigation, debugMode, backupState.currentAssetId]);
 
     return (
         <View style={styles.container}>
@@ -385,20 +560,63 @@ export default function HomeScreen({ navigation }) {
                     <Text style={styles.loadingText}>Loading your gallery...</Text>
                 </View>
             ) : (
-                <FlatList
-                    data={assets}
-                    renderItem={renderItem}
-                    keyExtractor={item => item.id + (item.status || '')}
-                    numColumns={COLUMN_COUNT}
-                    refreshControl={
-                        <RefreshControl refreshing={loading} onRefresh={loadAndSync} />
-                    }
-                    ListEmptyComponent={
-                        <View style={styles.centered}>
-                            <Text>No photos found.</Text>
+                <View 
+                    style={{ flex: 1 }}
+                    ref={containerRef}
+                    onLayout={() => {
+                        containerRef.current?.measureInWindow((x, y, width, height) => {
+                            scrubberPageYRef.current = y;
+                            containerHeightRef.current = height;
+                        });
+                    }}
+                >
+                    <FlatList
+                        ref={listRef}
+                        data={timelineData}
+                        renderItem={renderItem}
+                        keyExtractor={item => item.id}
+                        stickyHeaderIndices={stickyHeaderIndices}
+                        getItemLayout={getItemLayout}
+                        removeClippedSubviews={true}
+                        initialNumToRender={10}
+                        maxToRenderPerBatch={10}
+                        windowSize={5}
+                        showsVerticalScrollIndicator={false}
+                        scrollEventThrottle={16}
+                        onScroll={(e) => {
+                            if (isScrubbingRef.current || !containerHeightRef.current) return;
+                            const { y } = e.nativeEvent.contentOffset;
+                            const max = e.nativeEvent.contentSize.height - e.nativeEvent.layoutMeasurement.height;
+                            if (max > 0) {
+                                const p = Math.max(0, Math.min(1, y / max));
+                                scrubThumbY.setValue(p * (containerHeightRef.current - 40));
+                            }
+                        }}
+                        refreshControl={
+                            <RefreshControl refreshing={loading} onRefresh={loadAndSync} />
+                        }
+                        ListEmptyComponent={
+                            <View style={styles.centered}>
+                                <Text>No photos found.</Text>
+                            </View>
+                        }
+                    />
+
+                    {timelineData.length > 30 && (
+                        <View 
+                            style={styles.scrubberHitbox}
+                            {...panResponder.panHandlers}
+                        >
+                            <Animated.View style={[styles.scrollThumb, { transform: [{ translateY: scrubThumbY }] }]} />
                         </View>
-                    }
-                />
+                    )}
+
+                    {isScrubbing && (
+                        <Animated.View style={[styles.scrubTooltip, { transform: [{ translateY: scrubTooltipY }] }]}>
+                            <Text style={styles.scrubTooltipText}>{scrubText}</Text>
+                        </Animated.View>
+                    )}
+                </View>
             )}
         </View>
     );
@@ -553,5 +771,57 @@ const styles = StyleSheet.create({
         fontSize: 10,
         fontWeight: 'bold',
         textAlign: 'center'
+    },
+    dateHeaderContainer: {
+        width: '100%',
+        backgroundColor: '#fff',
+        paddingHorizontal: 15,
+        height: 48,
+        justifyContent: 'center',
+        borderBottomWidth: StyleSheet.hairlineWidth,
+        borderBottomColor: '#ebebeb',
+    },
+    dateHeaderText: {
+        fontSize: 16,
+        fontWeight: '700',
+        color: '#1a1a1a',
+    },
+    scrubberHitbox: {
+        position: 'absolute',
+        right: 0,
+        top: 0,
+        bottom: 0,
+        width: 30,
+        zIndex: 10,
+    },
+    scrollThumb: {
+        position: 'absolute',
+        right: 4,
+        top: 0,
+        width: 6,
+        height: 40,
+        backgroundColor: 'rgba(0,122,255,0.6)',
+        borderRadius: 4,
+    },
+    scrubTooltip: {
+        position: 'absolute',
+        right: 40,
+        top: 0,
+        height: 40,
+        backgroundColor: '#007AFF',
+        borderRadius: 20,
+        justifyContent: 'center',
+        paddingHorizontal: 15,
+        elevation: 5,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.3,
+        shadowRadius: 4,
+        zIndex: 11,
+    },
+    scrubTooltipText: {
+        color: '#fff',
+        fontWeight: 'bold',
+        fontSize: 14,
     }
 });
