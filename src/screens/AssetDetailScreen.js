@@ -110,6 +110,13 @@ export default function AssetDetailScreen({ route, navigation }) {
                     }
                 } else {
                     const updatedAsset = { ...currentAsset, status: newStatus };
+                    if (newStatus === 'remote' && currentAsset.hash) {
+                         // Switch URI to the backend because the local file is now physically destroyed
+                         const baseUrl = AuthService.getServerUrl();
+                         const token = AuthService.getToken();
+                         updatedAsset.uri = `${baseUrl}/preview/${currentAsset.hash}?width=500&height=-1&token=${token}`;
+                    }
+
                     const newAssets = [...assets];
                     newAssets[currentIndex] = updatedAsset;
                     GalleryStore.setAssets(newAssets);

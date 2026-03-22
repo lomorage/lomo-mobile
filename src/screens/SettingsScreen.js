@@ -5,7 +5,7 @@ import { useSettings } from '../context/SettingsContext';
 import SyncService from '../services/SyncService';
 
 export default function SettingsScreen({ navigation }) {
-    const { debugMode, toggleDebugMode } = useSettings();
+    const { debugMode, toggleDebugMode, autoBackupEnabled, toggleAutoBackup, wifiOnlyBackup, toggleWifiOnly } = useSettings();
     const [stats, setStats] = React.useState({ local: 0, remote: 0 });
 
     React.useEffect(() => {
@@ -36,8 +36,39 @@ export default function SettingsScreen({ navigation }) {
             </View>
 
             <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Developer</Text>
+                <Text style={styles.sectionTitle}>Backup Strategy</Text>
                 
+                <View style={styles.settingRow}>
+                    <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabel}>Auto-Backup</Text>
+                        <Text style={styles.settingDescription}>Automatically scan and upload your new photos into the cloud.</Text>
+                    </View>
+                    <Switch
+                        value={autoBackupEnabled}
+                        onValueChange={toggleAutoBackup}
+                        trackColor={{ false: '#d1d1d1', true: '#4CAF50' }}
+                        thumbColor={'#fff'}
+                    />
+                </View>
+
+                <View style={[styles.settingRow, { opacity: autoBackupEnabled ? 1 : 0.5 }]}>
+                    <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabel}>Wi-Fi Only</Text>
+                        <Text style={styles.settingDescription}>Pause auto-backup when on cellular data to save mobile bandwidth.</Text>
+                    </View>
+                    <Switch
+                        value={wifiOnlyBackup}
+                        onValueChange={toggleWifiOnly}
+                        disabled={!autoBackupEnabled}
+                        trackColor={{ false: '#d1d1d1', true: '#4CAF50' }}
+                        thumbColor={'#fff'}
+                    />
+                </View>
+
+            </View>
+
+            <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Developer</Text>
                 <View style={styles.settingRow}>
                     <View style={styles.settingTextContainer}>
                         <Text style={styles.settingLabel}>Asset Debug Mode</Text>

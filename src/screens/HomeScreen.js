@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { StyleSheet, View, FlatList, Image, Dimensions, TouchableOpacity, Text, ActivityIndicator, RefreshControl, DeviceEventEmitter } from 'react-native';
-import { Cloud, CheckCircle, Smartphone, PlayCircle, Settings as SettingsIcon } from 'lucide-react-native';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { StyleSheet, View, FlatList, Image, Dimensions, TouchableOpacity, Text, ActivityIndicator, RefreshControl, DeviceEventEmitter, AppState } from 'react-native';
+import { Cloud, CheckCircle, Smartphone, PlayCircle, PauseCircle, Settings as SettingsIcon, UploadCloud } from 'lucide-react-native';
 import MediaService from '../services/MediaService';
 import SyncService from '../services/SyncService';
 import AuthService from '../services/AuthService';
+import AutoBackupManager from '../services/AutoBackupManager';
 import { useSettings } from '../context/SettingsContext';
 import GalleryStore from '../store/GalleryStore';
 
@@ -15,16 +16,29 @@ export default function HomeScreen({ navigation }) {
     const [assets, setAssets] = useState([]);
     const [syncing, setSyncing] = useState(false);
     const [syncProgress, setSyncProgress] = useState(null);
+    const [backupState, setBackupState] = useState({ isBackingUp: false, pendingCount: 0, totalCount: 0, currentAssetId: null });
+    const [backupProgress, setBackupProgress] = useState(0);
     const [error, setError] = useState(null);
     const [permissionStatus, setPermissionStatus] = useState('granted');
     const [loading, setLoading] = useState(true);
     
     const { debugMode } = useSettings();
 
-    const isMounted = React.useRef(true);
+    const isMounted = useRef(true);
+    const appState = useRef(AppState.currentState);
+
     useEffect(() => {
         isMounted.current = true;
         loadAndSync();
+
+        const subscription = AppState.addEventListener('change', nextAppState => {
+            if (appState.current.match(/inactive|background/) && nextAppState === 'active') {
+                if (isMounted.current) {
+                    loadAndSync();
+                }
+            }
+            appState.current = nextAppState;
+        });
         
         const subDelete = DeviceEventEmitter.addListener('assetDeleted', (deletedId) => {
             setAssets(prev => prev.filter(a => a.id !== deletedId));
@@ -33,11 +47,19 @@ export default function HomeScreen({ navigation }) {
         const subUpdate = DeviceEventEmitter.addListener('assetUpdated', (updatedAsset) => {
             setAssets(prev => prev.map(a => a.id === updatedAsset.id ? updatedAsset : a));
         });
+        
+        const subBackupState = DeviceEventEmitter.addListener('backupState', setBackupState);
+        const subBackupProgress = DeviceEventEmitter.addListener('backupProgress', (data) => {
+            setBackupProgress(data.progress || 0);
+        });
 
         return () => { 
             isMounted.current = false; 
+            subscription.remove();
             subDelete.remove();
             subUpdate.remove();
+            subBackupState.remove();
+            subBackupProgress.remove();
         };
     }, []);
 
@@ -218,10 +240,14 @@ export default function HomeScreen({ navigation }) {
                            const finalJson = JSON.stringify(merged.map(a => ({ id: a.id, status: a.status })));
                            if (finalJson !== initialAssetsJson) {
                                setAssets(merged);
+                               AutoBackupManager.syncQueueWithGallery(); // Restart queue on changes
                            }
                            
                            setSyncing(false);
                            setSyncProgress(null);
+                           
+                           // Ensure queue starts safely if there are pending items post-load
+                           AutoBackupManager.syncQueueWithGallery();
                       }
                  }
              }, 100);
@@ -236,14 +262,16 @@ export default function HomeScreen({ navigation }) {
         }
     };
 
-    const StatusIcon = ({ status }) => {
-        switch (status) {
+    const StatusIcon = ({ item }) => {
+        if (item.id === backupState.currentAssetId) {
+            return <ActivityIndicator size="small" color="#007AFF" style={styles.statusIcon} />;
+        }
+        switch (item.status) {
             case 'remote':
-                return <Cloud size={16} color="white" style={styles.statusIcon} />;
             case 'synced':
-                return <CheckCircle size={16} color="#4CAF50" style={styles.statusIcon} />;
+                return <Cloud size={16} color="white" style={styles.statusIcon} />;
             case 'local':
-                return <Smartphone size={16} color="white" style={styles.statusIcon} />;
+                return <UploadCloud size={14} color="rgba(255,255,255,0.7)" style={styles.statusIcon} />;
             default:
                 return null;
         }
@@ -259,7 +287,7 @@ export default function HomeScreen({ navigation }) {
                 style={styles.image}
                 onError={(e) => console.log(`[HomeScreen] Image load error for ${item.status} asset ${item.id}:`, e.nativeEvent.error)}
             />
-            <StatusIcon status={item.status} />
+            <StatusIcon item={item} />
             {item.mediaType === 'video' ? (
                 <View style={[styles.imageOverlay, styles.videoOverlay]}>
                     <PlayCircle color="#fff" size={32} />
@@ -286,9 +314,9 @@ export default function HomeScreen({ navigation }) {
                 <View style={{ flex: 1 }}>
                     <Text style={styles.title}>Lomorage</Text>
                     <Text style={styles.subtitle}>
-                        {`${assets.length} items • ${syncing ? (syncProgress?.message || 'Syncing...') : 'Up to date'}`}
+                        {`${assets.length} items${syncing ? ` • ${debugMode ? (syncProgress?.message || 'Syncing...') : 'Looking for new photos...'}` : ''}`}
                     </Text>
-                    {syncing && syncProgress?.total > 0 && syncProgress?.current !== undefined ? (
+                    {debugMode && syncing && syncProgress?.total > 0 && syncProgress?.current !== undefined ? (
                         <Text style={styles.progressText}>
                              {`(${syncProgress.current}/${syncProgress.total})`}
                         </Text>
@@ -301,6 +329,46 @@ export default function HomeScreen({ navigation }) {
                     </TouchableOpacity>
                 </View>
             </View>
+
+            {backupState.isBackingUp || (backupState.isPaused && backupState.pendingCount > 0) ? (
+                <View style={[styles.backupBanner, backupState.isPaused && { backgroundColor: '#f5f5f5' }]}>
+                    <View style={styles.backupBannerTop}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                            {backupState.currentAssetId && !backupState.isPaused ? (
+                                <Image 
+                                    source={{ uri: assets.find(a => a.id === backupState.currentAssetId)?.uri }} 
+                                    style={styles.uploadingThumbnail} 
+                                />
+                            ) : null}
+                            <Text style={[styles.backupBannerText, backupState.isPaused && { color: '#666' }]}>
+                                {backupState.isPaused ? `Backup Paused (${backupState.pendingCount} items)` : `Backing up ${backupState.pendingCount} left...`}
+                            </Text>
+                        </View>
+                        {backupState.isPaused ? (
+                            <TouchableOpacity onPress={() => AutoBackupManager.resume()} style={{ padding: 4 }}>
+                                <PlayCircle size={22} color="#007AFF" />
+                            </TouchableOpacity>
+                        ) : (
+                            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                <ActivityIndicator size="small" color="#007AFF" style={{ marginRight: 12 }} />
+                                <TouchableOpacity onPress={() => AutoBackupManager.pause()} style={{ padding: 4 }}>
+                                    <PauseCircle size={22} color="#007AFF" />
+                                </TouchableOpacity>
+                            </View>
+                        )}
+                    </View>
+                    <View style={styles.progressBarBg}>
+                        <View style={[styles.progressBarFill, { width: `${backupProgress * 100}%`, backgroundColor: backupState.isPaused ? '#ccc' : '#007AFF' }]} />
+                    </View>
+                </View>
+            ) : backupState.totalCount > 0 && !backupState.isPaused ? (
+                <View style={[styles.backupBanner, { backgroundColor: '#E8F5E9', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]}>
+                    <Text style={[styles.backupBannerText, { color: '#2E7D32' }]}>
+                        Backup complete ({backupState.totalCount})
+                    </Text>
+                    <CheckCircle size={16} color="#2E7D32" />
+                </View>
+            ) : null}
 
             {error ? (
                 <View style={styles.errorBanner}>
@@ -369,6 +437,43 @@ const styles = StyleSheet.create({
         marginHorizontal: 15,
         borderRadius: 8,
         marginBottom: 10,
+    },
+    backupBanner: {
+        backgroundColor: '#F0F8FF',
+        padding: 12,
+        marginHorizontal: 15,
+        borderRadius: 8,
+        marginBottom: 10,
+        justifyContent: 'center',
+    },
+    backupBannerTop: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: 8,
+    },
+    backupBannerText: {
+        color: '#007AFF',
+        fontSize: 14,
+        fontWeight: 'bold',
+    },
+    uploadingThumbnail: {
+        width: 24,
+        height: 24,
+        borderRadius: 4,
+        marginRight: 8,
+        backgroundColor: '#ccc',
+    },
+    progressBarBg: {
+        height: 4,
+        width: '100%',
+        backgroundColor: 'rgba(0,122,255,0.2)',
+        borderRadius: 2,
+        overflow: 'hidden',
+    },
+    progressBarFill: {
+        height: '100%',
+        backgroundColor: '#007AFF',
     },
     errorText: {
         flex: 1,
