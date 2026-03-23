@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, View, Text, TextInput, TouchableOpacity, ActivityIndicator, KeyboardAvoidingView, Platform, Alert } from 'react-native';
+import { StyleSheet, View, Text, TextInput, TouchableOpacity, ActivityIndicator, KeyboardAvoidingView, Platform, Alert, ScrollView } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import AuthService from '../services/AuthService';
 import Zeroconf from 'react-native-zeroconf';
@@ -93,13 +93,13 @@ export default function LoginScreen({ navigation }) {
     return (
         <KeyboardAvoidingView 
             style={styles.container} 
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-            keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         >
             <ScrollView 
                 contentContainerStyle={styles.scrollContent}
                 showsVerticalScrollIndicator={false}
                 keyboardShouldPersistTaps="handled"
+                keyboardDismissMode="on-drag"
             >
                 <View style={styles.content}>
                     <View style={styles.headerContainer}>

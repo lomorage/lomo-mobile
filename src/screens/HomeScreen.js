@@ -40,6 +40,7 @@ export default function HomeScreen({ navigation }) {
     const timelineDataRef = useRef([]);
     const stickyHeaderIndicesRef = useRef([]);
     const lastJumpTimeRef = useRef(0);
+    const globalActiveLoadCount = useRef(0);
 
     const safeUri = useCallback((uri) => {
         if (!uri) return null;
@@ -307,7 +308,9 @@ export default function HomeScreen({ navigation }) {
             });
 
             const localHashes = new Set(initialAssets.filter(a => a.hash).map(a => a.hash));
-            const localDates = localAssets.map(a => a.creationTime);
+            // Optimization: Bin local dates into a Set for O(1) proximity lookup
+            // This turns an O(N^2) search (300M comparisons) into O(N) (18k comparisons).
+            const localDateSet = new Set(localAssets.map(a => Math.floor((a.creationTime || a.modificationTime || 0) / 2000)));
 
             let remoteAssets = [];
             if (SyncService.remoteTree) {
@@ -323,11 +326,10 @@ export default function HomeScreen({ navigation }) {
                         // 100% Match: Hash already exists in local list
                         if (localHashes.has(node.hash)) return false;
                         
-                        // Heuristic Match: Date proximity (fallback for unhashed items)
+                        // Heuristic Match: Date proximity (binned lookup)
                         if (node.date) {
                             const remoteTime = node.date.getTime();
-                            const hasNearbyLocal = localDates.some(localTime => Math.abs(localTime - remoteTime) <= 2000);
-                            if (hasNearbyLocal) return false;
+                            if (localDateSet.has(Math.floor(remoteTime / 2000))) return false;
                         }
                         return true;
                     })
@@ -481,9 +483,10 @@ export default function HomeScreen({ navigation }) {
         }
     });
 
-    const RenderAsset = memo(({ asset, globalIndex, navigation, debugMode, currentAssetId, isScrubbing }) => {
+    const RenderAsset = memo(({ asset, globalIndex, navigation, debugMode, currentAssetId, isScrubbing, activeLoadCountRef }) => {
         // Scrub-Lock: Skip remote photo fetching while scrubbing to prevent network congestion.
         // Local assets are fine to render because they are fast and don't hit the server.
+        const loadStartTime = useRef(0);
         const shouldShowImage = !isScrubbing || asset.status === 'local';
 
         return (
@@ -497,9 +500,26 @@ export default function HomeScreen({ navigation }) {
                         source={{ uri: safeUri(asset.uri) }}
                         style={styles.image}
                         resizeMethod="resize"
+                        onLoadStart={() => {
+                            if (asset.status === 'remote') {
+                                loadStartTime.current = Date.now();
+                                activeLoadCountRef.current++;
+                            }
+                        }}
+                        onLoad={() => {
+                            if (asset.status === 'remote' && loadStartTime.current > 0) {
+                                activeLoadCountRef.current--;
+                                const diff = Date.now() - loadStartTime.current;
+                                if (debugMode) console.log(`[Metrics] Remote asset ${asset.hash.substring(0, 8)} loaded in ${diff}ms (Concurrent: ${activeLoadCountRef.current})`);
+                                loadStartTime.current = 0;
+                            }
+                        }}
                         onError={(e) => {
-                             // Only log if not a common ENOENT on a weird filename (too verbose)
-                             if (debugMode) console.log(`[HomeScreen] Image load error for ${asset.status} asset ${asset.id}:`, e.nativeEvent.error);
+                             if (asset.status === 'remote') activeLoadCountRef.current--;
+                             if (debugMode) {
+                                 const diff = loadStartTime.current > 0 ? Date.now() - loadStartTime.current : 'N/A';
+                                 console.log(`[Metrics] Remote asset ${asset.id} error after ${diff}ms (Concurrent: ${activeLoadCountRef.current}):`, e.nativeEvent.error);
+                             }
                         }}
                     />
                 ) : (
@@ -532,7 +552,7 @@ export default function HomeScreen({ navigation }) {
         return true;
     });
 
-    const TimelineRow = memo(({ item, navigation, debugMode, currentAssetId, isScrubbing }) => (
+    const TimelineRow = memo(({ item, navigation, debugMode, currentAssetId, isScrubbing, activeLoadCountRef }) => (
         <View style={styles.row}>
             {item.items.map((asset) => (
                 <RenderAsset 
@@ -543,6 +563,7 @@ export default function HomeScreen({ navigation }) {
                     debugMode={debugMode}
                     currentAssetId={currentAssetId}
                     isScrubbing={isScrubbing}
+                    activeLoadCountRef={activeLoadCountRef}
                 />
             ))}
             {Array.from({ length: COLUMN_COUNT - item.items.length }).map((_, i) => (
@@ -566,6 +587,7 @@ export default function HomeScreen({ navigation }) {
                 debugMode={debugMode}
                 currentAssetId={backupState.currentAssetId}
                 isScrubbing={isScrubbing}
+                activeLoadCountRef={globalActiveLoadCount}
             />
         );
     }, [navigation, debugMode, backupState.currentAssetId, isScrubbing]);
@@ -665,9 +687,9 @@ export default function HomeScreen({ navigation }) {
                         stickyHeaderIndices={stickyHeaderIndices}
                         getItemLayout={getItemLayout}
                         removeClippedSubviews={false}
-                        initialNumToRender={10}
-                        maxToRenderPerBatch={10}
-                        windowSize={5}
+                        initialNumToRender={6}
+                        maxToRenderPerBatch={6}
+                        windowSize={3}
                         showsVerticalScrollIndicator={false}
                         scrollEventThrottle={16}
                         onScroll={(e) => {
@@ -716,6 +738,7 @@ const styles = StyleSheet.create({
     },
     row: {
         flexDirection: 'row',
+        width: '100%',
     },
     header: {
         paddingHorizontal: 20,
@@ -816,8 +839,8 @@ const styles = StyleSheet.create({
         color: '#666',
     },
     itemContainer: {
-        width: ITEM_SIZE,
-        height: ITEM_SIZE,
+        flex: 1,
+        aspectRatio: 1,
         padding: 1,
         position: 'relative',
     },

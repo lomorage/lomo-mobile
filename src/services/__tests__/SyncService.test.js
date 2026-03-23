@@ -114,4 +114,30 @@ describe('SyncService Merkle Tree', () => {
     expect(diff.downloadAssets.length).toBe(1);
     expect(diff.downloadAssets[0].hash).toBe('h4');
   });
+
+  test('sync ignores assets in different date buckets (source divergence fix)', async () => {
+    // Phone MediaStore says Jan 2nd 00:01 AM UTC
+    const creationTime = new Date('2024-01-02T00:01:00Z').getTime();
+    
+    // Simulate SyncService.sync flow (using UTC for clustering)
+    const localAssets = [{ id: '1', hash: 'h1', uri: 'file:///a.jpg', creationTime, modificationTime: 1000 }];
+    const localTree = await SyncService.buildLocalTree(localAssets);
+    await localTree.updateHash();
+    
+    // Server EXIF says Jan 1st 11:59 PM UTC (e.g. from slight metadata drift)
+    const remoteTree = new (SyncService.remoteTree.constructor)();
+    remoteTree.addAsset(2024, 1, 1, 'h1', 'remote-1', new Date('2024-01-01T23:59:00Z'));
+    await remoteTree.updateHash();
+    SyncService.remoteTree = remoteTree;
+
+    // The sync should find the mismatch at the Year/Month/Day level, drill down,
+    // and skip h1 because the global hash validation catches it.
+    const uploadAssets = [];
+    const downloadAssets = [];
+    await SyncService.findDiffWithDrillDown(localTree, remoteTree, uploadAssets, downloadAssets, 'year');
+
+    // Should NOT upload because h1 exists on server (global hash check)
+    // This proves the sync is robust to metadata source divergence.
+    expect(uploadAssets.length).toBe(0);
+  });
 });

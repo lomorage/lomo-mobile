@@ -75,7 +75,7 @@ export default function RootNavigator() {
     return (
         <AuthProvider>
             <SettingsProvider>
-                <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }}>
+                <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }} edges={['top', 'bottom']}>
                     <StatusBar barStyle="dark-content" />
                     <Navigation />
                 </SafeAreaView>

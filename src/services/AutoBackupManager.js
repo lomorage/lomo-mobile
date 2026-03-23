@@ -67,24 +67,35 @@ class AutoBackupManager {
             const total = this.queue.length;
             const current = this.currentIndex + 1;
             
+            // Quiet Sync Strategy: 
+            // 1. Only update the notification every 10 photos to reduce "noise"
+            // 2. Or update if it's the very last one
+            if (current % 10 !== 1 && current !== total && this.isBackingUp) {
+                return;
+            }
+
             await Notifications.setNotificationHandler({
                 handleNotification: async () => ({
-                    shouldShowAlert: false, // Don't make sound every time
+                    shouldShowAlert: false,
                     shouldPlaySound: false,
                     shouldSetBadge: false,
                 }),
             });
 
-            await Notifications.presentNotificationAsync({
-                title: "Lomorage Background Sync",
-                body: `Backing up ${current} of ${total} photos...`,
-                android: {
-                    sticky: true,
-                    ongoing: true,
-                    priority: 'max',
-                    category: 'service',
-                    color: '#007AFF'
-                }
+            await Notifications.scheduleNotificationAsync({
+                identifier: 'LOMO_BACKUP_STATUS', // Stable ID prevents "New Notification" alerts
+                content: {
+                    title: "Lomorage Background Sync",
+                    body: `Backing up ${current} of ${total} photos...`,
+                    android: {
+                        sticky: true,
+                        ongoing: true,
+                        priority: 'low', // Low priority prevents "Heads-up" popups
+                        category: 'service',
+                        color: '#007AFF'
+                    }
+                },
+                trigger: null
             });
         } catch (e) {
             console.error('[AutoBackupManager] Notification error:', e);
@@ -251,22 +262,53 @@ TaskManager.defineTask(BACKGROUND_BACKUP_TASK, async () => {
         await manager.initSettings();
         
         if (!manager.autoBackupEnabled || manager.isPaused) {
+            console.log('[BackgroundTask] Auto-backup disabled or paused, skipping.');
             return BackgroundTask.BackgroundTaskResult.Success;
         }
 
-        // We can't rely on GalleryStore (UI-bound) in a headless task.
-        // We must fetch fresh from MediaService.
+        // Hydrate SyncService to check what's already on the server!
+        // This prevents redundant hashing/processing of items we already know are synced.
+        const SyncService = require('./SyncService').default;
+        await SyncService.loadRemoteTree();
+
         const MediaService = require('./MediaService').default;
-        const result = await MediaService.getAssets(50); // Just check first page
-        const assets = result.assets || [];
+        let pending = [];
+        let hasNextPage = true;
+        let after = null;
+        let pagesScanned = 0;
+        const MAX_PAGES = 5; // Scan up to 500 recent items
         
-        // Find local assets (This logic mimics syncQueueWithGallery but headless)
-        const pending = assets.filter(a => a.status !== 'synced'); 
+        console.log('[BackgroundTask] Starting deep scan...');
+        while (hasNextPage && pagesScanned < MAX_PAGES) {
+            const result = await MediaService.getAssets(100, after);
+            const assets = result.assets || [];
+            
+            for (const asset of assets) {
+                const isSynced = SyncService.remoteTree?.getNodeByHash(asset.hash);
+                if (!isSynced) {
+                    pending.push(asset);
+                }
+            }
+            
+            // Heuristic: If we found no new assets in a page of 100, we've likely hit the "History" boundary.
+            const newFoundInPage = assets.some(a => !SyncService.remoteTree?.getNodeByHash(a.hash));
+            if (!newFoundInPage && assets.length > 0) {
+                console.log('[BackgroundTask] Found synced boundary, stopping scan.');
+                break;
+            }
+            
+            after = result.endCursor;
+            hasNextPage = result.hasNextPage;
+            pagesScanned++;
+        }
         
         if (pending.length > 0) {
             console.log(`[BackgroundTask] Found ${pending.length} pending assets. Starting background upload...`);
             manager.queue = pending;
             await manager.startBackup();
+            console.log('[BackgroundTask] Background upload finished.');
+        } else {
+            console.log('[BackgroundTask] No new assets found to upload.');
         }
         
         return BackgroundTask.BackgroundTaskResult.Success;

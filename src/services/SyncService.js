@@ -433,6 +433,11 @@ class SyncService {
       const month = date.getUTCMonth() + 1;
       const day = date.getUTCDate();
       
+      // Diagnostic Root Cause Log: Use this to compare with server-side EXIF clustering
+      if (this.debugMode) {
+          console.log(`[Diagnostic] Asset ${asset.hash.substring(0,8)} | TS: ${asset.creationTime} | Bucket: ${year}/${month}/${day} (UTC)`);
+      }
+      
       let hash = asset.hash;
       if (!hash) {
         const cached = this.localHashCache[asset.id];
@@ -593,6 +598,9 @@ class SyncService {
                           // Duplicate check within remote tree itself
                           if (!remoteRoot.getNodeByHash(lowerHash)) {
                             const assetNode = new MerkleNode(d.Day, lowerHash);
+                            if (this.debugMode) {
+                              console.log(`[Diagnostic - Remote] Asset ${lowerHash.substring(0,8)} | Server Bucket: ${y.Year}/${m.Month}/${d.Day}`);
+                            }
                             assetNode.setTag(a.Name);
                             if (a.Date) assetNode.setDate(parseBackendDate(a.Date));
                             dayNode.children.push(assetNode);
@@ -710,7 +718,14 @@ class SyncService {
 
     // 1. New local assets -> Upload
     for (const node of diff.upload) {
-      this.localTree._collectAssets(node, upload);
+      const potentials = [];
+      this.localTree._collectAssets(node, potentials);
+      for (const asset of potentials) {
+        // Double-check global existence to prevent phantom uploads from bucket mismatches
+        if (!this.remoteTree.getNodeByHash(asset.hash)) {
+          upload.push(asset);
+        }
+      }
     }
 
     // 2. New remote assets -> Download
@@ -724,11 +739,20 @@ class SyncService {
         if (detail && detail.Assets) {
           for (const a of detail.Assets) {
             const assetNode = this.remoteTree.addAsset(year, month, day, a.Hash, a.Name, parseBackendDate(a.Date));
-            download.push(assetNode);
+            // Global check for downloads
+            if (!this.localTree.getNodeByHash(assetNode.hash)) {
+              download.push(assetNode);
+            }
           }
         }
       } else {
-        this.remoteTree._collectAssets(node, download);
+        const potentials = [];
+        this.remoteTree._collectAssets(node, potentials);
+        for (const assetNode of potentials) {
+          if (!this.localTree.getNodeByHash(assetNode.hash)) {
+            download.push(assetNode);
+          }
+        }
       }
     }
 
