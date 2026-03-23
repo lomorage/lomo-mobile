@@ -55,6 +55,23 @@ class MediaService {
     }
   }
 
+  normalizeUri(uri) {
+    if (!uri) return uri;
+    let normalized = uri;
+    if (!normalized.startsWith('file://') && !normalized.startsWith('content://')) {
+      if (normalized.startsWith('//')) {
+        normalized = `file:${normalized}`;
+      } else if (normalized.startsWith('/')) {
+        normalized = `file://${normalized}`;
+      }
+    }
+    // Escape '#' which is interpreted as a URL fragment by native file system APIs
+    if (normalized.startsWith('file://') && normalized.includes('#')) {
+      normalized = normalized.replace(/#/g, '%23');
+    }
+    return normalized;
+  }
+
   async getAssets(first = 50, after = null) {
     console.log('Fetching assets...', { first, after });
     const options = {
@@ -73,7 +90,12 @@ class MediaService {
 
   async getAssetInfo(assetId) {
     try {
-      return await MediaLibrary.getAssetInfoAsync(assetId);
+      const info = await MediaLibrary.getAssetInfoAsync(assetId);
+      if (info) {
+        if (info.uri) info.uri = this.normalizeUri(info.uri);
+        if (info.localUri) info.localUri = this.normalizeUri(info.localUri);
+      }
+      return info;
     } catch (e) {
       console.error(`Failed to get info for asset ${assetId}`, e);
       return null;
@@ -96,51 +118,41 @@ class MediaService {
       if (!fileUri) return null;
 
       // Normalize URI
-      let normalizedUri = fileUri;
-      if (!normalizedUri.startsWith('file://') && !normalizedUri.startsWith('content://')) {
-        if (normalizedUri.startsWith('//')) {
-          normalizedUri = `file:${normalizedUri}`;
-        } else if (normalizedUri.startsWith('/')) {
-          normalizedUri = `file://${normalizedUri}`;
-        }
-      }
+      const normalizedUri = this.normalizeUri(fileUri);
 
       if (!silent) console.log(`[MediaService] Hashing: ${normalizedUri}`);
 
       let fileSize = 0;
       if (!normalizedUri.startsWith('content://')) {
-        // Check file info (size) via legacy API — only works for file:// URIs
+        // Use encoded URI for Expo FileSystem to prevent fragment truncation
         const fileInfo = await LegacyFileSystem.getInfoAsync(normalizedUri, { size: true });
         if (!fileInfo.exists) {
           if (!silent) console.log(`[MediaService] File does not exist: ${normalizedUri}`);
           return null;
         }
         fileSize = fileInfo.size || 0;
-        if (fileSize === 0) {
-          if (!silent) console.log(`[MediaService] File size is 0, skipping: ${normalizedUri}`);
-          return null;
-        }
       }
 
-      // If in standard Expo Go (not custom dev client), Native Modules don't work reliably.
-      // We will try the native hasher first. If it is undefined or fails, fallback to JS.
+      // NATIVE HASHER: Pass the RAW path string. 
+      // Native File APIs (Java/Kotlin) expect literal characters, not URL encoding.
       let digest = null;
       let usedNative = false;
 
       try {
-        if (!silent) console.log(`[MediaService] Attempting native file hash for ${fileSize} bytes...`);
+        const rawPath = fileUri.replace('file://', '');
+        if (!silent) console.log(`[MediaService] Native hasher call on raw path: ${rawPath}`);
         const startTime = Date.now();
-        digest = await hashFileAsync(normalizedUri);
+        digest = await hashFileAsync(rawPath);
         const duration = Date.now() - startTime;
         
         if (digest) {
            usedNative = true;
-           digest = digest.toLowerCase(); // Consistent matching
-           if (!silent) console.log(`[MediaService] NATIVE Hash complete: ${digest} (duration: ${duration}ms, bytes: ${fileSize})`);
+           digest = digest.toLowerCase();
+           if (!silent) console.log(`[MediaService] NATIVE Hash complete: ${digest} (${duration}ms)`);
            return digest;
         }
       } catch (nativeError) {
-        if (!silent) console.warn(`[MediaService] Native hasher failed, falling back to JS chunking. Error:`, nativeError.message);
+        if (!silent) console.warn(`[MediaService] Native hasher error on raw path:`, nativeError.message);
       }
 
       if (!usedNative) {
@@ -163,7 +175,7 @@ class MediaService {
           });
 
           // Decode base64 to byte array and feed to hasher
-          const binary = atob(base64Chunk);
+          const binary = global.atob(base64Chunk);
           const uint8 = new Uint8Array(binary.length);
           for (let i = 0; i < binary.length; i++) {
             uint8[i] = binary.charCodeAt(i);

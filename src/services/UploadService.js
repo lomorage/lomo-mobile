@@ -48,8 +48,9 @@ class UploadService {
         try {
             // 1. Get full asset info and local URI
             const info = await MediaService.getAssetInfo(asset.id);
-            const uri = info.localUri || info.uri;
-            if (!uri) throw new Error('Could not resolve local file path.');
+            const rawUri = info.localUri || info.uri;
+            if (!rawUri) throw new Error('Could not resolve local file path.');
+            const uri = MediaService.normalizeUri(rawUri);
 
             // 2. Calculate SHA1 hash (required for Lomorage protocol)
             let hash = asset.hash;
@@ -82,53 +83,39 @@ class UploadService {
 
             console.log(`[UploadService] Uploading to: ${uploadUrl} (Size: ${fileSizeBytes} bytes)`);
 
-            // 5. Binary Upload using standard React Native XMLHttpRequest
-            // This replaces the deprecated expo-file-system createUploadTask
-            // while retaining the 100% accurate byte progress stream without FormData.
-            return new Promise((resolve, reject) => {
-                const xhr = new XMLHttpRequest();
-                xhr.open('POST', uploadUrl);
-                xhr.setRequestHeader('Authorization', `token=${token}`);
-                xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-                xhr.timeout = 30000; // 30s timeout for large file uploads
-
-                xhr.upload.onprogress = (event) => {
-                    if (onProgress) {
-                        // event.total is unreliable when passing {uri} directly in RN XHR
-                        const total = (event.total && event.total > fileSizeBytes) ? event.total : fileSizeBytes;
-                        let progress = event.loaded / total;
-                        if (progress > 1) progress = 1; // Clamp at 100% just in case
-                        onProgress(progress);
+            // 5. Binary Upload using native Background Task
+            // This replaces XMLHttpRequest, which is tied to the JS thread.
+            // Background session type allows the OS to continue the upload even if the app is suspended.
+            const task = FileSystem.createUploadTask(
+                uploadUrl,
+                uri,
+                {
+                    httpMethod: 'POST',
+                    headers: {
+                        'Authorization': `token=${token}`,
+                        'Content-Type': 'application/octet-stream',
+                    },
+                    sessionType: FileSystem.FileSystemSessionType?.BACKGROUND ?? FileSystem.FileSystemUploadSessionType?.BACKGROUND ?? 0,
+                },
+                (progress) => {
+                    if (onProgress && progress.totalBytesExpectedToSend > 0) {
+                        onProgress(progress.totalBytesSent / progress.totalBytesExpectedToSend);
                     }
-                };
+                }
+            );
 
-                xhr.onload = () => {
-                    if (xhr.status === 200 || xhr.status === 201 || xhr.status === 409) {
-                        resolve({ success: true, hash });
-                    } else {
-                        let errorMsg = `Server returned ${xhr.status}`;
-                        try {
-                            const body = JSON.parse(xhr.responseText);
-                            errorMsg = body.text || errorMsg;
-                        } catch (e) {}
-                        reject(new Error(errorMsg));
-                    }
-                };
-
-                xhr.onerror = (e) => {
-                    console.error('[UploadService] XHR Error:', e);
-                    reject(new Error('Network error or server unreachable.'));
-                };
-
-                xhr.ontimeout = () => {
-                    console.error('[UploadService] XHR Timeout');
-                    reject(new Error('Upload timed out. Check your connection.'));
-                };
-
-                // In React Native, passing an object with a `uri` key and `type` directly
-                // into XHR un-boxes it and streams the raw file as the request body.
-                xhr.send({ uri, type: 'application/octet-stream', name: info.filename || 'file.raw' });
-            });
+            const response = await task.uploadAsync();
+            
+            if (response.status === 200 || response.status === 201 || response.status === 409) {
+                return { success: true, hash };
+            } else {
+                let errorMsg = `Server returned ${response.status}`;
+                try {
+                    const body = JSON.parse(response.body);
+                    errorMsg = body.text || errorMsg;
+                } catch (e) {}
+                throw new Error(errorMsg);
+            }
 
         } catch (error) {
             console.error('[UploadService] Upload failed:', error);

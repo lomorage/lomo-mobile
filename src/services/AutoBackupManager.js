@@ -1,7 +1,12 @@
-import { DeviceEventEmitter } from 'react-native';
+import { DeviceEventEmitter, AppState, Platform } from 'react-native';
+import * as Notifications from 'expo-notifications';
 import * as SecureStore from 'expo-secure-store';
+import * as TaskManager from 'expo-task-manager';
+import * as BackgroundTask from 'expo-background-task';
 import UploadService from './UploadService';
 import GalleryStore from '../store/GalleryStore';
+
+export const BACKGROUND_BACKUP_TASK = 'LOMO_BACKUP_TASK';
 
 class AutoBackupManager {
     constructor() {
@@ -29,7 +34,79 @@ class AutoBackupManager {
             } else if (!this.isBackingUp && !this.isPaused) {
                 this.syncQueueWithGallery();
             }
+            this.updateNotification();
         });
+
+        // AppState Handoff: Monitor when app goes background/foreground
+        this.appState = AppState.currentState;
+        AppState.addEventListener('change', nextAppState => {
+            if (this.appState.match(/inactive|background/) && nextAppState === 'active') {
+                console.log('[AutoBackupManager] App returned to foreground. Syncing gallery...');
+                this.syncQueueWithGallery();
+            }
+            this.appState = nextAppState;
+            this.updateNotification();
+        });
+
+        this.updateNotification();
+    }
+
+    async updateNotification() {
+        if (Platform.OS !== 'android') return;
+        if (!this.autoBackupEnabled || this.isPaused || this.queue.length === 0) {
+            await Notifications.dismissAllNotificationsAsync();
+            return;
+        }
+
+        try {
+            const { status } = await Notifications.getPermissionsAsync();
+            if (status !== 'granted') {
+                await Notifications.requestPermissionsAsync();
+            }
+
+            const total = this.queue.length;
+            const current = this.currentIndex + 1;
+            
+            await Notifications.setNotificationHandler({
+                handleNotification: async () => ({
+                    shouldShowAlert: false, // Don't make sound every time
+                    shouldPlaySound: false,
+                    shouldSetBadge: false,
+                }),
+            });
+
+            await Notifications.presentNotificationAsync({
+                title: "Lomorage Background Sync",
+                body: `Backing up ${current} of ${total} photos...`,
+                android: {
+                    sticky: true,
+                    ongoing: true,
+                    priority: 'max',
+                    category: 'service',
+                    color: '#007AFF'
+                }
+            });
+        } catch (e) {
+            console.error('[AutoBackupManager] Notification error:', e);
+        }
+    }
+
+    async registerBackgroundTask() {
+        try {
+            const isRegistered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_BACKUP_TASK);
+            if (!isRegistered) {
+                await BackgroundTask.registerTaskAsync(BACKGROUND_BACKUP_TASK, {
+                    minimumInterval: 15 * 60, // 15 minutes
+                    stopOnTerminate: false,
+                    startOnBoot: true,
+                });
+                console.log('[AutoBackupManager] Background task registered.');
+            } else {
+                console.log('[AutoBackupManager] Background task already registered.');
+            }
+        } catch (e) {
+            console.error('[AutoBackupManager] Failed to register background task:', e);
+        }
     }
 
     async initSettings() {
@@ -122,9 +199,11 @@ class AutoBackupManager {
 
             this.currentIndex++;
             this.emitState();
+            this.updateNotification();
         }
 
         this.isBackingUp = false;
+        this.updateNotification();
         
         // If we finished the sequence but the gallery still has local items (added during backup), restart.
         const remaining = GalleryStore.getAssets().filter(a => a.status === 'local');
@@ -142,6 +221,7 @@ class AutoBackupManager {
 
     pause() {
         this.isPaused = true;
+        this.updateNotification();
         this.emitState();
     }
 
@@ -149,6 +229,7 @@ class AutoBackupManager {
         this.isPaused = false;
         // Re-evaluate queue and start
         this.syncQueueWithGallery();
+        this.updateNotification();
     }
 
     emitState() {
@@ -161,5 +242,38 @@ class AutoBackupManager {
         });
     }
 }
+
+// Global Task Definition
+TaskManager.defineTask(BACKGROUND_BACKUP_TASK, async () => {
+    console.log('[BackgroundTask] Checking for new assets in background...');
+    try {
+        const manager = new AutoBackupManager();
+        await manager.initSettings();
+        
+        if (!manager.autoBackupEnabled || manager.isPaused) {
+            return BackgroundTask.BackgroundTaskResult.Success;
+        }
+
+        // We can't rely on GalleryStore (UI-bound) in a headless task.
+        // We must fetch fresh from MediaService.
+        const MediaService = require('./MediaService').default;
+        const result = await MediaService.getAssets(50); // Just check first page
+        const assets = result.assets || [];
+        
+        // Find local assets (This logic mimics syncQueueWithGallery but headless)
+        const pending = assets.filter(a => a.status !== 'synced'); 
+        
+        if (pending.length > 0) {
+            console.log(`[BackgroundTask] Found ${pending.length} pending assets. Starting background upload...`);
+            manager.queue = pending;
+            await manager.startBackup();
+        }
+        
+        return BackgroundTask.BackgroundTaskResult.Success;
+    } catch (error) {
+        console.error('[BackgroundTask] Failed:', error);
+        return BackgroundTask.BackgroundTaskResult.Failed;
+    }
+});
 
 export default new AutoBackupManager();

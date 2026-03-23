@@ -158,7 +158,7 @@ export default function AssetDetailScreen({ route, navigation }) {
     }).current;
 
     const renderItem = ({ item, index }) => {
-        let uri = item.uri;
+        let uri = MediaService.normalizeUri(item.uri);
         let isRemote = false;
 
         if (item.status === 'remote' && (!uri || !uri.includes('token=') || uri.includes('/preview/'))) {

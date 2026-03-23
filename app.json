@@ -13,7 +13,13 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.lomorage.mobile",
+      "infoPlist": {
+        "UIBackgroundModes": [
+          "fetch"
+        ]
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -32,11 +38,16 @@
         "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.ACCESS_WIFI_STATE",
-        "android.permission.CHANGE_WIFI_MULTICAST_STATE"
+        "android.permission.CHANGE_WIFI_MULTICAST_STATE",
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
+        "android.permission.POST_NOTIFICATIONS"
       ],
       "package": "com.lomorage.mobile"
     },
     "plugins": [
+      "expo-notifications",
       [
         "expo-media-library",
         {
@@ -46,7 +57,8 @@
           "isStandard": false
         }
       ],
-      "expo-secure-store"
+      "expo-secure-store",
+      "expo-task-manager"
     ],
     "web": {
       "favicon": "./assets/favicon.png"

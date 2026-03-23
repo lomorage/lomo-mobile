@@ -86,14 +86,6 @@ export default function HomeScreen({ navigation }) {
         const indices = [];
         if (!assets || assets.length === 0) return { timelineData: data, stickyHeaderIndices: indices };
 
-        // Pre-sort assets by fallback date (CreationTime -> ModificationTime -> 0)
-        // This ensures the 18,000 photo array is chronologically aligned before grouping.
-        const sortedAssets = [...assets].sort((a, b) => {
-            const timeA = a.creationTime || a.modificationTime || 0;
-            const timeB = b.creationTime || b.modificationTime || 0;
-            return timeB - timeA; // Descending (Newest first)
-        });
-
         const dateCache = new Map();
         let currentHeaderKey = null;
         let currentRowItems = [];
@@ -107,7 +99,7 @@ export default function HomeScreen({ navigation }) {
             }
         };
 
-        sortedAssets.forEach((asset, globalIndex) => {
+        assets.forEach((asset, globalIndex) => {
             // Priority: 1. CreationTime (EXIF), 2. ModificationTime (File Metadata), 3. 0 fallback
             const time = asset.creationTime || asset.modificationTime || 0;
             const d = new Date(time);
@@ -445,14 +437,15 @@ export default function HomeScreen({ navigation }) {
                           }
 
                           merged.push(...trueRemoteOnly);
-                           merged.sort((a, b) => (b.creationTime || 0) - (a.creationTime || 0));
-                           
-                           // No-Op Detection: Only trigger expensive re-render if something actually changed
-                           const finalJson = JSON.stringify(merged.map(a => ({ id: a.id, status: a.status })));
-                           if (finalJson !== initialAssetsJson) {
-                               setAssets(merged);
-                               AutoBackupManager.syncQueueWithGallery(); // Restart queue on changes
-                           }
+                                merged.sort((a, b) => (b.creationTime || b.modificationTime || 0) - (a.creationTime || a.modificationTime || 0));
+                                
+                                // No-Op Detection: Only trigger expensive re-render if something actually changed
+                                const finalJson = JSON.stringify(merged.map(a => ({ id: a.id, status: a.status })));
+                                if (finalJson !== initialAssetsJson) {
+                                    GalleryStore.setAssets(merged);
+                                    setAssets(merged);
+                                    AutoBackupManager.syncQueueWithGallery(); // Restart queue on changes
+                                }
                            
                            setSyncing(false);
                            setSyncProgress(null);
