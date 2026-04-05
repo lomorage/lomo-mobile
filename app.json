@@ -6,7 +6,7 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "newArchEnabled": false,
+    "newArchEnabled": true,
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
@@ -17,11 +17,16 @@
       "bundleIdentifier": "com.lomorage.mobile",
       "infoPlist": {
         "UIBackgroundModes": [
-          "fetch"
+          "fetch",
+          "location"
         ],
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true
-        }
+        },
+        "NSLocalNetworkUsageDescription": "Lomorage requires local network access to discover your server.",
+        "NSBonjourServices": [
+          "_lomod._tcp."
+        ]
       }
     },
     "android": {
@@ -59,6 +64,19 @@
           "savePhotosPermission": "Allow Lomorage to save photos to your library.",
           "isAccessMediaLocationEnabled": true,
           "isStandard": false
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Lomorage to access your photos.",
+          "cameraPermission": "Allow Lomorage to take photos."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow Lomorage to use your location."
         }
       ],
       "expo-secure-store",
