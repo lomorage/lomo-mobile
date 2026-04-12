@@ -21,6 +21,7 @@ export default function HomeScreen({ navigation }) {
     const [error, setError] = useState(null);
     const [permissionStatus, setPermissionStatus] = useState('granted');
     const [loading, setLoading] = useState(true);
+    const [iosNotification, setIosNotification] = useState(null); // { message, current, total }
     
     const { debugMode } = useSettings();
 
@@ -251,6 +252,10 @@ export default function HomeScreen({ navigation }) {
         const subBackupProgress = DeviceEventEmitter.addListener('backupProgress', (data) => {
             setBackupProgress(data.progress || 0);
         });
+        // iOS in-app sync notification banner
+        const subSyncNotification = DeviceEventEmitter.addListener('syncNotification', (data) => {
+            setIosNotification(data); // null clears the banner
+        });
 
         return () => { 
             isMounted.current = false; 
@@ -259,6 +264,7 @@ export default function HomeScreen({ navigation }) {
             subUpdate.remove();
             subBackupState.remove();
             subBackupProgress.remove();
+            subSyncNotification.remove();
         };
     }, []);
 
@@ -663,6 +669,26 @@ export default function HomeScreen({ navigation }) {
                 </View>
             ) : null}
 
+            {/* iOS in-app backup progress banner (Android uses system notification instead) */}
+            {iosNotification ? (
+                <View style={styles.iosNotificationBanner}>
+                    <View style={styles.iosNotificationRow}>
+                        <ActivityIndicator size="small" color="#007AFF" style={{ marginRight: 8 }} />
+                        <Text style={styles.iosNotificationText} numberOfLines={1}>
+                            {iosNotification.message}
+                        </Text>
+                        <TouchableOpacity onPress={() => AutoBackupManager.pause()} style={{ padding: 4, marginLeft: 8 }}>
+                            <PauseCircle size={18} color="#007AFF" />
+                        </TouchableOpacity>
+                    </View>
+                    <View style={styles.progressBarBg}>
+                        <View style={[styles.progressBarFill, {
+                            width: `${Math.round((iosNotification.current / iosNotification.total) * 100)}%`,
+                        }]} />
+                    </View>
+                </View>
+            ) : null}
+
             {(loading && assets.length === 0) ? (
                 <View style={styles.centered}>
                     <ActivityIndicator size="large" color="#007AFF" />
@@ -806,6 +832,28 @@ const styles = StyleSheet.create({
         height: '100%',
         backgroundColor: '#007AFF',
     },
+    iosNotificationBanner: {
+        backgroundColor: '#F0F8FF',
+        paddingHorizontal: 15,
+        paddingVertical: 10,
+        marginHorizontal: 15,
+        borderRadius: 8,
+        marginBottom: 8,
+        borderLeftWidth: 3,
+        borderLeftColor: '#007AFF',
+    },
+    iosNotificationRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginBottom: 8,
+    },
+    iosNotificationText: {
+        flex: 1,
+        fontSize: 13,
+        fontWeight: '600',
+        color: '#007AFF',
+    },
+
     errorText: {
         flex: 1,
         color: '#D32F2F',

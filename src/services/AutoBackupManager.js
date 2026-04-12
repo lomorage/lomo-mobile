@@ -3,6 +3,7 @@ import * as Notifications from 'expo-notifications';
 import * as SecureStore from 'expo-secure-store';
 import * as TaskManager from 'expo-task-manager';
 import * as BackgroundTask from 'expo-background-task';
+import * as Network from 'expo-network';
 import UploadService from './UploadService';
 import GalleryStore from '../store/GalleryStore';
 
@@ -52,53 +53,66 @@ class AutoBackupManager {
     }
 
     async updateNotification() {
-        if (Platform.OS !== 'android') return;
-        if (!this.autoBackupEnabled || this.isPaused || this.queue.length === 0) {
-            await Notifications.dismissAllNotificationsAsync();
+        const total = this.queue.length;
+        const current = this.currentIndex + 1;
+
+        if (!this.autoBackupEnabled || this.isPaused || total === 0) {
+            // Dismiss Android sticky notification
+            if (Platform.OS === 'android') {
+                await Notifications.dismissAllNotificationsAsync().catch(() => {});
+            }
+            // Hide iOS in-app banner
+            DeviceEventEmitter.emit('syncNotification', null);
             return;
         }
 
-        try {
-            const { status } = await Notifications.getPermissionsAsync();
-            if (status !== 'granted') {
-                await Notifications.requestPermissionsAsync();
+        // Throttle updates: only emit every 10 items or on final item
+        if (current % 10 !== 1 && current !== total && this.isBackingUp) {
+            return;
+        }
+
+        const message = `Backing up ${current} of ${total} photos...`;
+
+        if (Platform.OS === 'android') {
+            // Android: persistent system notification
+            try {
+                const { status } = await Notifications.getPermissionsAsync();
+                if (status !== 'granted') {
+                    await Notifications.requestPermissionsAsync();
+                }
+                await Notifications.setNotificationHandler({
+                    handleNotification: async () => ({
+                        shouldShowAlert: false,
+                        shouldPlaySound: false,
+                        shouldSetBadge: false,
+                    }),
+                });
+                await Notifications.scheduleNotificationAsync({
+                    identifier: 'LOMO_BACKUP_STATUS',
+                    content: {
+                        title: 'Lomorage Background Sync',
+                        body: message,
+                        android: {
+                            sticky: true,
+                            ongoing: true,
+                            priority: 'low',
+                            category: 'service',
+                            color: '#007AFF',
+                        },
+                    },
+                    trigger: null,
+                });
+            } catch (e) {
+                console.error('[AutoBackupManager] Notification error:', e);
             }
-
-            const total = this.queue.length;
-            const current = this.currentIndex + 1;
-            
-            // Quiet Sync Strategy: 
-            // 1. Only update the notification every 10 photos to reduce "noise"
-            // 2. Or update if it's the very last one
-            if (current % 10 !== 1 && current !== total && this.isBackingUp) {
-                return;
-            }
-
-            await Notifications.setNotificationHandler({
-                handleNotification: async () => ({
-                    shouldShowAlert: false,
-                    shouldPlaySound: false,
-                    shouldSetBadge: false,
-                }),
+        } else {
+            // iOS: emit an in-app banner event — HomeScreen listens and shows a banner
+            DeviceEventEmitter.emit('syncNotification', {
+                message,
+                current,
+                total,
+                isPaused: this.isPaused,
             });
-
-            await Notifications.scheduleNotificationAsync({
-                identifier: 'LOMO_BACKUP_STATUS', // Stable ID prevents "New Notification" alerts
-                content: {
-                    title: "Lomorage Background Sync",
-                    body: `Backing up ${current} of ${total} photos...`,
-                    android: {
-                        sticky: true,
-                        ongoing: true,
-                        priority: 'low', // Low priority prevents "Heads-up" popups
-                        category: 'service',
-                        color: '#007AFF'
-                    }
-                },
-                trigger: null
-            });
-        } catch (e) {
-            console.error('[AutoBackupManager] Notification error:', e);
         }
     }
 
@@ -159,6 +173,19 @@ class AutoBackupManager {
         this.emitState();
     }
 
+    async isWifiConnected() {
+        try {
+            const state = await Network.getNetworkStateAsync();
+            return (
+                state.isConnected &&
+                state.type === Network.NetworkStateType.WIFI
+            );
+        } catch (e) {
+            console.warn('[AutoBackupManager] Network check failed, assuming Wi-Fi:', e);
+            return true; // Fail open: allow upload if we can't determine state
+        }
+    }
+
     async startBackup() {
         if (this.isBackingUp || this.queue.length === 0 || this.isPaused) return;
         this.isBackingUp = true;
@@ -166,7 +193,18 @@ class AutoBackupManager {
 
         while (this.currentIndex < this.queue.length && !this.isPaused) {
             const asset = this.queue[this.currentIndex];
-            
+
+            // Wi-Fi-only enforcement: pause upload if disconnected from Wi-Fi
+            if (this.wifiOnlyBackup) {
+                const onWifi = await this.isWifiConnected();
+                if (!onWifi) {
+                    console.log('[AutoBackupManager] Wi-Fi-only mode enabled and not on Wi-Fi. Pausing backup.');
+                    this.pause();
+                    DeviceEventEmitter.emit('backupError', 'Backup paused: not connected to Wi-Fi.');
+                    break;
+                }
+            }
+
             try {
                 // If the asset somehow became synced, skip it
                 if (asset.status !== 'local') {
