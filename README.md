@@ -4,93 +4,194 @@ React Native / Expo client for Lomorage, optimized for massive gallery syncs (18
 
 ## Prerequisites
 
-- **Node.js**: 20.x or later
-- **Android SDK**: Required for local builds and ADB debugging.
-- **Physical Devices**: Must be on the **same Wi-Fi network** as your development PC.
-- **Lomorage Dev Client**: An Expo development client for Lomorage must be installed on your device.
+### All Platforms
+- **Node.js**: 20.x or later (`node --version` should report `v20.x` or higher)
+- **npm**: Bundled with Node.js (used with `--legacy-peer-deps` for Expo SDK 54 compatibility)
+- **Expo Account**: Free account at [expo.dev](https://expo.dev) — required for EAS cloud builds and device registration
+
+### macOS (for local iOS builds)
+- **Xcode**: 15 or later (install from the Mac App Store)
+- **Xcode Command Line Tools**: `xcode-select --install`
+- **CocoaPods**: `sudo gem install cocoapods` (or `brew install cocoapods`)
+- **iOS Simulator** (optional): Included with Xcode; physical device recommended for full feature testing
+- **Apple Developer Account**: Required to sign and deploy to a physical device ([developer.apple.com](https://developer.apple.com))
+
+### Android (any platform)
+- **Android SDK**: Required for local builds and ADB debugging
+- **Physical Devices**: Must be on the **same Wi-Fi network** as your development machine
+- **USB Debugging**: Enable in Developer Options on your Android device
 
 ## Installation
 
-1.  Install dependencies (requires legacy-peer-deps for Expo SDK 54 compatibility):
-    ```bash
-    npm install --legacy-peer-deps
-    ```
+1. Clone the repository and install dependencies:
+   ```bash
+   git clone https://github.com/lomorage/lomo-mobile.git
+   cd lomo-mobile
+   npm install --legacy-peer-deps
+   ```
 
-2.  Generate and install a fresh Development Client (required for first-time setup or native changes):
-    ```bash
-    # This builds and installs the "Lomorage Debug Engine" on your Android phone.
-    # For iOS, use `npx expo run:ios`.
-    npx expo run:android
-    ```
-    *   **Note**: If you already have a dev client installed, you can update it using `adb install -r <path_to_apk>`.
+2. Log in to your Expo account:
+   ```bash
+   npx expo login
+   ```
 
-## iOS Development on Windows
+## Building & Running the iOS App
 
-Since Lomorage uses a custom native module (`expo-lomo-hasher`), **Expo Go cannot be used**. You must use a Development Client build.
+Lomorage uses a custom native module (`expo-lomo-hasher`), so **Expo Go cannot be used**. A Development Client build is required. Choose the path that matches your development machine.
 
-### Option 1: EAS Build (Recommended for Windows)
-If you don't have a Mac, you can build the iOS app in the cloud using Expo Application Services (EAS):
+---
 
-1.  **Install EAS CLI**: `npm install -g eas-cli`
-2.  **Login**: `eas login`
-3.  **Build Development Client**:
-    ```bash
-    eas build --platform ios --profile development --local=false
-    ```
-4.  **Install on Device**: Follow the link provided by EAS to install the app on your physical iPhone.
-5.  **Start Dev Server**: `npx expo start --dev-client`
+### Option A — macOS: Local Build with Xcode
 
-### Option 2: Local Build (Requires macOS)
-If you have access to a Mac:
-1.  **Prebuild**: `npx expo prebuild`
-2.  **Run**: `npx expo run:ios` (or open `.xcworkspace` in Xcode).
+This is the fastest inner-loop for iOS development. All steps run entirely on your Mac.
+
+#### 1. Install CocoaPods dependencies
+```bash
+npx expo prebuild --clean   # generates the ios/ Xcode project
+cd ios && pod install && cd ..
+```
+> **Note**: Run `pod install` again any time you add or update a native package.
+
+#### 2. Build and launch on a Simulator
+```bash
+npx expo run:ios
+# Pick a simulator when prompted, or pass it explicitly:
+npx expo run:ios --simulator "iPhone 16 Pro"
+```
+
+#### 3. Build and launch on a Physical iPhone
+
+1. Connect your iPhone via USB and trust the Mac.
+2. Open the generated workspace in Xcode:
+   ```bash
+   open ios/lomomobile.xcworkspace
+   ```
+3. In Xcode: select your iPhone as the run destination, then go to  
+   **Signing & Capabilities → Team** and select your Apple Developer account.
+4. Press **▶ Run** (⌘R) — Xcode will sign, install, and launch the app.
+5. Once installed, start the Metro bundler from your terminal:
+   ```bash
+   npx expo start --dev-client
+   ```
+   The app will connect to Metro automatically if your Mac and iPhone are on the same Wi-Fi network. If not, shake the device → **Dev Menu → Settings → Change Bundle Location** and enter your Mac's IP (e.g. `192.168.1.10:8081`).
+
+> **Tip**: Use `npx expo run:ios --device` to pick a connected physical device from the CLI without opening Xcode.
+
+---
+
+### Option B — Windows (or any OS): EAS Cloud Build
+
+EAS builds the native iOS binary on Expo's macOS servers, so a Mac is not required.
+
+#### 1. Install EAS CLI
+```bash
+npm install -g eas-cli
+eas login
+```
+
+#### 2. Register your iPhone with EAS
+```bash
+eas device:create
+```
+Follow the prompts — this registers your device's UDID so EAS can sign the build for it.
+
+#### 3. Build the Development Client in the cloud
+```bash
+eas build --platform ios --profile development
+```
+- The build runs on Expo's servers (no Mac needed).
+- When complete, EAS provides a QR code / link. Scan it on your iPhone to install the `.ipa`.
+
+#### 4. Start the Metro dev server (runs on Windows/Linux/macOS)
+```bash
+npx expo start --dev-client
+```
+Open the installed **Lomorage** app on your iPhone. It will scan for Metro, or tap **Enter URL manually** and type your computer's IP (e.g. `http://192.168.1.10:8081`).
+
+> **Note**: Your iPhone and dev machine must be on the **same Wi-Fi network**. Rebuild with `eas build` only when native code changes; JS changes hot-reload over Metro.
+
+#### 5. Build a Preview / Production IPA
+```bash
+# Ad-hoc distribution for internal testers
+eas build --platform ios --profile preview
+
+# App Store production build
+eas build --platform ios --profile production
+```
+
+---
+
+### Android (any platform)
+
+#### Build and run on a device or emulator:
+```bash
+npx expo run:android
+```
+
+#### Build and install a release APK:
+```bash
+npx expo run:android --variant release
+
+# Install directly via ADB
+adb install -r android/app/build/outputs/apk/release/app-release.apk
+```
 
 ## Debugging on Real Devices
 
-To debug logic and monitor background syncs across multiple phones:
+### iOS Debugging
 
-1.  **Connect ADB**: Connect your phone via USB and ensure it's detected:
-    ```bash
-    adb devices
-    ```
-    *   **Prerequisite**: Ensure USB Debugging is enabled on your Android device.
+1. **Xcode Console**: With the app running from Xcode, the Debug navigator shows live system and native logs.
+2. **Safari Web Inspector** (JS console on a real iPhone):
+   - Enable **Settings → Safari → Advanced → Web Inspector** on your iPhone.
+   - On your Mac open **Safari → Develop → [your device] → Lomorage**.
+3. **Flipper / Expo Dev Tools**: Shake the device to open the Dev Menu, then tap **Open JS Debugger** to attach Chrome DevTools via Metro.
+4. **iOS Background Task Logs** (macOS Console app):
+   - Open the **Console** app, filter by **Process: lomomobile**.
+   - Look for `BGAppRefreshTask` and `BGProcessingTask` entries to verify background sync scheduling.
 
-2.  **Start Metro Bundler**:
-    ```bash
-    npx expo start
-    ```
-    *   **Note**: Metro typically runs on port `8081`.
+### Android Debugging
 
-3.  **Load the App**:
-    *   Open the **Lomorage** app (the custom dev client) installed on your phone.
-    *   It should automatically detect the Metro bundler if your phone and PC are on the same Wi-Fi network and subnet.
-    *   If not, **shake the phone** to open the **Dev Menu** -> **Settings** -> **Change Bundle Location** and enter your PC's IP address (e.g., `192.168.1.10:8081`).
+1. **Connect ADB**: Connect your phone via USB and ensure it's detected:
+   ```bash
+   adb devices
+   ```
+   > **Prerequisite**: Ensure USB Debugging is enabled on your Android device.
 
-4.  **Remote Inspection (Chrome DevTools)**:
-    *   Open Chrome on your development PC and navigate to `chrome://inspect`.
-    *   Under "Remote Target", find your device and click "Inspect" to open the Chrome DevTools. This allows you to view console logs, network requests, and debug the JavaScript context.
+2. **Start Metro Bundler**:
+   ```bash
+   npx expo start
+   ```
+   > Metro runs on port `8081` by default.
 
-5.  **Monitor Background Tasks (ADB Logcat)**:
-    Use ADB to watch the background engine work silently. Filter logs for specific components:
-    ```bash
-    # General FileSystem operations
-    adb logcat | grep "FileSystem"
+3. **Load the App**:
+   - Open the **Lomorage** dev client installed on your phone.
+   - It auto-detects Metro if the phone and PC are on the same Wi-Fi subnet.
+   - If not detected, **shake the phone** → **Dev Menu → Settings → Change Bundle Location** and enter your PC's IP (e.g. `192.168.1.10:8081`).
 
-    # Background task execution and scheduling
-    adb logcat | grep "BackgroundTask"
+4. **Remote Inspection (Chrome DevTools)**:
+   - Navigate to `chrome://inspect` in Chrome.
+   - Under **Remote Target**, find your device and click **Inspect**.
 
-    # Lomorage-specific logs (e.g., hashing, sync progress)
-    adb logcat | grep "Lomorage"
+5. **Monitor Background Tasks (ADB Logcat)**:
+   ```bash
+   # General FileSystem operations
+   adb logcat | grep "FileSystem"
 
-    # For detailed Merkle Tree sync logs
-    adb logcat | grep "MerkleSync"
+   # Background task execution and scheduling
+   adb logcat | grep "BackgroundTask"
 
-    # For native radio hardening and network state
-    adb logcat | grep "NativeRadio"
+   # Lomorage-specific logs (hashing, sync progress)
+   adb logcat | grep "Lomorage"
 
-    # For WorkManager (Android background task scheduler) logs
-    adb logcat | grep "WorkManager"
-    ```
+   # Merkle Tree sync logs
+   adb logcat | grep "MerkleSync"
+
+   # Native radio hardening and network state
+   adb logcat | grep "NativeRadio"
+
+   # WorkManager (Android background task scheduler)
+   adb logcat | grep "WorkManager"
+   ```
 
 ## Production & Stability Testing (18,000 Photo Sync)
 
