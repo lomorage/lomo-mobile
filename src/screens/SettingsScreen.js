@@ -1,12 +1,16 @@
 import React from 'react';
-import { StyleSheet, View, Text, Switch, TouchableOpacity, Alert } from 'react-native';
-import { ChevronLeft, Trash2 } from 'lucide-react-native';
+import { StyleSheet, View, Text, Switch, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
+import { ChevronLeft, Trash2, RefreshCcw, Server } from 'lucide-react-native';
 import { useSettings } from '../context/SettingsContext';
 import SyncService from '../services/SyncService';
+import AuthService from '../services/AuthService';
 
 export default function SettingsScreen({ navigation }) {
     const { debugMode, toggleDebugMode, autoBackupEnabled, toggleAutoBackup, wifiOnlyBackup, toggleWifiOnly } = useSettings();
     const [stats, setStats] = React.useState({ local: 0, remote: 0 });
+    const [isScanning, setIsScanning] = React.useState(false);
+    const [serverUrl, setServerUrl] = React.useState(AuthService.getServerUrl());
+    const [serverName, setServerName] = React.useState(AuthService.getServerName());
 
     React.useEffect(() => {
         loadStats();
@@ -23,6 +27,29 @@ export default function SettingsScreen({ navigation }) {
         const sizes = ['B', 'KB', 'MB', 'GB'];
         const i = Math.floor(Math.log(bytes) / Math.log(k));
         return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    };
+
+    const handleReProbe = async () => {
+        if (isScanning) return;
+        setIsScanning(true);
+        try {
+            const success = await AuthService.autoProbe();
+            if (success) {
+                const newUrl = AuthService.getServerUrl();
+                setServerUrl(newUrl);
+                setServerName(AuthService.getServerName());
+                Alert.alert("Server Found ✓", `Connected to:\n${newUrl}`);
+            } else {
+                Alert.alert(
+                    "Server Not Found",
+                    "No Lomorage server was found on your local network.\n\nMake sure:\n• Your server is running\n• Your phone is on the same Wi-Fi"
+                );
+            }
+        } catch (e) {
+            Alert.alert("Scan Error", "An unexpected error occurred during discovery.");
+        } finally {
+            setIsScanning(false);
+        }
     };
 
     return (
@@ -138,6 +165,36 @@ export default function SettingsScreen({ navigation }) {
                     <Trash2 color="#ef4444" size={20} />
                 </TouchableOpacity>
             </View>
+
+            <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Server Connection</Text>
+                
+                <View style={styles.settingRow}>
+                    <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabel}>Current Server</Text>
+                        <Text style={styles.settingDescription}>{serverUrl || 'Not configured'}</Text>
+                        {serverName && <Text style={styles.serverBadge}>Identity: {serverName}</Text>}
+                    </View>
+                    <Server color="#4A5568" size={24} />
+                </View>
+
+                <TouchableOpacity 
+                    style={styles.settingRow}
+                    onPress={handleReProbe}
+                    disabled={isScanning}
+                >
+                    <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabel}>Re-scan Network</Text>
+                        <Text style={styles.settingDescription}>
+                            {isScanning ? 'Scanning for servers...' : 'Search for your Lomorage server via mDNS.'}
+                        </Text>
+                    </View>
+                    {isScanning
+                        ? <ActivityIndicator size="small" color="#007AFF" />
+                        : <RefreshCcw color="#007AFF" size={20} />
+                    }
+                </TouchableOpacity>
+            </View>
         </View>
     );
 }
@@ -208,5 +265,21 @@ const styles = StyleSheet.create({
         color: '#888',
         marginTop: 4,
         lineHeight: 18,
+    },
+    serverBadge: {
+        fontSize: 12,
+        color: '#007AFF',
+        backgroundColor: '#EBF4FF',
+        paddingHorizontal: 8,
+        paddingVertical: 2,
+        borderRadius: 4,
+        marginTop: 4,
+        alignSelf: 'flex-start',
+        fontWeight: '600',
+    },
+    rotating: {
+        // Animation is better handled via Animated API, but for simplicity
+        // in a web-like dev experience we can just dim it or let the system handle it
+        opacity: 0.5,
     }
 });

@@ -21,8 +21,18 @@ export const AuthProvider = ({ children }) => {
     checkAuth();
   }, []);
 
-  const login = async (server, username, password) => {
-    await AuthService.login(server, username, password);
+  // Register the session-expiry callback so 401 triggers logout
+  useEffect(() => {
+    AuthService.setOnSessionExpired(async () => {
+      console.log('[AuthContext] Session expired, logging out...');
+      await AuthService.logout();
+      setIsAuthenticated(false);
+    });
+    return () => AuthService.setOnSessionExpired(null);
+  }, []);
+
+  const login = async (server, username, password, serverName = null) => {
+    await AuthService.login(server, username, password, serverName);
     setIsAuthenticated(true);
   };
 

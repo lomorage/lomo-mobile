@@ -9,6 +9,7 @@ import { SettingsProvider } from '../context/SettingsContext';
 import HomeScreen from '../screens/HomeScreen';
 import AssetDetailScreen from '../screens/AssetDetailScreen';
 import LoginScreen from '../screens/LoginScreen';
+import RegisterScreen from '../screens/RegisterScreen';
 import SettingsScreen from '../screens/SettingsScreen';
 import AuthService from '../services/AuthService';
 
@@ -42,11 +43,18 @@ function Navigation() {
                 }}
             >
                 {!isAuthenticated ? (
-                    <Stack.Screen 
-                        name="Login" 
-                        component={LoginScreen} 
-                        options={{ headerShown: false }}
-                    />
+                    <>
+                        <Stack.Screen 
+                            name="Login" 
+                            component={LoginScreen} 
+                            options={{ headerShown: false }}
+                        />
+                        <Stack.Screen 
+                            name="Register" 
+                            component={RegisterScreen} 
+                            options={{ headerShown: false }}
+                        />
+                    </>
                 ) : (
                     <>
                         <Stack.Screen

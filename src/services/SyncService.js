@@ -621,7 +621,15 @@ class SyncService {
       return remoteRoot;
     } catch (e) {
       console.error('Failed to fetch remote overview', e);
-      return null;
+      if (e.response && e.response.status === 401) {
+        const authError = new Error('Your session has expired. Please log out and log in again.');
+        authError.isAuthError = true;
+        throw authError;
+      }
+      // Network error (timeout, unreachable, etc.)
+      const netError = new Error('Could not reach server. Check your connection and try again.');
+      netError.isNetworkError = true;
+      throw netError;
     }
   }
 
@@ -693,11 +701,7 @@ class SyncService {
       await this.buildLocalTree(localAssets, onProgress);
       
       if (onProgress) onProgress({ message: 'Fetching remote asset layout...' });
-      await this.fetchRemoteOverview();
-      
-      if (!this.remoteTree) {
-        throw new Error('Server unreachable or not configured');
-      }
+      const remoteOverview = await this.fetchRemoteOverview();
 
       if (onProgress) onProgress({ message: 'Comparing local and remote assets...' });
       const uploadAssets = [];
@@ -712,8 +716,11 @@ class SyncService {
     }
   }
 
-  async findDiffWithDrillDown(localNode, remoteNode, upload, download, level) {
+  async findDiffWithDrillDown(localNode, remoteNode, upload, download, level, ctx = { networkError: false }) {
     if (!localNode || !remoteNode) return;
+    // Short-circuit: stop all further fetching if a network error occurred in this sync pass
+    if (ctx.networkError) return;
+
     const diff = localNode.compareNodeList(localNode.children, remoteNode.children, level === 'asset' ? 'hash' : 'id');
 
     // 1. New local assets -> Upload
@@ -730,12 +737,18 @@ class SyncService {
 
     // 2. New remote assets -> Download
     for (const node of diff.download) {
+      if (ctx.networkError) break; // Stop iterating if server went offline mid-sync
       if (level === 'day' && !node.tag) {
         // We found a day that exists on remote but we don't have detail yet
         const year = localNode.parentNode.id;
         const month = localNode.id;
         const day = node.id;
         const detail = await this.fetchRemoteDay(year, month, day);
+        if (detail === null) {
+          console.warn(`[SyncService] Network error fetching day ${year}/${month}/${day}. Stopping drill-down.`);
+          ctx.networkError = true;
+          break;
+        }
         if (detail && detail.Assets) {
           for (const a of detail.Assets) {
             const assetNode = this.remoteTree.addAsset(year, month, day, a.Hash, a.Name, parseBackendDate(a.Date));
@@ -758,10 +771,11 @@ class SyncService {
 
     // 3. Changed nodes -> Drill down
     for (const { local, remote } of diff.pending) {
+      if (ctx.networkError) break; // Stop iterating on error
       if (level === 'year') {
-        await this.findDiffWithDrillDown(local, remote, upload, download, 'month');
+        await this.findDiffWithDrillDown(local, remote, upload, download, 'month', ctx);
       } else if (level === 'month') {
-        await this.findDiffWithDrillDown(local, remote, upload, download, 'day');
+        await this.findDiffWithDrillDown(local, remote, upload, download, 'day', ctx);
       } else if (level === 'day') {
         // At day level, pending means asset list differs
         // If remote day has no children, fetch them
@@ -770,6 +784,11 @@ class SyncService {
           const month = local.parentNode.id;
           const day = local.id;
           const detail = await this.fetchRemoteDay(year, month, day);
+          if (detail === null) {
+            console.warn(`[SyncService] Network error fetching day ${year}/${month}/${day}. Stopping drill-down.`);
+            ctx.networkError = true;
+            break;
+          }
           if (detail && detail.Assets) {
             for (const a of detail.Assets) {
               this.remoteTree.addAsset(year, month, day, a.Hash, a.Name, parseBackendDate(a.Date));
@@ -783,6 +802,7 @@ class SyncService {
       }
     }
   }
+
 
   getDiff() {
     if (!this.localTree || !this.remoteTree) return { uploadAssets: [], downloadAssets: [] };

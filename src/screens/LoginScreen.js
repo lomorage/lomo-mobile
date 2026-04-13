@@ -2,23 +2,20 @@ import React, { useState, useEffect } from 'react';
 import { StyleSheet, View, Text, TextInput, TouchableOpacity, ActivityIndicator, KeyboardAvoidingView, Platform, Alert, ScrollView } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import AuthService from '../services/AuthService';
-import Zeroconf from 'react-native-zeroconf';
-import { Ionicons } from '@expo/vector-icons';
+import DiscoveryService from '../services/DiscoveryService';
+import { Eye, EyeOff } from 'lucide-react-native';
 
 import { useAuth } from '../context/AuthContext';
-
-const zeroconf = new Zeroconf();
 
 export default function LoginScreen({ navigation }) {
     const { login: contextLogin } = useAuth();
     const [server, setServer] = useState('');
+    const [serverName, setServerName] = useState('');
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
     const [loading, setLoading] = useState(false);
     const [isScanning, setIsScanning] = useState(false);
     const [showPassword, setShowPassword] = useState(false);
-
-    const isScanningRef = React.useRef(false);
 
     useEffect(() => {
         // Pre-fill fields if they exist from a previous session
@@ -30,45 +27,22 @@ export default function LoginScreen({ navigation }) {
         };
         loadPreviousData();
 
-        // Start mDNS Scan
-        isScanningRef.current = true;
+        // Start mDNS Scan via DiscoveryService
         setIsScanning(true);
-        zeroconf.scan('lomod', 'tcp', 'local.');
-
-        zeroconf.on('start', () => console.log('mDNS scan started.'));
-        zeroconf.on('found', name => console.log(`Found service: ${name}`));
-        
-        zeroconf.on('resolved', (service) => {
-            console.log('Resolved service:', service);
-            if (service.host && service.port) {
-                const ip = (service.addresses && service.addresses.length > 0) ? service.addresses[0] : service.host;
-                setServer(`${ip}:${service.port}`);
-                isScanningRef.current = false;
-                setIsScanning(false);
-                zeroconf.stop();
-            }
-        });
-
-        zeroconf.on('error', err => {
-            console.warn('Zeroconf error:', err);
-            isScanningRef.current = false;
+        const unsubscribe = DiscoveryService.onDiscovered((service) => {
+            console.log('[LoginScreen] Found service:', service.name);
+            setServer(service.address);
+            setServerName(service.name);
             setIsScanning(false);
         });
 
-        // Auto-stop scanning after 15 seconds
-        const scanTimeout = setTimeout(() => {
-            if (isScanningRef.current) {
-                console.log('mDNS scan timed out.');
-                isScanningRef.current = false;
-                setIsScanning(false);
-                zeroconf.stop();
-            }
-        }, 15000);
+        DiscoveryService.scan(15000).then((results) => {
+            console.log('[LoginScreen] Scan finished. Found count:', results.length);
+            setIsScanning(false);
+        });
 
         return () => {
-            clearTimeout(scanTimeout);
-            zeroconf.stop();
-            zeroconf.removeDeviceListeners();
+            unsubscribe();
         };
     }, []); // Empty array: run only once on mount
 
@@ -80,7 +54,7 @@ export default function LoginScreen({ navigation }) {
 
         setLoading(true);
         try {
-            await contextLogin(server, username, password);
+            await contextLogin(server, username, password, serverName);
             // No need for navigation.replace('MainApp') because RootNavigator 
             // will automatically re-render and show the Home screen.
         } catch (error) {
@@ -157,11 +131,10 @@ export default function LoginScreen({ navigation }) {
                                     style={styles.eyeIcon} 
                                     onPress={() => setShowPassword(!showPassword)}
                                 >
-                                    <Ionicons 
-                                        name={showPassword ? 'eye-off' : 'eye'} 
-                                        size={24} 
-                                        color="#999" 
-                                    />
+                                    {showPassword 
+                                        ? <EyeOff size={22} color="#999" />
+                                        : <Eye size={22} color="#999" />
+                                    }
                                 </TouchableOpacity>
                             </View>
                         </View>
@@ -176,6 +149,15 @@ export default function LoginScreen({ navigation }) {
                             ) : (
                                 <Text style={styles.buttonText}>Log In</Text>
                             )}
+                        </TouchableOpacity>
+
+                        <TouchableOpacity 
+                            style={styles.registerLink} 
+                            onPress={() => navigation.navigate('Register')}
+                        >
+                            <Text style={styles.registerText}>
+                                Don't have an account? <Text style={styles.registerTextBold}>Create one</Text>
+                            </Text>
                         </TouchableOpacity>
                     </View>
                 </View>
@@ -304,5 +286,17 @@ const styles = StyleSheet.create({
         fontSize: 16,
         fontWeight: '700',
         letterSpacing: 0.5,
+    },
+    registerLink: {
+        marginTop: 20,
+        alignItems: 'center',
+    },
+    registerText: {
+        fontSize: 14,
+        color: '#718096',
+    },
+    registerTextBold: {
+        color: '#007AFF',
+        fontWeight: '700',
     },
 });
