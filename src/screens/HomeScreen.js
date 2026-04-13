@@ -21,7 +21,6 @@ export default function HomeScreen({ navigation }) {
     const [error, setError] = useState(null);
     const [permissionStatus, setPermissionStatus] = useState('granted');
     const [loading, setLoading] = useState(true);
-    const [iosNotification, setIosNotification] = useState(null); // { message, current, total }
     
     const { debugMode } = useSettings();
 
@@ -255,10 +254,6 @@ export default function HomeScreen({ navigation }) {
         const subBackupProgress = DeviceEventEmitter.addListener('backupProgress', (data) => {
             setBackupProgress(data.progress || 0);
         });
-        // iOS in-app sync notification banner
-        const subSyncNotification = DeviceEventEmitter.addListener('syncNotification', (data) => {
-            setIosNotification(data); // null clears the banner
-        });
 
         return () => { 
             isMounted.current = false; 
@@ -267,7 +262,6 @@ export default function HomeScreen({ navigation }) {
             subUpdate.remove();
             subBackupState.remove();
             subBackupProgress.remove();
-            subSyncNotification.remove();
         };
     }, []);
 
@@ -675,26 +669,6 @@ export default function HomeScreen({ navigation }) {
                     <TouchableOpacity onPress={loadAndSync} style={styles.retryButton}>
                         <Text style={styles.retryText}>Retry</Text>
                     </TouchableOpacity>
-                </View>
-            ) : null}
-
-            {/* iOS in-app backup progress banner (Android uses system notification instead) */}
-            {iosNotification ? (
-                <View style={styles.iosNotificationBanner}>
-                    <View style={styles.iosNotificationRow}>
-                        <ActivityIndicator size="small" color="#007AFF" style={{ marginRight: 8 }} />
-                        <Text style={styles.iosNotificationText} numberOfLines={1}>
-                            {iosNotification.message}
-                        </Text>
-                        <TouchableOpacity onPress={() => AutoBackupManager.pause()} style={{ padding: 4, marginLeft: 8 }}>
-                            <PauseCircle size={18} color="#007AFF" />
-                        </TouchableOpacity>
-                    </View>
-                    <View style={styles.progressBarBg}>
-                        <View style={[styles.progressBarFill, {
-                            width: `${Math.round((iosNotification.current / iosNotification.total) * 100)}%`,
-                        }]} />
-                    </View>
                 </View>
             ) : null}
 
