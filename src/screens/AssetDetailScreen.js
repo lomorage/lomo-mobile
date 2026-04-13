@@ -158,23 +158,29 @@ export default function AssetDetailScreen({ route, navigation }) {
     }).current;
 
     const renderItem = ({ item, index }) => {
-        let uri = MediaService.normalizeUri(item.uri);
+        // Always derive the URI fresh from AuthService so a stale/rotated token
+        // in item.uri never silently breaks image loading.
+        const baseUrl = AuthService.getServerUrl();
+        const token = AuthService.getToken();
+        const assetId = item.hash || item.id;
+
+        let uri;
         let isRemote = false;
 
-        if (item.status === 'remote' && (!uri || !uri.includes('token=') || uri.includes('/preview/'))) {
+        if (item.status === 'remote') {
             isRemote = true;
-            const baseUrl = AuthService.getServerUrl();
-            const token = AuthService.getToken();
-            const assetId = item.hash || item.id;
-            uri = `${baseUrl}/asset/${assetId}?token=${token}`;
-            
             if (item.mediaType === 'video') {
-                uri += '&ext=mp4';
-                // Only apply HD to the currently active video to save bandwidth
+                // Video: use /asset/ so the player gets the raw stream, not a thumbnail
+                uri = `${baseUrl}/asset/${assetId}?token=${token}&ext=mp4`;
                 if (useOriginalVideo && index === currentIndex) {
                     uri += '&orig=1';
                 }
+            } else {
+                // Photo: use /preview/ at full device width for crisp detail view
+                uri = `${baseUrl}/preview/${assetId}?width=${Math.round(width)}&height=-1&token=${token}`;
             }
+        } else {
+            uri = MediaService.normalizeUri(item.uri);
         }
 
         const isVisible = index === currentIndex;

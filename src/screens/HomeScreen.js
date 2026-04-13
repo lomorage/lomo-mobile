@@ -495,6 +495,12 @@ export default function HomeScreen({ navigation }) {
         const loadStartTime = useRef(0);
         const shouldShowImage = !isScrubbing || asset.status === 'local';
 
+        // For remote assets, always build the thumbnail URI fresh from AuthService
+        // so a stale/rotated token stored in asset.uri never silently breaks thumbnails.
+        const thumbnailUri = (asset.status === 'remote' && asset.hash)
+            ? `${AuthService.getServerUrl()}/preview/${asset.hash}?width=300&height=-1&token=${AuthService.getToken()}`
+            : safeUri(asset.uri);
+
         return (
             <TouchableOpacity
                 key={`asset-${asset.id}`}
@@ -503,7 +509,7 @@ export default function HomeScreen({ navigation }) {
             >
                 {shouldShowImage ? (
                     <Image
-                        source={{ uri: safeUri(asset.uri) }}
+                        source={{ uri: thumbnailUri }}
                         style={styles.image}
                         resizeMethod="resize"
                         onLoadStart={() => {
