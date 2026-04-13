@@ -47,6 +47,9 @@ export default function HomeScreen({ navigation }) {
         if (!uri) return null;
         if (uri.startsWith('http')) return uri;
         if (uri.startsWith('content://')) return uri;
+        // iOS Photos framework URIs — must be passed as-is to the Image component
+        if (uri.startsWith('ph://')) return uri;
+        if (uri.startsWith('asset-library://')) return uri;
         
         let path = uri;
         if (path.startsWith('file://')) {
@@ -58,8 +61,8 @@ export default function HomeScreen({ navigation }) {
             path = '/' + path;
         }
         
-        // Encode the path to handle spaces and dots correctly
-        // We use split and map to only encode the segments, not the slashes
+        // Encode the path to handle spaces and special characters correctly.
+        // We split/map to only encode individual segments, not the slashes.
         const segments = path.split('/').map(segment => encodeURIComponent(segment));
         return 'file://' + segments.join('/');
     }, []);

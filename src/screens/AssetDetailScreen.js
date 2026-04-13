@@ -169,15 +169,15 @@ export default function AssetDetailScreen({ route, navigation }) {
 
         if (item.status === 'remote') {
             isRemote = true;
+            // Use /asset/ for full resolution in the detail view.
+            // For videos, append &ext=mp4 so the player gets a streamable container.
+            uri = `${baseUrl}/asset/${assetId}?token=${token}`;
             if (item.mediaType === 'video') {
-                // Video: use /asset/ so the player gets the raw stream, not a thumbnail
-                uri = `${baseUrl}/asset/${assetId}?token=${token}&ext=mp4`;
+                uri += '&ext=mp4';
+                // Only apply HD to the currently visible video to save bandwidth
                 if (useOriginalVideo && index === currentIndex) {
                     uri += '&orig=1';
                 }
-            } else {
-                // Photo: use /preview/ at full device width for crisp detail view
-                uri = `${baseUrl}/preview/${assetId}?width=${Math.round(width)}&height=-1&token=${token}`;
             }
         } else {
             uri = MediaService.normalizeUri(item.uri);

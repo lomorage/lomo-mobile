@@ -58,6 +58,10 @@ class MediaService {
   normalizeUri(uri) {
     if (!uri) return uri;
     let normalized = uri;
+    // iOS Photos framework URIs must be passed as-is
+    if (normalized.startsWith('ph://') || normalized.startsWith('asset-library://')) {
+      return normalized;
+    }
     if (!normalized.startsWith('file://') && !normalized.startsWith('content://')) {
       if (normalized.startsWith('//')) {
         normalized = `file:${normalized}`;
