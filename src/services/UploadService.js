@@ -1,4 +1,5 @@
 import * as FileSystem from 'expo-file-system/legacy';
+import { Platform } from 'react-native';
 import MediaService from './MediaService';
 import AuthService from './AuthService';
 import axios from 'axios';
@@ -83,9 +84,14 @@ class UploadService {
 
             console.log(`[UploadService] Uploading to: ${uploadUrl} (Size: ${fileSizeBytes} bytes)`);
 
-            // 5. Binary Upload using native Background Task
-            // This replaces XMLHttpRequest, which is tied to the JS thread.
-            // Background session type allows the OS to continue the upload even if the app is suspended.
+            // 5. Binary Upload using native session
+            // iOS background URL sessions require HTTPS — plain HTTP (LAN server) silently
+            // fails with NSURLErrorUnknown (-1). Use a foreground session on iOS instead.
+            // Android background sessions work fine with HTTP, so keep BACKGROUND there.
+            const sessionType = Platform.OS === 'ios'
+                ? (FileSystem.FileSystemSessionType?.FOREGROUND ?? 1)
+                : (FileSystem.FileSystemSessionType?.BACKGROUND ?? FileSystem.FileSystemUploadSessionType?.BACKGROUND ?? 0);
+
             const task = FileSystem.createUploadTask(
                 uploadUrl,
                 uri,
@@ -95,7 +101,7 @@ class UploadService {
                         'Authorization': `token=${token}`,
                         'Content-Type': 'application/octet-stream',
                     },
-                    sessionType: FileSystem.FileSystemSessionType?.BACKGROUND ?? FileSystem.FileSystemUploadSessionType?.BACKGROUND ?? 0,
+                    sessionType,
                 },
                 (progress) => {
                     if (onProgress && progress.totalBytesExpectedToSend > 0) {
@@ -110,11 +116,24 @@ class UploadService {
                 return { success: true, hash };
             } else {
                 let errorMsg = `Server returned ${response.status}`;
+                let isDuplicate = false;
+                let isDifferentHash = false;
                 try {
                     const body = JSON.parse(response.body);
                     errorMsg = body.text || errorMsg;
+                    // Server returns UNIQUE constraint when a concurrent upload already saved it
+                    if (errorMsg.includes('UNIQUE constraint failed')) isDuplicate = true;
+                    // Server returns 'different hash' when iOS re-encodes the file between
+                    // hashing and uploading (HEIC auto-conversion, EXIF rewrite, iCloud sync, etc.)
+                    if (errorMsg.includes('different hash')) isDifferentHash = true;
                 } catch (e) {}
-                throw new Error(errorMsg);
+                if (isDuplicate) {
+                    console.warn(`[UploadService] Concurrent duplicate detected for ${hash}, treating as success.`);
+                    return { success: true, hash, duplicate: true };
+                }
+                const err = new Error(errorMsg);
+                err.isDifferentHash = isDifferentHash;
+                throw err;
             }
 
         } catch (error) {

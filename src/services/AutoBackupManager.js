@@ -234,15 +234,20 @@ class AutoBackupManager {
                 }
             } catch (error) {
                 console.error(`[AutoBackup] Failed to backup asset ${asset.id}:`, error);
-                this.consecutiveErrors++;
-                
-                // If we hit 3 consecutive failures, something is wrong with the network.
-                // Pause automatically to save battery and avoid spamming error popups.
+
+                // Only count network/server errors towards the consecutive-error pause threshold.
+                // 'different hash' is an iOS data-integrity issue (HEIC re-encoding, iCloud sync
+                // timing, etc.) — skipping these assets is correct, but pausing the whole backup
+                // for them is wrong.
+                if (!error.isDifferentHash) {
+                    this.consecutiveErrors++;
+                }
+
                 if (this.consecutiveErrors >= 3) {
-                    console.log('[AutoBackup] Too many consecutive errors, pausing.');
+                    console.log('[AutoBackup] Too many consecutive network errors, pausing.');
                     this.pause();
                     DeviceEventEmitter.emit('backupError', 'Backup paused due to persistent connection issues.');
-                    break; // Exit the loop
+                    break;
                 }
             }
 
@@ -295,6 +300,15 @@ class AutoBackupManager {
 // Global Task Definition
 TaskManager.defineTask(BACKGROUND_BACKUP_TASK, async () => {
     console.log('[BackgroundTask] Checking for new assets in background...');
+
+    // Guard: don't run if the foreground singleton is already actively uploading.
+    // Running both concurrently causes UNIQUE constraint races on the server.
+    const foregroundManager = require('./AutoBackupManager').default;
+    if (foregroundManager && foregroundManager.isBackingUp) {
+        console.log('[BackgroundTask] Foreground backup is active, skipping background task.');
+        return BackgroundTask.BackgroundTaskResult.Success;
+    }
+
     try {
         const manager = new AutoBackupManager();
         await manager.initSettings();
