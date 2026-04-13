@@ -79,7 +79,8 @@
         }
       ],
       "expo-secure-store",
-      "expo-task-manager"
+      "expo-task-manager",
+      "expo-background-task"
     ],
     "web": {
       "favicon": "./assets/favicon.png"
