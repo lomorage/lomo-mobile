@@ -46,12 +46,25 @@ class UploadService {
             throw new Error('Server connection not established. Please log in again.');
         }
 
+        let tempFileToClean = null;
+
         try {
-            // 1. Get full asset info and local URI
+            // 1. Get full asset info
             const info = await MediaService.getAssetInfo(asset.id);
-            const rawUri = info.localUri || info.uri;
-            if (!rawUri) throw new Error('Could not resolve local file path.');
-            const uri = MediaService.normalizeUri(rawUri);
+            let uploadUri = info.localUri || info.uri;
+
+            if (Platform.OS === 'ios' && asset.uri && asset.uri.startsWith('ph://')) {
+                // EXACT BYTES EXTRACTION:
+                // info.localUri from Expo often points to a dynamically transcoded JPG on iOS 
+                // which has a completely different hash than the original HEIC. 
+                // Copying the ph:// URI directly extracts the exact original file bytes.
+                uploadUri = `${FileSystem.cacheDirectory}${asset.id.replace(/[^a-zA-Z0-9]/g, '')}.raw`;
+                await FileSystem.copyAsync({ from: asset.uri, to: uploadUri });
+                tempFileToClean = uploadUri;
+            }
+
+            if (!uploadUri) throw new Error('Could not resolve local file path.');
+            const uri = MediaService.normalizeUri(uploadUri);
 
             // 2. Calculate SHA1 hash (required for Lomorage protocol)
             let hash = asset.hash;
@@ -139,6 +152,12 @@ class UploadService {
         } catch (error) {
             console.error('[UploadService] Upload failed:', error);
             throw error;
+        } finally {
+            if (tempFileToClean) {
+                try {
+                    await FileSystem.deleteAsync(tempFileToClean, { idempotent: true });
+                } catch (e) {}
+            }
         }
     }
 }
