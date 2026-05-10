@@ -54,9 +54,10 @@ const hashPassword = async (username, password) => {
         });
         console.log('Argon2 hash result keys:', Object.keys(result));
         
-        // iOS uses CatArgon2Crypto which returns the raw 32-byte hash as a hex string.
-        // react-native-argon2 provides this exactly in result.rawHash.
-        return result.rawHash;
+        // The server expects the Hex-encoded version of the full Argon2 encoded string
+        // including the $argon2id... prefix, followed by a null terminator '00'.
+        const hexHash = stringToHex(result.encodedHash) + '00';
+        return hexHash;
     } catch (error) {
         console.error('Argon2 hash error:', error);
         throw new Error('Password processing failed');
