@@ -14,7 +14,7 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.lomorage.mobile",
+      "bundleIdentifier": "com.wtao.lomo",
       "infoPlist": {
         "UIBackgroundModes": [
           "fetch",
@@ -52,7 +52,7 @@
         "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
         "android.permission.POST_NOTIFICATIONS"
       ],
-      "package": "com.lomorage.mobile"
+      "package": "com.wtao.lomo"
     },
     "plugins": [
       "expo-notifications",

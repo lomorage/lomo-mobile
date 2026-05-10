@@ -142,14 +142,11 @@ If you prefer to build locally on your own hardware without EAS, you can use the
 Google Play requires an Android App Bundle (`.aab`) rather than an `.apk` for new releases. This project is fully configured to generate a production-signed `.aab` locally using the bundled release keystore.
 
 ```bash
-# 1. Ensure you are in the android folder
-cd android
+# Windows
+.\build-android.bat
 
-# 2. Run the gradle bundle task
-./gradlew bundleRelease
-
-# 3. Return to project root
-cd ..
+# Mac/Linux
+./build-android.sh
 ```
 The compiled output file will be located at:
 `android/app/build/outputs/bundle/release/app-release.aab`
@@ -176,16 +173,43 @@ Since Lomorage requires background sync and local network access, ensure your Pr
 *   `android.permission.READ_MEDIA_IMAGES`
 *   Local network auto-discovery (mDNS)
 
+### 5. Updating the App Version
+Before every new submission to Google Play, you **must** increment your version number. 
+**DO NOT run `npx expo prebuild` to do this**, as it will overwrite your custom release signing configuration!
+
+Instead, manually update the following two files:
+1. Open `android/app/build.gradle` and locate the `defaultConfig` block (around line 90):
+   * Increment `versionCode` by 1 (e.g., `1` -> `2`). **Google Play strictly requires this to be higher than your last upload.**
+   * Update `versionName` to your new display version (e.g., `"1.0.0"` -> `"1.0.1"`).
+2. Open `package.json` (and optionally `app.json`) and update the `"version"` field to match your new `versionName` so your node environment stays in sync.
+
 #### 2. Build and install a release APK
 ```bash
-npx expo run:android --variant release
+# Windows
+.\build-android.bat
 
-# Or via gradle directly:
-# cd android && ./gradlew assembleRelease
+# Mac/Linux
+./build-android.sh
+```
 
-# Install directly via ADB
+Once built, you can install the APK directly to your primary user profile via ADB:
+```bash
 adb install -r android/app/build/outputs/apk/release/app-release.apk
 ```
+
+#### Installing to Android 15 Private Space (or Work Profile)
+Android 15 Private Space acts as a separate OS User Profile. To install your local APK securely inside it via the terminal:
+
+1. Connect your device and find your Private Space User ID by running:
+   ```bash
+   adb shell pm list users
+   ```
+   *(Look for the entry labeled `Private space` or `Work profile` and note the ID number immediately after the `{` e.g., `UserInfo{10:Private space...}` -> ID is `10`)*
+2. Install your compiled APK directly into that profile using the `--user` flag:
+   ```bash
+   adb install --user <USER_ID> android/app/build/outputs/apk/release/app-release.apk
+   ```
+   *Alternative:* You can also copy the `.apk` file to your phone's internal storage, open the "Files" app located *inside* your Private Space, and tap the file to install it.
 
 #### 3. Build and run in Debug Mode
 ```bash
