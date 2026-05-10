@@ -3,7 +3,7 @@ import axios from 'axios';
 import Argon2 from 'react-native-argon2';
 import { Alert } from 'react-native';
 
-axios.defaults.timeout = 10000; // Global 10s fallback to prevent native Java SocketTimeout popups
+axios.defaults.timeout = 60000; // Global 60s fallback to prevent native Java SocketTimeout popups
 
 const TOKEN_KEY = 'lomo_auth_token';
 const SERVER_KEY = 'lomo_server_url';
@@ -54,10 +54,9 @@ const hashPassword = async (username, password) => {
         });
         console.log('Argon2 hash result keys:', Object.keys(result));
         
-        // The server expects the Hex-encoded version of the full Argon2 encoded string
-        // including the $argon2id... prefix, followed by a null terminator '00'.
-        const hexHash = stringToHex(result.encodedHash) + '00';
-        return hexHash;
+        // iOS uses CatArgon2Crypto which returns the raw 32-byte hash as a hex string.
+        // react-native-argon2 provides this exactly in result.rawHash.
+        return result.rawHash;
     } catch (error) {
         console.error('Argon2 hash error:', error);
         throw new Error('Password processing failed');
@@ -258,8 +257,12 @@ class AuthService {
     const url = serverAddress.startsWith('http') ? serverAddress : `http://${serverAddress}`;
     
     try {
-      console.log(`Fetching available disks from: ${url}/disk`);
-      const response = await axios.get(`${url}/disk`);
+      console.log(`Fetching available disks from: ${url}/mount`);
+      const headers = {};
+      if (this.token) {
+        headers['Authorization'] = `token=${this.token}`;
+      }
+      const response = await axios.get(`${url}/mount`, { headers });
       
       if (response.status === 200 && Array.isArray(response.data)) {
         return response.data.map(d => ({
@@ -276,7 +279,7 @@ class AuthService {
     }
   }
 
-  async register(serverAddress, username, password, homedir, nickName = "") {
+  async register(serverAddress, username, password, homedir, nickName = "", autoLogin = true) {
     if (!serverAddress || !username || !password || !homedir) {
       throw new Error('All fields are required');
     }
@@ -294,12 +297,17 @@ class AuthService {
       };
 
       console.log('Registering user at:', `${url}/user`);
-      const response = await axios.post(`${url}/user`, payload);
+      const headers = {
+        'Authorization': `token=${this.token || ''}`
+      };
+      const response = await axios.post(`${url}/user`, payload, { headers });
 
       if (response.status === 200) {
-        console.log('Registration successful, logging in...');
-        // Automatically login after successful registration
-        return await this.login(serverAddress, username, password);
+        if (autoLogin) {
+            console.log('Registration successful, logging in...');
+            return await this.login(serverAddress, username, password);
+        }
+        return true;
       } else {
         throw new Error('Server returned an error during registration');
       }
@@ -307,19 +315,24 @@ class AuthService {
       if (error.response?.status === 409) {
         throw new Error('Username already exists on this server');
       }
-      console.error('Registration error:', error.message);
-      throw new Error(error.message || 'Failed to create account');
+      
+      let errorMessage = error.message;
+      if (error.response?.data) {
+        errorMessage = typeof error.response.data === 'string' 
+            ? error.response.data 
+            : JSON.stringify(error.response.data);
+      }
+
+      console.error('Registration error:', errorMessage);
+      throw new Error(errorMessage || 'Failed to create account');
     }
   }
 
   async logout() {
     this.token = null;
-    this.serverUrl = null;
     try {
       await SecureStore.deleteItemAsync(TOKEN_KEY);
-      await SecureStore.deleteItemAsync(SERVER_KEY);
-      await SecureStore.deleteItemAsync(SERVER_NAME_KEY);
-      // We keep username for convenience on next login
+      // We keep serverUrl and username for convenience on next login
     } catch (e) {
       console.error('Error clearing secure store', e);
     }
@@ -399,17 +412,20 @@ axios.interceptors.response.use(
     async (error) => {
         if (error.response && error.response.status === 401 && !authService._isShowingSessionAlert) {
             authService._isShowingSessionAlert = true;
+            
+            // Instantly log the user out so the screen transitions in the background
+            if (authService._onSessionExpired) {
+                authService._onSessionExpired();
+            }
+
             Alert.alert(
                 "Session Expired",
                 "Your login session has expired. Please log in again to continue.",
                 [
                     {
-                        text: "Log In",
+                        text: "OK",
                         onPress: () => {
                             authService._isShowingSessionAlert = false;
-                            if (authService._onSessionExpired) {
-                                authService._onSessionExpired();
-                            }
                         }
                     }
                 ]

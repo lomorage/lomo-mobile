@@ -38,16 +38,9 @@ class AutoBackupManager {
             this.updateNotification();
         });
 
-        // AppState Handoff: Monitor when app goes background/foreground
-        this.appState = AppState.currentState;
-        AppState.addEventListener('change', nextAppState => {
-            if (this.appState.match(/inactive|background/) && nextAppState === 'active') {
-                console.log('[AutoBackupManager] App returned to foreground. Syncing gallery...');
-                this.syncQueueWithGallery();
-            }
-            this.appState = nextAppState;
-            this.updateNotification();
-        });
+        // Note: We no longer listen to AppState changes here. 
+        // HomeScreen manages foregrounding and will call syncQueueWithGallery() 
+        // ONLY after the efficient Merkle Tree deep-sync is complete.
 
         this.updateNotification();
     }

@@ -13,9 +13,27 @@ class MediaService {
     const existing = await MediaLibrary.getPermissionsAsync();
     console.log('Existing permission status:', existing.status, 'granted:', existing.granted);
 
-    // Even if granted, we might need to check for location permission on Android
-    if (existing.granted && Platform.OS !== 'android') {
-      return true;
+    // On Android, we need to check if we also have the required granular permissions
+    if (existing.granted) {
+      if (Platform.OS !== 'android') {
+        return true;
+      }
+      
+      const { PermissionsAndroid } = require('react-native');
+      let needsRequest = false;
+      
+      if (Platform.Version >= 33) {
+        const hasImages = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.READ_MEDIA_IMAGES);
+        const hasLocation = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.ACCESS_MEDIA_LOCATION);
+        if (!hasImages || !hasLocation) needsRequest = true;
+      } else if (Platform.Version >= 29) {
+        const hasLocation = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.ACCESS_MEDIA_LOCATION);
+        if (!hasLocation) needsRequest = true;
+      }
+      
+      if (!needsRequest) {
+        return true; // We already have everything, don't trigger a system dialog!
+      }
     }
 
     try {

@@ -5,8 +5,9 @@ import DiscoveryService from '../services/DiscoveryService';
 import { Eye, EyeOff, ArrowLeft, HardDrive, CheckCircle } from 'lucide-react-native';
 import { useAuth } from '../context/AuthContext';
 
-export default function RegisterScreen({ navigation }) {
-    const { login: contextLogin } = useAuth();
+export default function RegisterScreen({ navigation, route }) {
+    const { register: contextRegister } = useAuth();
+    const fromSettings = route?.params?.fromSettings || false;
     const [server, setServer] = useState('');
     const [disks, setDisks] = useState([]);
     const [selectedDisk, setSelectedDisk] = useState(null);
@@ -59,6 +60,12 @@ export default function RegisterScreen({ navigation }) {
             return;
         }
 
+        const usernameRegex = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
+        if (!usernameRegex.test(username)) {
+            Alert.alert('Error', 'Username must start with a letter and contain only letters, numbers, hyphens, or underscores.');
+            return;
+        }
+
         if (password !== confirmPassword) {
             Alert.alert('Error', 'Passwords do not match');
             return;
@@ -71,9 +78,13 @@ export default function RegisterScreen({ navigation }) {
 
         setLoading(true);
         try {
-            await AuthService.register(server, username, password, selectedDisk);
-            // AuthService.register automatically logs in on success
-            // AuthContext will update and RootNavigator will show Home
+            await contextRegister(server, username, password, selectedDisk, !fromSettings);
+            if (fromSettings) {
+                Alert.alert('Success', 'User account created successfully!', [
+                    { text: 'OK', onPress: () => navigation.goBack() }
+                ]);
+            }
+            // If !fromSettings, contextRegister sets isAuthenticated=true and RootNavigator will swap stacks.
         } catch (error) {
             Alert.alert('Registration Failed', error.message);
         } finally {
@@ -91,7 +102,8 @@ export default function RegisterScreen({ navigation }) {
     return (
         <KeyboardAvoidingView 
             style={styles.container} 
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior="padding"
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 80}
         >
             <ScrollView 
                 contentContainerStyle={styles.scrollContent}
@@ -233,9 +245,9 @@ const styles = StyleSheet.create({
     inputGroup: { marginBottom: 20 },
     labelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
     label: { fontSize: 14, fontWeight: '600', color: '#4A5568', marginBottom: 8 },
-    input: { height: 52, borderWidth: 1.5, borderColor: '#E2E8F0', borderRadius: 12, paddingHorizontal: 16, fontSize: 16, backgroundColor: '#F8FAFC' },
+    input: { height: 52, borderWidth: 1.5, borderColor: '#E2E8F0', borderRadius: 12, paddingHorizontal: 16, fontSize: 16, backgroundColor: '#F8FAFC', color: '#1A202C' },
     passwordContainer: { flexDirection: 'row', alignItems: 'center', height: 52, borderWidth: 1.5, borderColor: '#E2E8F0', borderRadius: 12, paddingHorizontal: 16, backgroundColor: '#F8FAFC' },
-    passwordInput: { flex: 1, fontSize: 16 },
+    passwordInput: { flex: 1, fontSize: 16, color: '#1A202C' },
     diskList: { marginTop: 4 },
     diskCard: { flexDirection: 'row', alignItems: 'center', padding: 12, borderWidth: 1.5, borderColor: '#E2E8F0', borderRadius: 12, marginBottom: 8, backgroundColor: '#fff' },
     diskCardSelected: { borderColor: '#007AFF', backgroundColor: '#F0F7FF' },

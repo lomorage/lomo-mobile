@@ -121,19 +121,75 @@ eas build --platform ios --profile production
 
 ---
 
-### Android (any platform)
+## Building & Publishing the Android App
 
-#### Build and run on a device or emulator:
+### Option A — EAS Cloud Build (Recommended for Google Play)
+
+EAS builds the native Android App Bundle (`.aab`) on Expo's servers. This is the recommended approach as Expo securely manages your Google Play App Signing Keystore.
+
 ```bash
-npx expo run:android
+eas build --platform android --profile production
 ```
+Once complete, download the `.aab` from the Expo dashboard to submit to the Google Play Console.
 
-#### Build and install a release APK:
+### Option B — Local Windows/Mac Build (Gradle)
+
+If you prefer to build locally on your own hardware without EAS, you can use the Android Gradle wrapper. This requires the Android SDK and Java JDK 17 to be installed.
+
+## Publishing to Google Play Store
+
+### 1. Compile the Production App Bundle (.aab) Locally
+Google Play requires an Android App Bundle (`.aab`) rather than an `.apk` for new releases. This project is fully configured to generate a production-signed `.aab` locally using the bundled release keystore.
+
+```bash
+# 1. Ensure you are in the android folder
+cd android
+
+# 2. Run the gradle bundle task
+./gradlew bundleRelease
+
+# 3. Return to project root
+cd ..
+```
+The compiled output file will be located at:
+`android/app/build/outputs/bundle/release/app-release.aab`
+
+### 2. Gather Store Listing Assets
+To publish the app, you will need to upload specific graphical assets to the Google Play Console under **Store presence > Main store listing**:
+*   **App Icon**: 512 x 512 px PNG (Generated and stored as `assets/icon.png`)
+*   **Feature Graphic**: 1024 x 500 px PNG (Generated as `lomorage_feature_graphic...png` in your local artifacts)
+*   **Phone Screenshots**: At least 2-8 screenshots from a phone device. (Use Android Studio AVD to take clean screenshots of the sync gallery).
+*   **Tablet Screenshots**: At least 2-8 screenshots for a 7-inch tablet, and another set for a 10-inch tablet.
+
+### 3. Upload to Google Play Console
+1. Log in to the [Google Play Console](https://play.google.com/console).
+2. Create a new App or select "Lomorage".
+3. Navigate to **Testing > Internal Testing** or **Production**.
+4. Click **Create new release**.
+5. Upload the `app-release.aab` file you generated in Step 1.
+6. Fill out your release notes and click **Save**.
+
+### 4. Review Permissions
+Since Lomorage requires background sync and local network access, ensure your Privacy Policy explicitly mentions the use of the following Android Permissions:
+*   `android.permission.FOREGROUND_SERVICE`
+*   `android.permission.FOREGROUND_SERVICE_DATA_SYNC`
+*   `android.permission.READ_MEDIA_IMAGES`
+*   Local network auto-discovery (mDNS)
+
+#### 2. Build and install a release APK
 ```bash
 npx expo run:android --variant release
 
+# Or via gradle directly:
+# cd android && ./gradlew assembleRelease
+
 # Install directly via ADB
 adb install -r android/app/build/outputs/apk/release/app-release.apk
+```
+
+#### 3. Build and run in Debug Mode
+```bash
+npx expo run:android
 ```
 
 ## Debugging on Real Devices

@@ -23,17 +23,28 @@ export const AuthProvider = ({ children }) => {
 
   // Register the session-expiry callback so 401 triggers logout
   useEffect(() => {
+    console.log('[AuthContext] Registering _onSessionExpired callback');
     AuthService.setOnSessionExpired(async () => {
       console.log('[AuthContext] Session expired, logging out...');
       await AuthService.logout();
       setIsAuthenticated(false);
     });
-    return () => AuthService.setOnSessionExpired(null);
+    return () => {
+      console.log('[AuthContext] Unregistering _onSessionExpired callback');
+      AuthService.setOnSessionExpired(null);
+    };
   }, []);
 
   const login = async (server, username, password, serverName = null) => {
     await AuthService.login(server, username, password, serverName);
     setIsAuthenticated(true);
+  };
+
+  const register = async (server, username, password, homedir, autoLogin = true) => {
+    await AuthService.register(server, username, password, homedir, "", autoLogin);
+    if (autoLogin) {
+      setIsAuthenticated(true);
+    }
   };
 
   const logout = async () => {
@@ -42,7 +53,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ isAuthenticated, isLoading, login, logout }}>
+    <AuthContext.Provider value={{ isAuthenticated, isLoading, login, register, logout }}>
       {children}
     </AuthContext.Provider>
   );

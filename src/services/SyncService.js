@@ -577,7 +577,7 @@ class SyncService {
     try {
       const response = await axios.get(`${url}/assets/merkletree?all=1`, {
         headers: { Authorization: `token=${token}` },
-        timeout: 10000
+        timeout: 60000
       });
       
       const remoteRoot = new AssetMerkleRoot();
@@ -641,7 +641,7 @@ class SyncService {
     try {
       const response = await axios.get(`${url}/assets/merkletree/${year}/${month}`, {
         headers: { Authorization: `token=${token}` },
-        timeout: 10000
+        timeout: 60000
       });
       return response.data; // { Month: X, Hash: "...", Days: [...] }
     } catch (e) {
@@ -658,7 +658,7 @@ class SyncService {
     try {
       const response = await axios.get(`${url}/assets/merkletree/${year}/${month}/${day}`, {
         headers: { Authorization: `token=${token}` },
-        timeout: 10000
+        timeout: 60000
       });
       return response.data; // { Day: X, Hash: "...", Assets: [...] }
     } catch (e) {

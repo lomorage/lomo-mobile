@@ -1,12 +1,14 @@
 import React from 'react';
-import { StyleSheet, View, Text, Switch, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
+import { StyleSheet, View, ScrollView, Text, Switch, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
 import { ChevronLeft, Trash2, RefreshCcw, Server } from 'lucide-react-native';
 import { useSettings } from '../context/SettingsContext';
+import { useAuth } from '../context/AuthContext';
 import SyncService from '../services/SyncService';
 import AuthService from '../services/AuthService';
 
 export default function SettingsScreen({ navigation }) {
     const { debugMode, toggleDebugMode, autoBackupEnabled, toggleAutoBackup, wifiOnlyBackup, toggleWifiOnly } = useSettings();
+    const { logout } = useAuth();
     const [stats, setStats] = React.useState({ local: 0, remote: 0 });
     const [isScanning, setIsScanning] = React.useState(false);
     const [serverUrl, setServerUrl] = React.useState(AuthService.getServerUrl());
@@ -62,6 +64,7 @@ export default function SettingsScreen({ navigation }) {
                 <View style={{ width: 44 }} />
             </View>
 
+            <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 40 }}>
             <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Backup Strategy</Text>
                 
@@ -194,7 +197,43 @@ export default function SettingsScreen({ navigation }) {
                         : <RefreshCcw color="#007AFF" size={20} />
                     }
                 </TouchableOpacity>
+
+                <TouchableOpacity 
+                    style={[styles.settingRow, { marginTop: 10 }]}
+                    onPress={() => navigation.navigate('Register', { fromSettings: true })}
+                >
+                    <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabel}>Create New Account</Text>
+                        <Text style={styles.settingDescription}>Register a new user on this Lomorage server.</Text>
+                    </View>
+                </TouchableOpacity>
+
+                <TouchableOpacity 
+                    style={[styles.settingRow, { marginTop: 10 }]}
+                    onPress={() => {
+                        Alert.alert(
+                            "Log Out",
+                            "Are you sure you want to log out of your account?",
+                            [
+                                { text: "Cancel", style: "cancel" },
+                                { 
+                                    text: "Log Out", 
+                                    style: "destructive",
+                                    onPress: async () => {
+                                        await logout();
+                                    }
+                                }
+                            ]
+                        );
+                    }}
+                >
+                    <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabelDanger}>Log Out</Text>
+                        <Text style={styles.settingDescription}>Disconnect from this server and return to the login screen.</Text>
+                    </View>
+                </TouchableOpacity>
             </View>
+            </ScrollView>
         </View>
     );
 }
