@@ -134,12 +134,11 @@ Open the installed **Lomorage** app on your iPhone. It will scan for Metro, or t
 > **Note**: Your iPhone and dev machine must be on the **same Wi-Fi network**. Rebuild with `eas build` only when native code changes; JS changes hot-reload over Metro.
 
 #### 5. Build a Preview / Production IPA
+For detailed instructions on preparing and submitting a production build, see the [Publishing to Apple App Store](#publishing-to-apple-app-store) section.
+
 ```bash
 # Ad-hoc distribution for internal testers
 eas build --platform ios --profile preview
-
-# App Store production build
-eas build --platform ios --profile production
 ```
 
 ---
@@ -239,7 +238,89 @@ Android 15 Private Space acts as a separate OS User Profile. To install your loc
 npx expo run:android
 ```
 
+## Publishing to Apple App Store
+
+### 1. Compile the Production Build (.ipa)
+
+Choose one of the following options to generate your signed production binary.
+
+#### Option A — EAS Cloud Build (Recommended)
+This is the easiest way as Expo handles all certificates, provisioning profiles, and distribution certificates in the cloud.
+
+```bash
+eas build --platform ios --profile production
+```
+
+#### Option B — Local Build (Xcode)
+If you prefer to build locally on your Mac without using Expo's cloud servers:
+
+1.  **Ensure native code is up to date**:
+    ```bash
+    npx expo prebuild --platform ios
+    ```
+2.  **Open the workspace in Xcode**:
+    ```bash
+    open ios/lomomobile.xcworkspace
+    ```
+3.  **Prepare for Release**:
+    - In Xcode, select the **lomomobile** target.
+    - Set the run destination to **Any iOS Device (arm64)**.
+    - Go to **Product > Archive**.
+4.  **Distribute**:
+    - Once the archive is complete, the Organizer window will open.
+    - Click **Distribute App** and follow the prompts for **App Store Connect**.
+
+> [!IMPORTANT]
+> **Create the App Record in App Store Connect first.** Before distributing from Xcode for the first time, manually create the app at [appstoreconnect.apple.com](https://appstoreconnect.apple.com) → **Apps** → **+** → **New App**, filling in the Bundle ID (`com.wtao.lomo`), name, and SKU. If you let Xcode auto-create the record, it may fail with `ENTITY_ERROR.ATTRIBUTE.REQUIRED companyName` — particularly on Individual Apple Developer accounts where no company name is set. Once the record exists, Xcode will upload to it without issues.
+
+#### Option C — Local EAS Build
+You can use EAS CLI to run the build process locally on your Mac (requires Xcode and CocoaPods). This uses your `eas.json` configuration but doesn't upload your code to Expo's servers.
+
+```bash
+eas build --platform ios --profile production --local
+```
+
+### 2. Submit to App Store Connect
+
+If you used **Option A or C**, you can submit the built IPA directly from your terminal:
+
+```bash
+eas submit --platform ios --profile production
+```
+
+Alternatively, you can download the `.ipa` from the Expo dashboard and upload it using the [Transporter app](https://apps.apple.com/us/app/transporter/id1450876684) or Xcode.
+
+> [!TIP]
+> **First-Time Submission Error**: If you see an error like `ENTITY_ERROR.ATTRIBUTE.REQUIRED` for `companyName`, it means Apple requires a "Company Name" for your account's first submission. I have added `"companyName": "Lomorage"` to `eas.json`. Ensure this matches your legal entity name in App Store Connect.
+
+### 3. Updating the App Version
+
+Before submitting a new version, you must increment the version numbers in `app.json`. Apple requires the `buildNumber` to be unique for every upload to App Store Connect.
+
+1. Open `app.json` and update:
+   - `expo.version`: The user-facing version string (e.g., `"1.0.1"`).
+   - `expo.ios.buildNumber`: A unique string or integer for this specific build (e.g., `"2"`).
+
+```json
+{
+  "expo": {
+    "version": "1.0.1",
+    "ios": {
+      "buildNumber": "2"
+    }
+  }
+}
+```
+
+### 4. Review Privacy & Permissions
+
+Ensure your App Store listing accurately describes the use of permissions declared in `app.json`. Key permissions include:
+- **NSPhotoLibraryUsageDescription**: Required for gallery sync.
+- **NSLocalNetworkUsageDescription**: Required for discovering Lomorage servers on the local network.
+- **UIBackgroundModes**: `fetch` and `location` are enabled for background sync.
+
 ## Debugging on Real Devices
+
 
 ### iOS Debugging
 

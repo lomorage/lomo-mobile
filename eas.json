@@ -23,6 +23,10 @@
     }
   },
   "submit": {
-    "production": {}
+    "production": {
+      "ios": {
+        "companyName": "WTAO LLC"
+      }
+    }
   }
 }
