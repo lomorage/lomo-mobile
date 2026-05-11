@@ -5,14 +5,26 @@ React Native / Expo client for Lomorage, optimized for massive gallery syncs (18
 ## Prerequisites
 
 ### All Platforms
-- **Node.js**: 20.x or later (`node --version` should report `v20.x` or higher)
-- **npm**: Bundled with Node.js (used with `--legacy-peer-deps` for Expo SDK 54 compatibility)
+- **Node.js (includes npm & npx)**: 20.x or later (`node --version` should report `v20.x` or higher). `npx` is the Node Package Execute binary and comes bundled with Node.js.
+  - **macOS / Linux**: We recommend using `nvm` (Node Version Manager):
+    ```bash
+    # Note: The nvm installer strictly requires `| bash` to execute, but it will automatically configure your default zsh profile.
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+    # Since macOS uses zsh by default, source your zsh profile:
+    source ~/.zshrc
+    nvm install 20
+    nvm use 20
+    ```
+    *(Alternatively, on macOS with Homebrew: `brew install node@20`)*
+  - **Windows**: Download the official installer from [nodejs.org](https://nodejs.org/) or use `nvm-windows`.
+- **npm / npx**: Built into your Node installation. (Use npm with `--legacy-peer-deps` for Expo SDK 54 compatibility)
 - **Expo Account**: Free account at [expo.dev](https://expo.dev) — required for EAS cloud builds and device registration
 
 ### macOS (for local iOS builds)
 - **Xcode**: 15 or later (install from the Mac App Store)
 - **Xcode Command Line Tools**: `xcode-select --install`
-- **CocoaPods**: `sudo gem install cocoapods` (or `brew install cocoapods`)
+- **CocoaPods**: We strongly recommend using Homebrew: `brew install cocoapods`. 
+  > *Note: Do not use `sudo gem install cocoapods` if your Mac uses older system Ruby (2.6.x), as it will cause endless dependency errors (`ffi`, `securerandom`, etc.). If you don't have Homebrew, install it first via [brew.sh](https://brew.sh).*
 - **iOS Simulator** (optional): Included with Xcode; physical device recommended for full feature testing
 - **Apple Developer Account**: Required to sign and deploy to a physical device ([developer.apple.com](https://developer.apple.com))
 
@@ -62,13 +74,14 @@ npx expo run:ios --simulator "iPhone 16 Pro"
 #### 3. Build and launch on a Physical iPhone
 
 1. Connect your iPhone via USB and trust the Mac.
-2. Open the generated workspace in Xcode:
+2. Ensure the `ios` directory exists by running `npx expo prebuild --platform ios` if you haven't already.
+3. Open the generated workspace in Xcode (it is critical to open the `.xcworkspace`, not `.xcodeproj`):
    ```bash
    open ios/lomomobile.xcworkspace
    ```
-3. In Xcode: select your iPhone as the run destination, then go to  
+4. In Xcode: click your project in the left pane, select your iPhone as the run destination at the top, then go to  
    **Signing & Capabilities → Team** and select your Apple Developer account.
-4. Press **▶ Run** (⌘R) — Xcode will sign, install, and launch the app.
+5. Press **▶ Run** (⌘R) — Xcode will sign, install, and launch the app.
 5. Once installed, start the Metro bundler from your terminal:
    ```bash
    npx expo start --dev-client
@@ -96,11 +109,21 @@ eas device:create
 Follow the prompts — this registers your device's UDID so EAS can sign the build for it.
 
 #### 3. Build the Development Client in the cloud
+
+**For a physical device:**
 ```bash
 eas build --platform ios --profile development
 ```
 - The build runs on Expo's servers (no Mac needed).
 - When complete, EAS provides a QR code / link. Scan it on your iPhone to install the `.ipa`.
+
+**For an iOS Simulator (if you have a Mac):**
+```bash
+eas build --platform ios --profile development-simulator
+```
+- The build runs on Expo's servers.
+- When complete, download the generated `.tar.gz` from the Expo dashboard.
+- Extract it and drag the `.app` file into your running iOS Simulator.
 
 #### 4. Start the Metro dev server (runs on Windows/Linux/macOS)
 ```bash
