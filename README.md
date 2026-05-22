@@ -92,6 +92,50 @@ npx expo run:ios --simulator "iPhone 16 Pro"
 
 ---
 
+### Apple Live Photo Backup Support
+
+The iOS application natively detects and packs Apple Live Photos into standard PKZIP archives before upload, ensuring that both the high-quality static HEIC/JPG image and the paired high-frame-rate `.mov` motion video are backed up together with full integrity.
+
+*   **Native Detection**: Scans asset metadata using the `PHAsset` API to identify Live Photos.
+*   **Archiving**: Uses `PHAssetResourceManager` to extract the original raw image and video resource files, zipping them natively inside the Expo native module wrapper (`ExpoLomoHasher`).
+*   **Lomorage Comment Metadata**: Appends a standard JSON EOCD comment payload containing individual resource SHA-1 integrity hashes:
+    ```json
+    {"image_sha1": "<imageHash>", "video_sha1": "<videoHash>", "total_sha1": "<combinedHash>"}
+    ```
+*   **Integrity Hash**: Uses the combined total hash (`SHA1(imageHash + videoHash)`) as the server-side asset key for high-integrity de-duplication.
+
+### Xcode 16+ Build & Linker Troubleshooting
+
+If you compile the project locally on Xcode 16+ (macOS 15 SDK), you may encounter known compiler/linker bugs introduced by Apple's New Architecture tooling. These have been resolved inside our build pipeline via automated CocoaPods configurations:
+
+#### 1. SwiftUICore Linker Restriction
+*   **Symptom**: Linker failure stating `cannot link directly with 'SwiftUICore' because product being built is not an allowed client of it`.
+*   **Fix**: Explicit module compilation has been disabled for dependency targets. The `ios/Podfile` handles this automatically in the `post_install` hook:
+    ```ruby
+    target.build_configurations.each do |config|
+      config.build_settings['SWIFT_ENABLE_EXPLICIT_MODULES'] = 'NO'
+    end
+    ```
+
+#### 2. C++20 Consteval Validation (`fmt` Library)
+*   **Symptom**: Compilation fails with `call to consteval function is not a constant expression` in the `fmt` target under C++20.
+*   **Fix**: The `fmt` compiler standard is configured to C++17 inside the `post_install` block of `ios/Podfile` to bypass strict C++20 checks:
+    ```ruby
+    if target.name == 'fmt'
+      config.build_settings['CLANG_CXX_LANGUAGE_STANDARD'] = 'c++17'
+    end
+    ```
+
+#### 3. React Native Fabric/JSI Linker Symbol Mismatches
+*   **Symptom**: Undefined symbol errors for core React Native C++ types (`facebook::react::Sealable`, `YogaStylableProps`, etc.).
+*   **Fix**: Disable React Native prebuilt libraries and build React Native Core from source. Ensure `Podfile.properties.json` contains:
+    ```json
+    "ios.buildReactNativeFromSource": "true"
+    ```
+    After updating, run `pod install` or `npx expo prebuild --clean` to re-compile React Native Core cleanly.
+
+---
+
 ### Option B — Windows (or any OS): EAS Cloud Build
 
 EAS builds the native iOS binary on Expo's macOS servers, so a Mac is not required.
@@ -311,6 +355,10 @@ Before submitting a new version, you must increment the version numbers in `app.
   }
 }
 ```
+
+> [!WARNING]
+> **Xcode Version Sync Issues**: If you build locally and Xcode does not reflect the updated `app.json` versions, it is because the version was previously manually edited in Xcode. This hardcodes `MARKETING_VERSION` in the `project.pbxproj` file, which permanently overrides Expo. 
+> To fix this and force Xcode to listen to `app.json` again, run `npx expo prebuild --clean --platform ios`. This recreates the `ios/` folder from scratch.
 
 ### 4. Review Privacy & Permissions
 

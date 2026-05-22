@@ -52,8 +52,26 @@ class UploadService {
             // 1. Get full asset info
             const info = await MediaService.getAssetInfo(asset.id);
             let uploadUri = info.localUri || info.uri;
+            let isLivePhoto = false;
+            let livePhotoBackup = null;
 
             if (Platform.OS === 'ios' && asset.uri && asset.uri.startsWith('ph://')) {
+                isLivePhoto = await MediaService.isLivePhotoAsync(asset.uri);
+                if (isLivePhoto) {
+                    try {
+                        console.log(`[UploadService] Asset ${asset.id} is a Live Photo. Preparing zip backup...`);
+                        livePhotoBackup = await MediaService.prepareLivePhotoBackupAsync(asset.uri);
+                    } catch (err) {
+                        console.error('[UploadService] Live Photo zipping failed:', err);
+                        throw err;
+                    }
+                }
+            }
+
+            if (livePhotoBackup) {
+                uploadUri = livePhotoBackup.uri;
+                tempFileToClean = uploadUri;
+            } else if (Platform.OS === 'ios' && asset.uri && asset.uri.startsWith('ph://')) {
                 // EXACT BYTES EXTRACTION:
                 // info.localUri from Expo often points to a dynamically transcoded JPG on iOS 
                 // which has a completely different hash than the original HEIC. 
@@ -68,6 +86,9 @@ class UploadService {
 
             // 2. Calculate SHA1 hash (required for Lomorage protocol)
             let hash = asset.hash;
+            if (livePhotoBackup) {
+                hash = livePhotoBackup.hash;
+            }
             if (!hash) {
                 hash = await MediaService.calculateHash(uri);
             }
@@ -81,7 +102,7 @@ class UploadService {
             }
 
             // 4. Construct Upload URL with metadata
-            const ext = (info.filename || 'file.jpg').split('.').pop().toLowerCase();
+            const ext = livePhotoBackup ? 'zip' : (info.filename || 'file.jpg').split('.').pop().toLowerCase();
             const creationTime = new Date(info.creationTime || Date.now()).toISOString();
             const uploadUrl = `${serverUrl}/asset/${hash.toLowerCase()}?ext=${ext}&createtime=${creationTime}`;
 

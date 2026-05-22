@@ -3,7 +3,7 @@ import * as LegacyFileSystem from 'expo-file-system/legacy';
 import * as Crypto from 'expo-crypto';
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
-import { hashFileAsync } from '../../modules/expo-lomo-hasher';
+import { hashFileAsync, isLivePhotoAsync, prepareLivePhotoBackupAsync } from '../../modules/expo-lomo-hasher';
 import axios from 'axios';
 import AuthService from './AuthService';
 
@@ -258,6 +258,26 @@ class MediaService {
     } catch (error) {
       console.error('[MediaService] Error deleting local asset:', error.message);
       throw error;
+    }
+  }
+
+  async isLivePhotoAsync(uri) {
+    if (Platform.OS !== 'ios' || !uri) return false;
+    try {
+      return await isLivePhotoAsync(uri);
+    } catch (e) {
+      console.warn('[MediaService] isLivePhotoAsync check failed:', e.message);
+      return false;
+    }
+  }
+
+  async prepareLivePhotoBackupAsync(uri) {
+    if (Platform.OS !== 'ios' || !uri) return null;
+    try {
+      return await prepareLivePhotoBackupAsync(uri);
+    } catch (e) {
+      console.error('[MediaService] prepareLivePhotoBackupAsync failed:', e.message);
+      throw e;
     }
   }
 }
