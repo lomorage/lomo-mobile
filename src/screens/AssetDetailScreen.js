@@ -105,37 +105,63 @@ export default function AssetDetailScreen({ route, navigation }) {
             if (!item || !isLivePhoto(item)) return;
             
             const assetId = item.hash || item.id;
-            if (extractedVideoUris[assetId]) return; // Already prepared!
+            if (extractedVideoUris[assetId]) return; // Already prepared in memory!
             
             setIsPreparingLive(true);
             try {
                 let videoPath = null;
-                if (item.status === 'remote') {
-                    const FileSystem = require('expo-file-system/legacy');
-                    const baseUrl = AuthService.getServerUrl();
-                    const token = AuthService.getToken();
-                    const remoteZipUrl = `${baseUrl}/asset/${assetId}?token=${token}`;
-                    
-                    const localZipPath = `${FileSystem.cacheDirectory}${assetId}.zip`;
-                    console.log(`[AssetDetail] Downloading remote Live Photo Zip: ${remoteZipUrl} -> ${localZipPath}`);
-                    
-                    const downloadResult = await FileSystem.downloadAsync(remoteZipUrl, localZipPath);
-                    
-                    if (active && downloadResult.status === 200) {
-                        console.log(`[AssetDetail] Native unzipping video from: ${downloadResult.uri}`);
-                        videoPath = await MediaService.extractVideoFromZipAsync(downloadResult.uri);
-                        try {
-                            await FileSystem.deleteAsync(downloadResult.uri);
-                        } catch(e) {}
-                    }
+                const FileSystem = require('expo-file-system/legacy');
+                const cacheVideoPath = `${FileSystem.cacheDirectory}${assetId}.mov`;
+                
+                // 1. First, check if we already have the extracted video file cached on the local disk!
+                const fileInfo = await FileSystem.getInfoAsync(cacheVideoPath);
+                if (fileInfo.exists) {
+                    console.log(`[AssetDetail] Local disk cache hit for video: ${cacheVideoPath}`);
+                    videoPath = cacheVideoPath;
                 } else {
-                    // Local asset
-                    console.log(`[AssetDetail] Fetching local Live Photo video path: ${item.uri}`);
-                    videoPath = await MediaService.getLocalLivePhotoVideoUriAsync(item.uri);
+                    // Cache miss: extract it!
+                    if (item.status === 'remote') {
+                        const baseUrl = AuthService.getServerUrl();
+                        const token = AuthService.getToken();
+                        const remoteZipUrl = `${baseUrl}/asset/${assetId}?token=${token}`;
+                        
+                        const localZipPath = `${FileSystem.cacheDirectory}${assetId}.zip`;
+                        console.log(`[AssetDetail] Downloading remote Live Photo Zip: ${remoteZipUrl} -> ${localZipPath}`);
+                        
+                        const downloadResult = await FileSystem.downloadAsync(remoteZipUrl, localZipPath);
+                        
+                        if (active && downloadResult.status === 200) {
+                            console.log(`[AssetDetail] Native unzipping video from: ${downloadResult.uri}`);
+                            const extractedPath = await MediaService.extractVideoFromZipAsync(downloadResult.uri);
+                            
+                            // Move the extracted video from temporary directory to our stable local cacheVideoPath!
+                            await FileSystem.moveAsync({
+                                from: extractedPath,
+                                to: cacheVideoPath
+                            });
+                            videoPath = cacheVideoPath;
+                            
+                            // Clean up downloaded zip to save disk space
+                            try {
+                                await FileSystem.deleteAsync(downloadResult.uri);
+                            } catch(e) {}
+                        }
+                    } else {
+                        // Local asset: fetch from Photos library
+                        console.log(`[AssetDetail] Fetching local Live Photo video path: ${item.uri}`);
+                        const extractedPath = await MediaService.getLocalLivePhotoVideoUriAsync(item.uri);
+                        
+                        // Move the extracted video to our stable local cacheVideoPath!
+                        await FileSystem.moveAsync({
+                            from: extractedPath,
+                            to: cacheVideoPath
+                        });
+                        videoPath = cacheVideoPath;
+                    }
                 }
                 
                 if (active && videoPath) {
-                    console.log(`[AssetDetail] Prepared Live Photo video component: ${videoPath}`);
+                    console.log(`[AssetDetail] Prepared Live Photo video path: ${videoPath}`);
                     setExtractedVideoUris(prev => ({ ...prev, [assetId]: videoPath }));
                 }
             } catch (e) {
@@ -307,11 +333,9 @@ export default function AssetDetailScreen({ route, navigation }) {
             <View style={{ width, height: height * 0.7, justifyContent: 'center', alignItems: 'center', position: 'relative' }}>
                 {shouldMountVideo ? (
                     <AssetVideoPlayer uri={uri} style={styles.image} shouldPlay={isVisible} />
-                ) : shouldPlayLive ? (
-                    <AssetVideoPlayer uri={liveVideoUri} style={styles.image} shouldPlay={true} />
                 ) : (
                     <Pressable
-                        style={{ width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center' }}
+                        style={{ width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center', position: 'relative' }}
                         onPressIn={() => {
                             if (isLive && liveVideoUri) {
                                 setIsLivePlaying(true);
@@ -321,11 +345,21 @@ export default function AssetDetailScreen({ route, navigation }) {
                             setIsLivePlaying(false);
                         }}
                     >
+                        {/* Static Image is ALWAYS rendered as the base background layer */}
                         <Image
                             source={{ uri: (item.mediaType === 'video' && isRemote) ? item.uri : uri }}
                             style={styles.image}
                             resizeMode="contain"
                         />
+
+                        {/* Looping Video Player is absolute positioned on top of the Image when playing */}
+                        {shouldPlayLive ? (
+                            <AssetVideoPlayer 
+                                uri={liveVideoUri} 
+                                style={[styles.image, StyleSheet.absoluteFill]} 
+                                shouldPlay={true} 
+                            />
+                        ) : null}
                     </Pressable>
                 )}
                 {isLive ? (
