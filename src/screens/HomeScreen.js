@@ -12,6 +12,58 @@ const { width } = Dimensions.get('window');
 const COLUMN_COUNT = 3;
 const ITEM_SIZE = width / COLUMN_COUNT;
 
+const isLivePhoto = (asset) => {
+    // 1. Local or synced asset with mediaSubtypes metadata
+    if (asset.mediaSubtypes && (asset.mediaSubtypes.includes('livePhoto') || asset.mediaSubtypes.includes('live'))) {
+        return true;
+    }
+    // 2. Synced local or remote asset check using cached hash in remoteTree
+    if (asset.hash) {
+        const remoteNode = SyncService.remoteTree?.getNodeByHash(asset.hash);
+        if (remoteNode && remoteNode.tag && remoteNode.tag.toLowerCase().endsWith('.zip')) {
+            return true;
+        }
+    }
+    return false;
+};
+
+const LivePhotoIcon = ({ color = '#fff', size = 14 }) => {
+    const innerSize = size * 0.45;
+    const middleSize = size * 0.75;
+    return (
+        <View style={{ width: size, height: size, justifyContent: 'center', alignItems: 'center' }}>
+            {/* Outer dashed concentric ring */}
+            <View style={{
+                position: 'absolute',
+                width: size,
+                height: size,
+                borderRadius: size / 2,
+                borderWidth: 1,
+                borderColor: color,
+                borderStyle: 'dashed',
+                opacity: 0.8
+            }} />
+            {/* Middle solid ring */}
+            <View style={{
+                position: 'absolute',
+                width: middleSize,
+                height: middleSize,
+                borderRadius: middleSize / 2,
+                borderWidth: 1,
+                borderColor: color,
+                opacity: 0.9
+            }} />
+            {/* Center solid dot */}
+            <View style={{
+                width: innerSize,
+                height: innerSize,
+                borderRadius: innerSize / 2,
+                backgroundColor: color
+            }} />
+        </View>
+    );
+};
+
 export default function HomeScreen({ navigation }) {
     const [assets, setAssets] = useState([]);
     const [syncing, setSyncing] = useState(false);
@@ -349,9 +401,11 @@ export default function HomeScreen({ navigation }) {
             const combinedInitial = [...initialAssets, ...remoteAssets].sort((a, b) => (b.creationTime || 0) - (a.creationTime || 0));
 
             if (isMounted.current) {
+                GalleryStore.setAssets(combinedInitial);
                 setAssets(combinedInitial);
                 setLoading(false);
                 setSyncing(true);
+                AutoBackupManager.syncQueueWithGallery();
             }
 
             // 3. Update Remote Knowledge on network background (gracefully handle failures)
@@ -535,6 +589,11 @@ export default function HomeScreen({ navigation }) {
                     <View style={[styles.image, { backgroundColor: '#f0f0f0' }]} />
                 )}
                 <StatusIcon item={asset} currentAssetId={currentAssetId} />
+                {isLivePhoto(asset) ? (
+                    <View style={styles.livePhotoBadge}>
+                        <LivePhotoIcon size={12} color="#fff" />
+                    </View>
+                ) : null}
                 {asset.mediaType === 'video' ? (
                     <View style={[styles.imageOverlay, styles.videoOverlay]}>
                         <PlayCircle color="#fff" size={32} />
@@ -895,6 +954,19 @@ const styles = StyleSheet.create({
         shadowOffset: { width: 0, height: 1 },
         shadowOpacity: 0.5,
         shadowRadius: 2,
+        elevation: 3,
+    },
+    livePhotoBadge: {
+        position: 'absolute',
+        top: 6,
+        left: 6,
+        backgroundColor: 'rgba(0, 0, 0, 0.4)',
+        padding: 5,
+        borderRadius: 12,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.4,
+        shadowRadius: 1.5,
         elevation: 3,
     },
     clearButton: {

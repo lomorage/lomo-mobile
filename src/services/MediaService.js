@@ -153,6 +153,10 @@ class MediaService {
           return null;
         }
         fileSize = fileInfo.size || 0;
+        if (fileSize === 0) {
+          if (!silent) console.log(`[MediaService] File size is 0: ${normalizedUri}`);
+          return null;
+        }
       }
 
       // NATIVE HASHER: Pass the RAW path string. 

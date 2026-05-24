@@ -11,6 +11,58 @@ import GalleryStore from '../store/GalleryStore';
 
 const { width, height } = Dimensions.get('window');
 
+const isLivePhoto = (asset) => {
+    // 1. Local or synced asset with mediaSubtypes metadata
+    if (asset.mediaSubtypes && (asset.mediaSubtypes.includes('livePhoto') || asset.mediaSubtypes.includes('live'))) {
+        return true;
+    }
+    // 2. Synced local or remote asset check using cached hash in remoteTree
+    if (asset.hash) {
+        const remoteNode = SyncService.remoteTree?.getNodeByHash(asset.hash);
+        if (remoteNode && remoteNode.tag && remoteNode.tag.toLowerCase().endsWith('.zip')) {
+            return true;
+        }
+    }
+    return false;
+};
+
+const LivePhotoIcon = ({ color = '#fff', size = 14 }) => {
+    const innerSize = size * 0.45;
+    const middleSize = size * 0.75;
+    return (
+        <View style={{ width: size, height: size, justifyContent: 'center', alignItems: 'center' }}>
+            {/* Outer dashed concentric ring */}
+            <View style={{
+                position: 'absolute',
+                width: size,
+                height: size,
+                borderRadius: size / 2,
+                borderWidth: 1,
+                borderColor: color,
+                borderStyle: 'dashed',
+                opacity: 0.8
+            }} />
+            {/* Middle solid ring */}
+            <View style={{
+                position: 'absolute',
+                width: middleSize,
+                height: middleSize,
+                borderRadius: middleSize / 2,
+                borderWidth: 1,
+                borderColor: color,
+                opacity: 0.9
+            }} />
+            {/* Center solid dot */}
+            <View style={{
+                width: innerSize,
+                height: innerSize,
+                borderRadius: innerSize / 2,
+                backgroundColor: color
+            }} />
+        </View>
+    );
+};
+
 function AssetVideoPlayer({ uri, style, shouldPlay }) {
     const player = useVideoPlayer(uri, player => {
         player.loop = true;
@@ -189,7 +241,7 @@ export default function AssetDetailScreen({ route, navigation }) {
         const shouldMountVideo = item.mediaType === 'video' && isVisible;
 
         return (
-            <View style={{ width, height: height * 0.7, justifyContent: 'center', alignItems: 'center' }}>
+            <View style={{ width, height: height * 0.7, justifyContent: 'center', alignItems: 'center', position: 'relative' }}>
                 {shouldMountVideo ? (
                     <AssetVideoPlayer uri={uri} style={styles.image} shouldPlay={isVisible} />
                 ) : (
@@ -199,6 +251,12 @@ export default function AssetDetailScreen({ route, navigation }) {
                         resizeMode="contain"
                     />
                 )}
+                {isLivePhoto(item) ? (
+                    <View style={styles.liveBadgeContainer}>
+                        <LivePhotoIcon size={14} color="#fff" />
+                        <Text style={styles.liveBadgeText}>LIVE</Text>
+                    </View>
+                ) : null}
             </View>
         );
     };
@@ -409,5 +467,30 @@ const styles = StyleSheet.create({
         fontSize: 11,
         fontWeight: 'bold',
         color: '#4b5563',
+    },
+    liveBadgeContainer: {
+        position: 'absolute',
+        top: 20,
+        left: 20,
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: 'rgba(0, 0, 0, 0.4)',
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+        borderRadius: 14,
+        borderWidth: 0.5,
+        borderColor: 'rgba(255, 255, 255, 0.25)',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.3,
+        shadowRadius: 3,
+        elevation: 4,
+    },
+    liveBadgeText: {
+        color: '#fff',
+        fontSize: 10,
+        fontWeight: 'bold',
+        marginLeft: 6,
+        letterSpacing: 1,
     }
 });

@@ -14,9 +14,31 @@ export default function SettingsScreen({ navigation }) {
     const [serverUrl, setServerUrl] = React.useState(AuthService.getServerUrl());
     const [serverName, setServerName] = React.useState(AuthService.getServerName());
 
+    const [isReachable, setIsReachable] = React.useState(null);
+
     React.useEffect(() => {
         loadStats();
-    }, []);
+        checkServerReachability();
+    }, [serverUrl]);
+
+    const checkServerReachability = async () => {
+        if (!serverUrl) {
+            setIsReachable(false);
+            return;
+        }
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 3000);
+            const response = await fetch(`${serverUrl}/`, {
+                method: 'GET',
+                signal: controller.signal,
+            });
+            clearTimeout(timeoutId);
+            setIsReachable(response.status === 200 || response.status < 500);
+        } catch (e) {
+            setIsReachable(false);
+        }
+    };
 
     const loadStats = async () => {
         const s = await SyncService.getCacheStats();
@@ -34,20 +56,24 @@ export default function SettingsScreen({ navigation }) {
     const handleReProbe = async () => {
         if (isScanning) return;
         setIsScanning(true);
+        setIsReachable(null);
         try {
             const success = await AuthService.autoProbe();
             if (success) {
                 const newUrl = AuthService.getServerUrl();
                 setServerUrl(newUrl);
                 setServerName(AuthService.getServerName());
+                setIsReachable(true);
                 Alert.alert("Server Found ✓", `Connected to:\n${newUrl}`);
             } else {
+                setIsReachable(false);
                 Alert.alert(
                     "Server Not Found",
                     "No Lomorage server was found on your local network.\n\nMake sure:\n• Your server is running\n• Your phone is on the same Wi-Fi"
                 );
             }
         } catch (e) {
+            setIsReachable(false);
             Alert.alert("Scan Error", "An unexpected error occurred during discovery.");
         } finally {
             setIsScanning(false);
@@ -174,7 +200,25 @@ export default function SettingsScreen({ navigation }) {
                 
                 <View style={styles.settingRow}>
                     <View style={styles.settingTextContainer}>
-                        <Text style={styles.settingLabel}>Current Server</Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                            <Text style={styles.settingLabel}>Current Server</Text>
+                            {isReachable === null ? (
+                                <ActivityIndicator size="small" color="#007AFF" style={{ marginLeft: 8 }} />
+                            ) : (
+                                <>
+                                    <View style={[
+                                        styles.statusDot, 
+                                        { backgroundColor: isReachable ? '#10B981' : '#EF4444' }
+                                    ]} />
+                                    <Text style={[
+                                        styles.statusText, 
+                                        { color: isReachable ? '#10B981' : '#EF4444' }
+                                    ]}>
+                                        {isReachable ? 'Online' : 'Offline'}
+                                    </Text>
+                                </>
+                            )}
+                        </View>
                         <Text style={styles.settingDescription}>{serverUrl || 'Not configured'}</Text>
                         {serverName && <Text style={styles.serverBadge}>Identity: {serverName}</Text>}
                     </View>
@@ -320,5 +364,16 @@ const styles = StyleSheet.create({
         // Animation is better handled via Animated API, but for simplicity
         // in a web-like dev experience we can just dim it or let the system handle it
         opacity: 0.5,
+    },
+    statusDot: {
+        width: 8,
+        height: 8,
+        borderRadius: 4,
+        marginLeft: 8,
+        marginRight: 4,
+    },
+    statusText: {
+        fontSize: 12,
+        fontWeight: '600',
     }
 });

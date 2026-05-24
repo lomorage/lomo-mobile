@@ -352,6 +352,14 @@ TaskManager.defineTask(BACKGROUND_BACKUP_TASK, async () => {
             manager.queue = pending;
             await manager.startBackup();
             console.log('[BackgroundTask] Background upload finished.');
+
+            // Refresh and save the remote tree to disk so the foreground app has the updated state immediately!
+            try {
+                await SyncService.fetchRemoteOverview();
+                console.log('[BackgroundTask] Updated remote tree cache on disk.');
+            } catch (e) {
+                console.warn('[BackgroundTask] Failed to update remote tree cache:', e.message);
+            }
         } else {
             console.log('[BackgroundTask] No new assets found to upload.');
         }

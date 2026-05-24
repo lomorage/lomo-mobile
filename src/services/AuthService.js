@@ -356,8 +356,13 @@ axios.interceptors.response.use(
         );
 
         // Guard: skip if already retried, if we're currently probing (avoid loop),
-        // or if we're already showing an alert
-        if (isNetworkError && !originalRequest._retry && !authService.isProbing && !authService.isShowingProbeAlert) {
+        // or if we're already showing an alert, or if the request is configured to skip auto-probing
+        if (isNetworkError &&
+            originalRequest &&
+            !originalRequest._retry &&
+            !originalRequest.skipAutoProbe &&
+            !authService.isProbing &&
+            !authService.isShowingProbeAlert) {
             authService.isShowingProbeAlert = true;
 
             return new Promise((resolve, reject) => {

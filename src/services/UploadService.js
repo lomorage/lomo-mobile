@@ -21,7 +21,8 @@ class UploadService {
         try {
             const response = await axios.head(`${serverUrl}/asset/${hash.toLowerCase()}`, {
                 headers: { 'Authorization': `token=${token}` },
-                timeout: 5000
+                timeout: 5000,
+                skipAutoProbe: true
             });
             
             if (response.status === 200 || response.status === 409) {
@@ -93,6 +94,20 @@ class UploadService {
                 hash = await MediaService.calculateHash(uri);
             }
             if (!hash) throw new Error('Failed to calculate file integrity hash.');
+
+            // Save hash to cache so it's instantly available for heuristic checks on next load
+            try {
+                const SyncService = require('./SyncService').default;
+                await SyncService.loadLocalHashCache();
+                SyncService.localHashCache[asset.id] = {
+                    hash,
+                    modificationTime: asset.modificationTime,
+                    filename: info.filename || 'unknown'
+                };
+                await SyncService.saveLocalHashCache();
+            } catch (cacheErr) {
+                console.warn('[UploadService] Failed to save hash to cache:', cacheErr.message);
+            }
 
             // 3. Check if already uploaded (Server-side de-duplication)
             const status = await this.checkUploadStatus(hash);
