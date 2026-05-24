@@ -64,6 +64,19 @@ const hashPassword = async (username, password) => {
     }
 }
 
+const formatServerUrl = (address) => {
+  if (!address) return address;
+  if (address.startsWith('http')) return address;
+  
+  // Check if it's an IPv4, IPv6, localhost, or .local address
+  const isLocalOrIp = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?::[0-9]+)?$/.test(address) || 
+                      /^\[?[0-9a-fA-F:]+\]?(?::[0-9]+)?$/.test(address) || 
+                      /^localhost(?::[0-9]+)?$/.test(address) ||
+                      /\.local(?::[0-9]+)?$/.test(address);
+                      
+  return isLocalOrIp ? `http://${address}` : `https://${address}`;
+};
+
 class AuthService {
   constructor() {
     this.token = null;
@@ -197,7 +210,7 @@ class AuthService {
     }
 
     try {
-      const url = serverAddress.startsWith('http') ? serverAddress : `http://${serverAddress}`;
+      const url = formatServerUrl(serverAddress);
       this.serverUrl = url;
       this.serverName = serverName;
 
@@ -255,7 +268,7 @@ class AuthService {
 
   async getAvailableDisks(serverAddress) {
     if (!serverAddress) throw new Error('Server address is required');
-    const url = serverAddress.startsWith('http') ? serverAddress : `http://${serverAddress}`;
+    const url = formatServerUrl(serverAddress);
     
     try {
       console.log(`Fetching available disks from: ${url}/mount`);
@@ -286,7 +299,7 @@ class AuthService {
     }
 
     try {
-      const url = serverAddress.startsWith('http') ? serverAddress : `http://${serverAddress}`;
+      const url = formatServerUrl(serverAddress);
       const hashedPassword = await hashPassword(username, password);
 
       const payload = {
