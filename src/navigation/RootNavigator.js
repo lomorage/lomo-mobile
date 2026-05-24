@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { View, ActivityIndicator, StatusBar, Platform } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { AuthProvider, useAuth } from '../context/AuthContext';
 import { SettingsProvider } from '../context/SettingsContext';
 
@@ -86,13 +86,15 @@ function Navigation() {
 
 export default function RootNavigator() {
     return (
-        <AuthProvider>
-            <SettingsProvider>
-                <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }} edges={['top', 'bottom']}>
-                    <StatusBar barStyle="dark-content" />
-                    <Navigation />
-                </SafeAreaView>
-            </SettingsProvider>
-        </AuthProvider>
+        <SafeAreaProvider>
+            <AuthProvider>
+                <SettingsProvider>
+                    <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }} edges={['top', 'bottom']}>
+                        <StatusBar barStyle="dark-content" />
+                        <Navigation />
+                    </SafeAreaView>
+                </SettingsProvider>
+            </AuthProvider>
+        </SafeAreaProvider>
     );
 }

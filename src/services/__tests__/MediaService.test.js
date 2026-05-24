@@ -18,6 +18,11 @@ jest.mock('expo-crypto', () => ({
   digest: jest.fn(),
 }));
 
+jest.mock('../AuthService', () => ({
+  getServerUrl: () => 'http://localhost:8000',
+  getToken: () => 'test-token',
+}));
+
 // Mock the custom local FileHash module.
 // Simulates: content:// gets real hash (setRequireOriginal fix), file:// gets wrong hash (old bug).
 const CORRECT_HASH = 'cedcccf9abd9b04164ae31b9d00bac765c97aa94';
@@ -57,7 +62,7 @@ describe('MediaService', () => {
 
     expect(hash).not.toBeNull();
     expect(LegacyFileSystem.getInfoAsync).toHaveBeenCalledWith('file:///test.jpg', { size: true });
-    expect(ExpoLomoHasher.hashFileAsync).toHaveBeenCalledWith('file:///test.jpg');
+    expect(ExpoLomoHasher.hashFileAsync).toHaveBeenCalledWith('/test.jpg');
     // Ensure the old JS fallback was NOT used
     expect(LegacyFileSystem.readAsStringAsync).not.toHaveBeenCalled();
   });
@@ -116,7 +121,7 @@ describe('MediaService', () => {
     await MediaService.calculateHash('file:///large.mp4', true);
 
     // Should have tried native first
-    expect(ExpoLomoHasher.hashFileAsync).toHaveBeenCalledWith('file:///large.mp4');
+    expect(ExpoLomoHasher.hashFileAsync).toHaveBeenCalledWith('/large.mp4');
 
     // Should have fallen back to JS chunking (3 chunks of 1MB each)
     expect(LegacyFileSystem.readAsStringAsync).toHaveBeenCalledTimes(3);

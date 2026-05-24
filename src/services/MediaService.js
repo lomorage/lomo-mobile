@@ -3,7 +3,7 @@ import * as LegacyFileSystem from 'expo-file-system/legacy';
 import * as Crypto from 'expo-crypto';
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
-import { hashFileAsync } from '../../modules/expo-lomo-hasher';
+import { hashFileAsync, isLivePhotoAsync, prepareLivePhotoBackupAsync, extractVideoFromZipAsync, getLocalLivePhotoVideoUriAsync } from '../../modules/expo-lomo-hasher';
 import axios from 'axios';
 import AuthService from './AuthService';
 
@@ -153,6 +153,10 @@ class MediaService {
           return null;
         }
         fileSize = fileInfo.size || 0;
+        if (fileSize === 0) {
+          if (!silent) console.log(`[MediaService] File size is 0: ${normalizedUri}`);
+          return null;
+        }
       }
 
       // NATIVE HASHER: Pass the RAW path string. 
@@ -258,6 +262,46 @@ class MediaService {
     } catch (error) {
       console.error('[MediaService] Error deleting local asset:', error.message);
       throw error;
+    }
+  }
+
+  async isLivePhotoAsync(uri) {
+    if (Platform.OS !== 'ios' || !uri) return false;
+    try {
+      return await isLivePhotoAsync(uri);
+    } catch (e) {
+      console.warn('[MediaService] isLivePhotoAsync check failed:', e.message);
+      return false;
+    }
+  }
+
+  async prepareLivePhotoBackupAsync(uri) {
+    if (Platform.OS !== 'ios' || !uri) return null;
+    try {
+      return await prepareLivePhotoBackupAsync(uri);
+    } catch (e) {
+      console.error('[MediaService] prepareLivePhotoBackupAsync failed:', e.message);
+      throw e;
+    }
+  }
+
+  async getLocalLivePhotoVideoUriAsync(uri) {
+    if (Platform.OS !== 'ios' || !uri) return null;
+    try {
+      return await getLocalLivePhotoVideoUriAsync(uri);
+    } catch (e) {
+      console.error('[MediaService] getLocalLivePhotoVideoUriAsync failed:', e.message);
+      throw e;
+    }
+  }
+
+  async extractVideoFromZipAsync(zipUri) {
+    if (Platform.OS !== 'ios' || !zipUri) return null;
+    try {
+      return await extractVideoFromZipAsync(zipUri);
+    } catch (e) {
+      console.error('[MediaService] extractVideoFromZipAsync failed:', e.message);
+      throw e;
     }
   }
 }

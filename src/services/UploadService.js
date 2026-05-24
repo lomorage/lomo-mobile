@@ -21,7 +21,8 @@ class UploadService {
         try {
             const response = await axios.head(`${serverUrl}/asset/${hash.toLowerCase()}`, {
                 headers: { 'Authorization': `token=${token}` },
-                timeout: 5000
+                timeout: 5000,
+                skipAutoProbe: true
             });
             
             if (response.status === 200 || response.status === 409) {
@@ -52,8 +53,26 @@ class UploadService {
             // 1. Get full asset info
             const info = await MediaService.getAssetInfo(asset.id);
             let uploadUri = info.localUri || info.uri;
+            let isLivePhoto = false;
+            let livePhotoBackup = null;
 
             if (Platform.OS === 'ios' && asset.uri && asset.uri.startsWith('ph://')) {
+                isLivePhoto = await MediaService.isLivePhotoAsync(asset.uri);
+                if (isLivePhoto) {
+                    try {
+                        console.log(`[UploadService] Asset ${asset.id} is a Live Photo. Preparing zip backup...`);
+                        livePhotoBackup = await MediaService.prepareLivePhotoBackupAsync(asset.uri);
+                    } catch (err) {
+                        console.error('[UploadService] Live Photo zipping failed:', err);
+                        throw err;
+                    }
+                }
+            }
+
+            if (livePhotoBackup) {
+                uploadUri = livePhotoBackup.uri;
+                tempFileToClean = uploadUri;
+            } else if (Platform.OS === 'ios' && asset.uri && asset.uri.startsWith('ph://')) {
                 // EXACT BYTES EXTRACTION:
                 // info.localUri from Expo often points to a dynamically transcoded JPG on iOS 
                 // which has a completely different hash than the original HEIC. 
@@ -68,10 +87,27 @@ class UploadService {
 
             // 2. Calculate SHA1 hash (required for Lomorage protocol)
             let hash = asset.hash;
+            if (livePhotoBackup) {
+                hash = livePhotoBackup.hash;
+            }
             if (!hash) {
                 hash = await MediaService.calculateHash(uri);
             }
             if (!hash) throw new Error('Failed to calculate file integrity hash.');
+
+            // Save hash to cache so it's instantly available for heuristic checks on next load
+            try {
+                const SyncService = require('./SyncService').default;
+                await SyncService.loadLocalHashCache();
+                SyncService.localHashCache[asset.id] = {
+                    hash,
+                    modificationTime: asset.modificationTime,
+                    filename: info.filename || 'unknown'
+                };
+                await SyncService.saveLocalHashCache();
+            } catch (cacheErr) {
+                console.warn('[UploadService] Failed to save hash to cache:', cacheErr.message);
+            }
 
             // 3. Check if already uploaded (Server-side de-duplication)
             const status = await this.checkUploadStatus(hash);
@@ -81,7 +117,7 @@ class UploadService {
             }
 
             // 4. Construct Upload URL with metadata
-            const ext = (info.filename || 'file.jpg').split('.').pop().toLowerCase();
+            const ext = livePhotoBackup ? 'zip' : (info.filename || 'file.jpg').split('.').pop().toLowerCase();
             const creationTime = new Date(info.creationTime || Date.now()).toISOString();
             const uploadUrl = `${serverUrl}/asset/${hash.toLowerCase()}?ext=${ext}&createtime=${creationTime}`;
 
@@ -99,10 +135,12 @@ class UploadService {
 
             // 5. Binary Upload using native session
             // iOS background URL sessions require HTTPS — plain HTTP (LAN server) silently
-            // fails with NSURLErrorUnknown (-1). Use a foreground session on iOS instead.
+            // fails with NSURLErrorUnknown (-1). Use a foreground session on iOS instead for plain HTTP.
+            // If the server URL uses HTTPS, we can safely leverage native background sessions.
             // Android background sessions work fine with HTTP, so keep BACKGROUND there.
+            const isHttps = serverUrl.toLowerCase().startsWith('https://');
             const sessionType = Platform.OS === 'ios'
-                ? (FileSystem.FileSystemSessionType?.FOREGROUND ?? 1)
+                ? (isHttps ? (FileSystem.FileSystemSessionType?.BACKGROUND ?? 0) : (FileSystem.FileSystemSessionType?.FOREGROUND ?? 1))
                 : (FileSystem.FileSystemSessionType?.BACKGROUND ?? FileSystem.FileSystemUploadSessionType?.BACKGROUND ?? 0);
 
             const task = FileSystem.createUploadTask(

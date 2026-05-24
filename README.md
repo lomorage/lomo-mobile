@@ -5,14 +5,26 @@ React Native / Expo client for Lomorage, optimized for massive gallery syncs (18
 ## Prerequisites
 
 ### All Platforms
-- **Node.js**: 20.x or later (`node --version` should report `v20.x` or higher)
-- **npm**: Bundled with Node.js (used with `--legacy-peer-deps` for Expo SDK 54 compatibility)
+- **Node.js (includes npm & npx)**: 20.x or later (`node --version` should report `v20.x` or higher). `npx` is the Node Package Execute binary and comes bundled with Node.js.
+  - **macOS / Linux**: We recommend using `nvm` (Node Version Manager):
+    ```bash
+    # Note: The nvm installer strictly requires `| bash` to execute, but it will automatically configure your default zsh profile.
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+    # Since macOS uses zsh by default, source your zsh profile:
+    source ~/.zshrc
+    nvm install 20
+    nvm use 20
+    ```
+    *(Alternatively, on macOS with Homebrew: `brew install node@20`)*
+  - **Windows**: Download the official installer from [nodejs.org](https://nodejs.org/) or use `nvm-windows`.
+- **npm / npx**: Built into your Node installation. (Use npm with `--legacy-peer-deps` for Expo SDK 54 compatibility)
 - **Expo Account**: Free account at [expo.dev](https://expo.dev) — required for EAS cloud builds and device registration
 
 ### macOS (for local iOS builds)
 - **Xcode**: 15 or later (install from the Mac App Store)
 - **Xcode Command Line Tools**: `xcode-select --install`
-- **CocoaPods**: `sudo gem install cocoapods` (or `brew install cocoapods`)
+- **CocoaPods**: We strongly recommend using Homebrew: `brew install cocoapods`. 
+  > *Note: Do not use `sudo gem install cocoapods` if your Mac uses older system Ruby (2.6.x), as it will cause endless dependency errors (`ffi`, `securerandom`, etc.). If you don't have Homebrew, install it first via [brew.sh](https://brew.sh).*
 - **iOS Simulator** (optional): Included with Xcode; physical device recommended for full feature testing
 - **Apple Developer Account**: Required to sign and deploy to a physical device ([developer.apple.com](https://developer.apple.com))
 
@@ -62,13 +74,14 @@ npx expo run:ios --simulator "iPhone 16 Pro"
 #### 3. Build and launch on a Physical iPhone
 
 1. Connect your iPhone via USB and trust the Mac.
-2. Open the generated workspace in Xcode:
+2. Ensure the `ios` directory exists by running `npx expo prebuild --platform ios` if you haven't already.
+3. Open the generated workspace in Xcode (it is critical to open the `.xcworkspace`, not `.xcodeproj`):
    ```bash
    open ios/lomomobile.xcworkspace
    ```
-3. In Xcode: select your iPhone as the run destination, then go to  
+4. In Xcode: click your project in the left pane, select your iPhone as the run destination at the top, then go to  
    **Signing & Capabilities → Team** and select your Apple Developer account.
-4. Press **▶ Run** (⌘R) — Xcode will sign, install, and launch the app.
+5. Press **▶ Run** (⌘R) — Xcode will sign, install, and launch the app.
 5. Once installed, start the Metro bundler from your terminal:
    ```bash
    npx expo start --dev-client
@@ -76,6 +89,50 @@ npx expo run:ios --simulator "iPhone 16 Pro"
    The app will connect to Metro automatically if your Mac and iPhone are on the same Wi-Fi network. If not, shake the device → **Dev Menu → Settings → Change Bundle Location** and enter your Mac's IP (e.g. `192.168.1.10:8081`).
 
 > **Tip**: Use `npx expo run:ios --device` to pick a connected physical device from the CLI without opening Xcode.
+
+---
+
+### Apple Live Photo Backup Support
+
+The iOS application natively detects and packs Apple Live Photos into standard PKZIP archives before upload, ensuring that both the high-quality static HEIC/JPG image and the paired high-frame-rate `.mov` motion video are backed up together with full integrity.
+
+*   **Native Detection**: Scans asset metadata using the `PHAsset` API to identify Live Photos.
+*   **Archiving**: Uses `PHAssetResourceManager` to extract the original raw image and video resource files, zipping them natively inside the Expo native module wrapper (`ExpoLomoHasher`).
+*   **Lomorage Comment Metadata**: Appends a standard JSON EOCD comment payload containing individual resource SHA-1 integrity hashes:
+    ```json
+    {"image_sha1": "<imageHash>", "video_sha1": "<videoHash>", "total_sha1": "<combinedHash>"}
+    ```
+*   **Integrity Hash**: Uses the combined total hash (`SHA1(imageHash + videoHash)`) as the server-side asset key for high-integrity de-duplication.
+
+### Xcode 16+ Build & Linker Troubleshooting
+
+If you compile the project locally on Xcode 16+ (macOS 15 SDK), you may encounter known compiler/linker bugs introduced by Apple's New Architecture tooling. These have been resolved inside our build pipeline via automated CocoaPods configurations:
+
+#### 1. SwiftUICore Linker Restriction
+*   **Symptom**: Linker failure stating `cannot link directly with 'SwiftUICore' because product being built is not an allowed client of it`.
+*   **Fix**: Explicit module compilation has been disabled for dependency targets. The `ios/Podfile` handles this automatically in the `post_install` hook:
+    ```ruby
+    target.build_configurations.each do |config|
+      config.build_settings['SWIFT_ENABLE_EXPLICIT_MODULES'] = 'NO'
+    end
+    ```
+
+#### 2. C++20 Consteval Validation (`fmt` Library)
+*   **Symptom**: Compilation fails with `call to consteval function is not a constant expression` in the `fmt` target under C++20.
+*   **Fix**: The `fmt` compiler standard is configured to C++17 inside the `post_install` block of `ios/Podfile` to bypass strict C++20 checks:
+    ```ruby
+    if target.name == 'fmt'
+      config.build_settings['CLANG_CXX_LANGUAGE_STANDARD'] = 'c++17'
+    end
+    ```
+
+#### 3. React Native Fabric/JSI Linker Symbol Mismatches
+*   **Symptom**: Undefined symbol errors for core React Native C++ types (`facebook::react::Sealable`, `YogaStylableProps`, etc.).
+*   **Fix**: Disable React Native prebuilt libraries and build React Native Core from source. Ensure `Podfile.properties.json` contains:
+    ```json
+    "ios.buildReactNativeFromSource": "true"
+    ```
+    After updating, run `pod install` or `npx expo prebuild --clean` to re-compile React Native Core cleanly.
 
 ---
 
@@ -96,11 +153,21 @@ eas device:create
 Follow the prompts — this registers your device's UDID so EAS can sign the build for it.
 
 #### 3. Build the Development Client in the cloud
+
+**For a physical device:**
 ```bash
 eas build --platform ios --profile development
 ```
 - The build runs on Expo's servers (no Mac needed).
 - When complete, EAS provides a QR code / link. Scan it on your iPhone to install the `.ipa`.
+
+**For an iOS Simulator (if you have a Mac):**
+```bash
+eas build --platform ios --profile development-simulator
+```
+- The build runs on Expo's servers.
+- When complete, download the generated `.tar.gz` from the Expo dashboard.
+- Extract it and drag the `.app` file into your running iOS Simulator.
 
 #### 4. Start the Metro dev server (runs on Windows/Linux/macOS)
 ```bash
@@ -111,12 +178,11 @@ Open the installed **Lomorage** app on your iPhone. It will scan for Metro, or t
 > **Note**: Your iPhone and dev machine must be on the **same Wi-Fi network**. Rebuild with `eas build` only when native code changes; JS changes hot-reload over Metro.
 
 #### 5. Build a Preview / Production IPA
+For detailed instructions on preparing and submitting a production build, see the [Publishing to Apple App Store](#publishing-to-apple-app-store) section.
+
 ```bash
 # Ad-hoc distribution for internal testers
 eas build --platform ios --profile preview
-
-# App Store production build
-eas build --platform ios --profile production
 ```
 
 ---
@@ -216,7 +282,93 @@ Android 15 Private Space acts as a separate OS User Profile. To install your loc
 npx expo run:android
 ```
 
+## Publishing to Apple App Store
+
+### 1. Compile the Production Build (.ipa)
+
+Choose one of the following options to generate your signed production binary.
+
+#### Option A — EAS Cloud Build (Recommended)
+This is the easiest way as Expo handles all certificates, provisioning profiles, and distribution certificates in the cloud.
+
+```bash
+eas build --platform ios --profile production
+```
+
+#### Option B — Local Build (Xcode)
+If you prefer to build locally on your Mac without using Expo's cloud servers:
+
+1.  **Ensure native code is up to date**:
+    ```bash
+    npx expo prebuild --platform ios
+    ```
+2.  **Open the workspace in Xcode**:
+    ```bash
+    open ios/lomomobile.xcworkspace
+    ```
+3.  **Prepare for Release**:
+    - In Xcode, select the **lomomobile** target.
+    - Set the run destination to **Any iOS Device (arm64)**.
+    - Go to **Product > Archive**.
+4.  **Distribute**:
+    - Once the archive is complete, the Organizer window will open.
+    - Click **Distribute App** and follow the prompts for **App Store Connect**.
+
+> [!IMPORTANT]
+> **Create the App Record in App Store Connect first.** Before distributing from Xcode for the first time, manually create the app at [appstoreconnect.apple.com](https://appstoreconnect.apple.com) → **Apps** → **+** → **New App**, filling in the Bundle ID (`com.wtao.lomo`), name, and SKU. If you let Xcode auto-create the record, it may fail with `ENTITY_ERROR.ATTRIBUTE.REQUIRED companyName` — particularly on Individual Apple Developer accounts where no company name is set. Once the record exists, Xcode will upload to it without issues.
+
+#### Option C — Local EAS Build
+You can use EAS CLI to run the build process locally on your Mac (requires Xcode and CocoaPods). This uses your `eas.json` configuration but doesn't upload your code to Expo's servers.
+
+```bash
+eas build --platform ios --profile production --local
+```
+
+### 2. Submit to App Store Connect
+
+If you used **Option A or C**, you can submit the built IPA directly from your terminal:
+
+```bash
+eas submit --platform ios --profile production
+```
+
+Alternatively, you can download the `.ipa` from the Expo dashboard and upload it using the [Transporter app](https://apps.apple.com/us/app/transporter/id1450876684) or Xcode.
+
+> [!TIP]
+> **First-Time Submission Error**: If you see an error like `ENTITY_ERROR.ATTRIBUTE.REQUIRED` for `companyName`, it means Apple requires a "Company Name" for your account's first submission. I have added `"companyName": "Lomorage"` to `eas.json`. Ensure this matches your legal entity name in App Store Connect.
+
+### 3. Updating the App Version
+
+Before submitting a new version, you must increment the version numbers in `app.json`. Apple requires the `buildNumber` to be unique for every upload to App Store Connect.
+
+1. Open `app.json` and update:
+   - `expo.version`: The user-facing version string (e.g., `"1.0.1"`).
+   - `expo.ios.buildNumber`: A unique string or integer for this specific build (e.g., `"2"`).
+
+```json
+{
+  "expo": {
+    "version": "1.0.1",
+    "ios": {
+      "buildNumber": "2"
+    }
+  }
+}
+```
+
+> [!WARNING]
+> **Xcode Version Sync Issues**: If you build locally and Xcode does not reflect the updated `app.json` versions, it is because the version was previously manually edited in Xcode. This hardcodes `MARKETING_VERSION` in the `project.pbxproj` file, which permanently overrides Expo. 
+> To fix this and force Xcode to listen to `app.json` again, run `npx expo prebuild --clean --platform ios`. This recreates the `ios/` folder from scratch.
+
+### 4. Review Privacy & Permissions
+
+Ensure your App Store listing accurately describes the use of permissions declared in `app.json`. Key permissions include:
+- **NSPhotoLibraryUsageDescription**: Required for gallery sync.
+- **NSLocalNetworkUsageDescription**: Required for discovering Lomorage servers on the local network.
+- **UIBackgroundModes**: `fetch` and `location` are enabled for background sync.
+
 ## Debugging on Real Devices
+
 
 ### iOS Debugging
 
@@ -334,6 +486,19 @@ npx expo doctor
 npx expo install --check
 npx expo install --fix
 ```
+
+## Future Background Sync Roadmap
+
+To achieve absolute parity, resilience, and App Store/Play Store compliance across both mobile operating systems, the following background sync features are planned for future development:
+
+### 1. iOS Optimization Tasks
+- [ ] **Significant Location Change (SLC) Trigger (Opt-in):** Add an experimental, user-consented setting using `expo-location` that triggers a sync whenever the user relocates. This bypasses iOS Background Fetch throttling when the app hasn't been opened for days.
+- [ ] **iOS BGProcessingTask Integration:** Configure native `BGProcessingTaskRequest` schedulers (requires `BGTaskSchedulerPermittedIdentifiers` in `Info.plist`) to execute deep backups for up to several minutes overnight when the device is charging and connected to Wi-Fi.
+
+### 2. Android Optimization Tasks
+- [ ] **Google Play Store Policy Compliance (Permission Cleanup):** Remove `FOREGROUND_SERVICE` and `FOREGROUND_SERVICE_DATA_SYNC` from `app.json` unless a true native Foreground Service is compiled. Standard `expo-background-task` executes via standard Android `WorkManager` / `JobScheduler` routines, meaning requesting these permissions creates unnecessary Google Play policy review friction.
+- [ ] **Programmatic Battery Optimization Whitelisting:** Implement a settings toggle or startup warning that prompts Android users to disable battery optimization (Request Ignore Battery Optimizations intent). This prevents Android's Doze Mode and App Standby Buckets from aggressively suspending background task workers during sleep.
+- [ ] **True WorkManager Foreground Upgrades:** Leverage native code to promote standard background sync workers to actual Foreground Services (`setForegroundAsync()`) during major initial backups, ensuring the OS does not terminate the process after Android's 10-minute work limit.
 
 ## Testing
 
