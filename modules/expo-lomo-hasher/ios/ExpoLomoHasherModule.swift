@@ -190,15 +190,16 @@ public class ExpoLomoHasherModule: Module {
       
       DispatchQueue.global(qos: .userInitiated).async {
         do {
-          let zipDirName = self.sha1String(from: asset.localIdentifier) ?? UUID().uuidString
-          let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(zipDirName)
+          let cleanId = self.sanitizeIdentifier(asset.localIdentifier)
+          let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(cleanId)
           try? FileManager.default.removeItem(at: tempDir)
           try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true, attributes: nil)
           
           let videoTmpUrl = try self.fetchLocalAssetSync(for: videoRes, to: tempDir)
           
-          // Copy it to a stable location
-          let destVideoUrl = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("\(zipDirName).mov")
+          // Copy it directly to Caches directory!
+          let cachesDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+          let destVideoUrl = cachesDir.appendingPathComponent("\(cleanId).mov")
           try? FileManager.default.removeItem(at: destVideoUrl)
           try FileManager.default.copyItem(at: videoTmpUrl, to: destVideoUrl)
           try? FileManager.default.removeItem(at: tempDir)
@@ -245,7 +246,9 @@ public class ExpoLomoHasherModule: Module {
           }
           
           if let foundVideo = videoUrl {
-            let destVideoUrl = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("\(zipDirName).mov")
+            // Copy it directly to Caches directory!
+            let cachesDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+            let destVideoUrl = cachesDir.appendingPathComponent("\(zipDirName).mov")
             try? FileManager.default.removeItem(at: destVideoUrl)
             try FileManager.default.copyItem(at: foundVideo, to: destVideoUrl)
             try? FileManager.default.removeItem(at: tempDir) // cleanup zip folder
@@ -362,6 +365,11 @@ public class ExpoLomoHasherModule: Module {
     hasher.update(data: data)
     let digest = hasher.finalize()
     return digest.map { String(format: "%02x", $0) }.joined()
+  }
+
+  /// Filters out non-alphanumeric characters from an identifier.
+  private func sanitizeIdentifier(_ identifier: String) -> String {
+    return identifier.components(separatedBy: CharacterSet.alphanumerics.inverted).joined()
   }
 
   /// Appends or updates the EOCD ZIP comment record directly in the ZIP archive.

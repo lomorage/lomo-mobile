@@ -26,6 +26,14 @@ const isLivePhoto = (asset) => {
     return false;
 };
 
+const getCacheKey = (item) => {
+    if (item.status === 'remote') {
+        return item.hash;
+    }
+    // For local and synced assets, sanitize item.id (which is the localIdentifier)
+    return item.id ? item.id.replace(/[^a-zA-Z0-9]/g, '') : '';
+};
+
 const LivePhotoIcon = ({ color = '#fff', size = 14 }) => {
     const innerSize = size * 0.45;
     const middleSize = size * 0.75;
@@ -104,14 +112,14 @@ export default function AssetDetailScreen({ route, navigation }) {
             const item = assets[currentIndex];
             if (!item || !isLivePhoto(item)) return;
             
-            const assetId = item.hash || item.id;
-            if (extractedVideoUris[assetId]) return; // Already prepared in memory!
+            const cacheKey = getCacheKey(item);
+            if (extractedVideoUris[cacheKey]) return; // Already prepared in memory!
             
             setIsPreparingLive(true);
             try {
                 let videoPath = null;
                 const FileSystem = require('expo-file-system/legacy');
-                const cacheVideoPath = `${FileSystem.cacheDirectory}${assetId}.mov`;
+                const cacheVideoPath = `${FileSystem.cacheDirectory}${cacheKey}.mov`;
                 
                 // 1. First, check if we already have the extracted video file cached on the local disk!
                 const fileInfo = await FileSystem.getInfoAsync(cacheVideoPath);
@@ -123,23 +131,17 @@ export default function AssetDetailScreen({ route, navigation }) {
                     if (item.status === 'remote') {
                         const baseUrl = AuthService.getServerUrl();
                         const token = AuthService.getToken();
-                        const remoteZipUrl = `${baseUrl}/asset/${assetId}?token=${token}`;
+                        const remoteZipUrl = `${baseUrl}/asset/${cacheKey}?token=${token}`;
                         
-                        const localZipPath = `${FileSystem.cacheDirectory}${assetId}.zip`;
+                        const localZipPath = `${FileSystem.cacheDirectory}${cacheKey}.zip`;
                         console.log(`[AssetDetail] Downloading remote Live Photo Zip: ${remoteZipUrl} -> ${localZipPath}`);
                         
                         const downloadResult = await FileSystem.downloadAsync(remoteZipUrl, localZipPath);
                         
                         if (active && downloadResult.status === 200) {
                             console.log(`[AssetDetail] Native unzipping video from: ${downloadResult.uri}`);
-                            const extractedPath = await MediaService.extractVideoFromZipAsync(downloadResult.uri);
-                            
-                            // Move the extracted video from temporary directory to our stable local cacheVideoPath!
-                            await FileSystem.moveAsync({
-                                from: extractedPath,
-                                to: cacheVideoPath
-                            });
-                            videoPath = cacheVideoPath;
+                            // Native module extracts directly into cachesDir matching cacheVideoPath
+                            videoPath = await MediaService.extractVideoFromZipAsync(downloadResult.uri);
                             
                             // Clean up downloaded zip to save disk space
                             try {
@@ -149,20 +151,14 @@ export default function AssetDetailScreen({ route, navigation }) {
                     } else {
                         // Local asset: fetch from Photos library
                         console.log(`[AssetDetail] Fetching local Live Photo video path: ${item.uri}`);
-                        const extractedPath = await MediaService.getLocalLivePhotoVideoUriAsync(item.uri);
-                        
-                        // Move the extracted video to our stable local cacheVideoPath!
-                        await FileSystem.moveAsync({
-                            from: extractedPath,
-                            to: cacheVideoPath
-                        });
-                        videoPath = cacheVideoPath;
+                        // Native module extracts directly into cachesDir matching cacheVideoPath
+                        videoPath = await MediaService.getLocalLivePhotoVideoUriAsync(item.uri);
                     }
                 }
                 
                 if (active && videoPath) {
                     console.log(`[AssetDetail] Prepared Live Photo video path: ${videoPath}`);
-                    setExtractedVideoUris(prev => ({ ...prev, [assetId]: videoPath }));
+                    setExtractedVideoUris(prev => ({ ...prev, [cacheKey]: videoPath }));
                 }
             } catch (e) {
                 console.warn('[AssetDetail] Failed to prepare Live Photo video:', e.message);
@@ -326,8 +322,13 @@ export default function AssetDetailScreen({ route, navigation }) {
         // Prevent Android OutOfMemoryError (MediaCodec): Unmount ExoPlayer for off-screen videos
         const shouldMountVideo = item.mediaType === 'video' && isVisible;
         const isLive = isLivePhoto(item);
-        const liveVideoUri = extractedVideoUris[item.hash || item.id];
+        const cacheKey = getCacheKey(item);
+        const liveVideoUri = extractedVideoUris[cacheKey];
         const shouldPlayLive = isLive && isLivePlaying && isVisible && liveVideoUri;
+
+        const staticImageUri = (isRemote && isLive)
+            ? item.uri
+            : ((item.mediaType === 'video' && isRemote) ? item.uri : uri);
 
         return (
             <View style={{ width, height: height * 0.7, justifyContent: 'center', alignItems: 'center', position: 'relative' }}>
@@ -347,7 +348,7 @@ export default function AssetDetailScreen({ route, navigation }) {
                     >
                         {/* Static Image is ALWAYS rendered as the base background layer */}
                         <Image
-                            source={{ uri: (item.mediaType === 'video' && isRemote) ? item.uri : uri }}
+                            source={{ uri: staticImageUri }}
                             style={styles.image}
                             resizeMode="contain"
                         />
