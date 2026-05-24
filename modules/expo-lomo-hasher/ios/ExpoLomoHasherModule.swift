@@ -162,6 +162,103 @@ public class ExpoLomoHasherModule: Module {
         }
       }
     }
+
+    AsyncFunction("getLocalLivePhotoVideoUriAsync") { (uriString: String, promise: Promise) in
+      guard uriString.hasPrefix("ph://") else {
+        promise.reject("INVALID_URI", "Only ph:// URIs are supported.")
+        return
+      }
+      
+      guard let asset = self.getPHAsset(from: uriString) else {
+        promise.reject("ERR_ASSET_NOT_FOUND", "Asset not found.")
+        return
+      }
+      
+      let resources = PHAssetResource.assetResources(for: asset)
+      var videoResource: PHAssetResource?
+      for res in resources {
+        if res.type == .pairedVideo || res.type == .fullSizePairedVideo || res.type == .video {
+          videoResource = res
+          break
+        }
+      }
+      
+      guard let videoRes = videoResource else {
+        promise.reject("ERR_VIDEO_RESOURCE_NOT_FOUND", "No paired video component found.")
+        return
+      }
+      
+      DispatchQueue.global(qos: .userInitiated).async {
+        do {
+          let zipDirName = self.sha1String(from: asset.localIdentifier) ?? UUID().uuidString
+          let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(zipDirName)
+          try? FileManager.default.removeItem(at: tempDir)
+          try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true, attributes: nil)
+          
+          let videoTmpUrl = try self.fetchLocalAssetSync(for: videoRes, to: tempDir)
+          
+          // Copy it to a stable location
+          let destVideoUrl = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("\(zipDirName).mov")
+          try? FileManager.default.removeItem(at: destVideoUrl)
+          try FileManager.default.copyItem(at: videoTmpUrl, to: destVideoUrl)
+          try? FileManager.default.removeItem(at: tempDir)
+          
+          promise.resolve(destVideoUrl.absoluteString)
+        } catch {
+          promise.reject("ERR_FETCH_FAILED", "Failed to fetch video: \(error.localizedDescription)")
+        }
+      }
+    }
+
+    AsyncFunction("extractVideoFromZipAsync") { (zipUri: String, promise: Promise) in
+      DispatchQueue.global(qos: .userInitiated).async {
+        do {
+          let zipUrl: URL
+          if zipUri.hasPrefix("file://") {
+            guard let parsed = URL(string: zipUri) else {
+              promise.reject("INVALID_URI", "Invalid ZIP URI: \(zipUri)")
+              return
+            }
+            zipUrl = parsed
+          } else {
+            zipUrl = URL(fileURLWithPath: zipUri)
+          }
+
+          let zipDirName = zipUrl.deletingPathExtension().lastPathComponent
+          let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(zipDirName)
+          
+          try? FileManager.default.removeItem(at: tempDir)
+          try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true, attributes: nil)
+          
+          // Unzip the file
+          try Zip.unzipFile(zipUrl, destination: tempDir, overwrite: true, password: nil)
+          
+          // Find any file ending with .mov or .mp4 or other video extensions
+          let allFiles = try FileManager.default.contentsOfDirectory(at: tempDir, includingPropertiesForKeys: nil)
+          var videoUrl: URL? = nil
+          for file in allFiles {
+            let ext = file.pathExtension.lowercased()
+            if ["mov", "mp4", "m4v"].contains(ext) {
+              videoUrl = file
+              break
+            }
+          }
+          
+          if let foundVideo = videoUrl {
+            let destVideoUrl = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("\(zipDirName).mov")
+            try? FileManager.default.removeItem(at: destVideoUrl)
+            try FileManager.default.copyItem(at: foundVideo, to: destVideoUrl)
+            try? FileManager.default.removeItem(at: tempDir) // cleanup zip folder
+            
+            promise.resolve(destVideoUrl.absoluteString)
+          } else {
+            promise.reject("ERR_NO_VIDEO", "No video component found inside Live Photo zip.")
+          }
+        } catch {
+          promise.reject("UNZIP_FAILED", "Failed to extract video: \(error.localizedDescription)")
+        }
+      }
+    }
   }
 
   /// Extracts the local identifier and fetches a PHAsset.

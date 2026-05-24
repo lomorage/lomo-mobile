@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { StyleSheet, View, Image, Dimensions, TouchableOpacity, Text, FlatList, Alert, DeviceEventEmitter } from 'react-native';
+import { StyleSheet, View, Image, Dimensions, TouchableOpacity, Text, FlatList, Alert, DeviceEventEmitter, Pressable, ActivityIndicator } from 'react-native';
 import { ChevronLeft, Upload, Trash2 } from 'lucide-react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import AuthService from '../services/AuthService';
@@ -94,6 +94,66 @@ export default function AssetDetailScreen({ route, navigation }) {
     const [isUploading, setIsUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(0);
     const [currentIndex, setCurrentIndex] = useState(initialIndex || 0);
+    const [extractedVideoUris, setExtractedVideoUris] = useState({});
+    const [isPreparingLive, setIsPreparingLive] = useState(false);
+    const [isLivePlaying, setIsLivePlaying] = useState(false);
+
+    useEffect(() => {
+        let active = true;
+        const prepareVideo = async () => {
+            const item = assets[currentIndex];
+            if (!item || !isLivePhoto(item)) return;
+            
+            const assetId = item.hash || item.id;
+            if (extractedVideoUris[assetId]) return; // Already prepared!
+            
+            setIsPreparingLive(true);
+            try {
+                let videoPath = null;
+                if (item.status === 'remote') {
+                    const FileSystem = require('expo-file-system/legacy');
+                    const baseUrl = AuthService.getServerUrl();
+                    const token = AuthService.getToken();
+                    const remoteZipUrl = `${baseUrl}/asset/${assetId}?token=${token}`;
+                    
+                    const localZipPath = `${FileSystem.cacheDirectory}${assetId}.zip`;
+                    console.log(`[AssetDetail] Downloading remote Live Photo Zip: ${remoteZipUrl} -> ${localZipPath}`);
+                    
+                    const downloadResult = await FileSystem.downloadAsync(remoteZipUrl, localZipPath);
+                    
+                    if (active && downloadResult.status === 200) {
+                        console.log(`[AssetDetail] Native unzipping video from: ${downloadResult.uri}`);
+                        videoPath = await MediaService.extractVideoFromZipAsync(downloadResult.uri);
+                        try {
+                            await FileSystem.deleteAsync(downloadResult.uri);
+                        } catch(e) {}
+                    }
+                } else {
+                    // Local asset
+                    console.log(`[AssetDetail] Fetching local Live Photo video path: ${item.uri}`);
+                    videoPath = await MediaService.getLocalLivePhotoVideoUriAsync(item.uri);
+                }
+                
+                if (active && videoPath) {
+                    console.log(`[AssetDetail] Prepared Live Photo video component: ${videoPath}`);
+                    setExtractedVideoUris(prev => ({ ...prev, [assetId]: videoPath }));
+                }
+            } catch (e) {
+                console.warn('[AssetDetail] Failed to prepare Live Photo video:', e.message);
+            } finally {
+                if (active) {
+                    setIsPreparingLive(false);
+                }
+            }
+        };
+        
+        prepareVideo();
+        
+        return () => {
+            active = false;
+            setIsLivePlaying(false); // Stop playing when index changes
+        };
+    }, [currentIndex, assets]);
     
     const currentAsset = assets[currentIndex] || {};
 
@@ -239,22 +299,45 @@ export default function AssetDetailScreen({ route, navigation }) {
 
         // Prevent Android OutOfMemoryError (MediaCodec): Unmount ExoPlayer for off-screen videos
         const shouldMountVideo = item.mediaType === 'video' && isVisible;
+        const isLive = isLivePhoto(item);
+        const liveVideoUri = extractedVideoUris[item.hash || item.id];
+        const shouldPlayLive = isLive && isLivePlaying && isVisible && liveVideoUri;
 
         return (
             <View style={{ width, height: height * 0.7, justifyContent: 'center', alignItems: 'center', position: 'relative' }}>
                 {shouldMountVideo ? (
                     <AssetVideoPlayer uri={uri} style={styles.image} shouldPlay={isVisible} />
+                ) : shouldPlayLive ? (
+                    <AssetVideoPlayer uri={liveVideoUri} style={styles.image} shouldPlay={true} />
                 ) : (
-                    <Image
-                        source={{ uri: (item.mediaType === 'video' && isRemote) ? item.uri : uri }}
-                        style={styles.image}
-                        resizeMode="contain"
-                    />
+                    <Pressable
+                        style={{ width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center' }}
+                        onPressIn={() => {
+                            if (isLive && liveVideoUri) {
+                                setIsLivePlaying(true);
+                            }
+                        }}
+                        onPressOut={() => {
+                            setIsLivePlaying(false);
+                        }}
+                    >
+                        <Image
+                            source={{ uri: (item.mediaType === 'video' && isRemote) ? item.uri : uri }}
+                            style={styles.image}
+                            resizeMode="contain"
+                        />
+                    </Pressable>
                 )}
-                {isLivePhoto(item) ? (
+                {isLive ? (
                     <View style={styles.liveBadgeContainer}>
-                        <LivePhotoIcon size={14} color="#fff" />
-                        <Text style={styles.liveBadgeText}>LIVE</Text>
+                        {isPreparingLive && isVisible ? (
+                            <ActivityIndicator size="small" color="#fff" style={{ marginRight: 6 }} />
+                        ) : (
+                            <LivePhotoIcon size={14} color="#fff" />
+                        )}
+                        <Text style={styles.liveBadgeText}>
+                            {isPreparingLive && isVisible ? 'LIVE • LOADING...' : 'LIVE'}
+                        </Text>
                     </View>
                 ) : null}
             </View>
@@ -311,7 +394,7 @@ export default function AssetDetailScreen({ route, navigation }) {
                         viewabilityConfig={{ itemVisiblePercentThreshold: 50 }}
                         renderItem={renderItem}
                         windowSize={5}
-                        extraData={{ useOriginalVideo, currentIndex }}
+                        extraData={{ useOriginalVideo, currentIndex, isLivePlaying, isPreparingLive, extractedVideoUris }}
                     />
                 ) : null}
             </View>

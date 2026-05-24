@@ -135,10 +135,12 @@ class UploadService {
 
             // 5. Binary Upload using native session
             // iOS background URL sessions require HTTPS — plain HTTP (LAN server) silently
-            // fails with NSURLErrorUnknown (-1). Use a foreground session on iOS instead.
+            // fails with NSURLErrorUnknown (-1). Use a foreground session on iOS instead for plain HTTP.
+            // If the server URL uses HTTPS, we can safely leverage native background sessions.
             // Android background sessions work fine with HTTP, so keep BACKGROUND there.
+            const isHttps = serverUrl.toLowerCase().startsWith('https://');
             const sessionType = Platform.OS === 'ios'
-                ? (FileSystem.FileSystemSessionType?.FOREGROUND ?? 1)
+                ? (isHttps ? (FileSystem.FileSystemSessionType?.BACKGROUND ?? 0) : (FileSystem.FileSystemSessionType?.FOREGROUND ?? 1))
                 : (FileSystem.FileSystemSessionType?.BACKGROUND ?? FileSystem.FileSystemUploadSessionType?.BACKGROUND ?? 0);
 
             const task = FileSystem.createUploadTask(

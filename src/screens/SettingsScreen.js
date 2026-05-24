@@ -1,6 +1,6 @@
 import React from 'react';
-import { StyleSheet, View, ScrollView, Text, Switch, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
-import { ChevronLeft, Trash2, RefreshCcw, Server } from 'lucide-react-native';
+import { StyleSheet, View, ScrollView, Text, Switch, TouchableOpacity, Alert, ActivityIndicator, Platform } from 'react-native';
+import { ChevronLeft, Trash2, RefreshCcw, Server, ChevronRight } from 'lucide-react-native';
 import { useSettings } from '../context/SettingsContext';
 import { useAuth } from '../context/AuthContext';
 import SyncService from '../services/SyncService';
@@ -120,6 +120,38 @@ export default function SettingsScreen({ navigation }) {
                         thumbColor={'#fff'}
                     />
                 </View>
+
+                {Platform.OS === 'android' && (
+                    <TouchableOpacity 
+                        style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8 }]}
+                        onPress={() => {
+                            Alert.alert(
+                                "Battery Optimization",
+                                "To ensure background backup runs reliably when your phone is asleep, please set Lomorage's battery usage to 'Unrestricted' in the system settings.",
+                                [
+                                    { text: "Cancel", style: "cancel" },
+                                    { 
+                                        text: "Open Settings", 
+                                        onPress: () => {
+                                            const { Linking } = require('react-native');
+                                            Linking.openSettings().catch(() => {
+                                                Alert.alert("Error", "Could not open system settings automatically.");
+                                            });
+                                        }
+                                    }
+                                ]
+                            );
+                        }}
+                    >
+                        <View style={styles.settingTextContainer}>
+                            <Text style={styles.settingLabel}>Ignore Battery Optimizations</Text>
+                            <Text style={styles.settingDescription}>
+                                Recommended. Keeps background uploads running reliably when the device is asleep or locked.
+                            </Text>
+                        </View>
+                        <ChevronRight color="#007AFF" size={20} />
+                    </TouchableOpacity>
+                )}
 
             </View>
 

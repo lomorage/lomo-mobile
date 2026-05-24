@@ -3,7 +3,7 @@ import * as LegacyFileSystem from 'expo-file-system/legacy';
 import * as Crypto from 'expo-crypto';
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
-import { hashFileAsync, isLivePhotoAsync, prepareLivePhotoBackupAsync } from '../../modules/expo-lomo-hasher';
+import { hashFileAsync, isLivePhotoAsync, prepareLivePhotoBackupAsync, extractVideoFromZipAsync, getLocalLivePhotoVideoUriAsync } from '../../modules/expo-lomo-hasher';
 import axios from 'axios';
 import AuthService from './AuthService';
 
@@ -281,6 +281,26 @@ class MediaService {
       return await prepareLivePhotoBackupAsync(uri);
     } catch (e) {
       console.error('[MediaService] prepareLivePhotoBackupAsync failed:', e.message);
+      throw e;
+    }
+  }
+
+  async getLocalLivePhotoVideoUriAsync(uri) {
+    if (Platform.OS !== 'ios' || !uri) return null;
+    try {
+      return await getLocalLivePhotoVideoUriAsync(uri);
+    } catch (e) {
+      console.error('[MediaService] getLocalLivePhotoVideoUriAsync failed:', e.message);
+      throw e;
+    }
+  }
+
+  async extractVideoFromZipAsync(zipUri) {
+    if (Platform.OS !== 'ios' || !zipUri) return null;
+    try {
+      return await extractVideoFromZipAsync(zipUri);
+    } catch (e) {
+      console.error('[MediaService] extractVideoFromZipAsync failed:', e.message);
       throw e;
     }
   }

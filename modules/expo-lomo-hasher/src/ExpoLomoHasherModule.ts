@@ -15,6 +15,8 @@ declare class ExpoLomoHasherModule extends NativeModule<ExpoLomoHasherModuleEven
     videoHash: string;
     filename: string;
   } | null>;
+  extractVideoFromZipAsync(zipUri: string): Promise<string>;
+  getLocalLivePhotoVideoUriAsync(uri: string): Promise<string>;
 }
 
 // This call loads the native module object from the JSI.

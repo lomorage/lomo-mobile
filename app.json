@@ -18,8 +18,7 @@
       "bundleIdentifier": "com.wtao.lomo",
       "infoPlist": {
         "UIBackgroundModes": [
-          "fetch",
-          "location"
+          "fetch"
         ],
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true
@@ -49,8 +48,6 @@
         "android.permission.ACCESS_WIFI_STATE",
         "android.permission.CHANGE_WIFI_MULTICAST_STATE",
         "android.permission.RECEIVE_BOOT_COMPLETED",
-        "android.permission.FOREGROUND_SERVICE",
-        "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
         "android.permission.POST_NOTIFICATIONS"
       ],
       "package": "com.wtao.lomo"

@@ -487,6 +487,19 @@ npx expo install --check
 npx expo install --fix
 ```
 
+## Future Background Sync Roadmap
+
+To achieve absolute parity, resilience, and App Store/Play Store compliance across both mobile operating systems, the following background sync features are planned for future development:
+
+### 1. iOS Optimization Tasks
+- [ ] **Significant Location Change (SLC) Trigger (Opt-in):** Add an experimental, user-consented setting using `expo-location` that triggers a sync whenever the user relocates. This bypasses iOS Background Fetch throttling when the app hasn't been opened for days.
+- [ ] **iOS BGProcessingTask Integration:** Configure native `BGProcessingTaskRequest` schedulers (requires `BGTaskSchedulerPermittedIdentifiers` in `Info.plist`) to execute deep backups for up to several minutes overnight when the device is charging and connected to Wi-Fi.
+
+### 2. Android Optimization Tasks
+- [ ] **Google Play Store Policy Compliance (Permission Cleanup):** Remove `FOREGROUND_SERVICE` and `FOREGROUND_SERVICE_DATA_SYNC` from `app.json` unless a true native Foreground Service is compiled. Standard `expo-background-task` executes via standard Android `WorkManager` / `JobScheduler` routines, meaning requesting these permissions creates unnecessary Google Play policy review friction.
+- [ ] **Programmatic Battery Optimization Whitelisting:** Implement a settings toggle or startup warning that prompts Android users to disable battery optimization (Request Ignore Battery Optimizations intent). This prevents Android's Doze Mode and App Standby Buckets from aggressively suspending background task workers during sleep.
+- [ ] **True WorkManager Foreground Upgrades:** Leverage native code to promote standard background sync workers to actual Foreground Services (`setForegroundAsync()`) during major initial backups, ensuring the OS does not terminate the process after Android's 10-minute work limit.
+
 ## Testing
 
 The project uses Jest for unit testing.

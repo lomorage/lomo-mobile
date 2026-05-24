@@ -352,6 +352,28 @@ TaskManager.defineTask(BACKGROUND_BACKUP_TASK, async () => {
             manager.queue = pending;
             await manager.startBackup();
             console.log('[BackgroundTask] Background upload finished.');
+            
+            // Send iOS local notification upon background sync completion
+            if (Platform.OS === 'ios') {
+                try {
+                    const syncedCount = manager.currentIndex;
+                    if (syncedCount > 0) {
+                        const { status } = await Notifications.getPermissionsAsync();
+                        if (status === 'granted') {
+                            await Notifications.scheduleNotificationAsync({
+                                content: {
+                                    title: 'Lomorage Sync Complete',
+                                    body: `Successfully backed up ${syncedCount} new photo${syncedCount > 1 ? 's' : ''} in the background.`,
+                                    sound: true,
+                                },
+                                trigger: null,
+                            });
+                        }
+                    }
+                } catch (e) {
+                    console.error('[BackgroundTask] iOS notification error:', e);
+                }
+            }
 
             // Refresh and save the remote tree to disk so the foreground app has the updated state immediately!
             try {
