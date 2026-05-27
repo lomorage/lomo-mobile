@@ -74,7 +74,11 @@ const formatServerUrl = (address) => {
                       /^localhost(?::[0-9]+)?$/.test(address) ||
                       /\.local(?::[0-9]+)?$/.test(address);
                       
-  return isLocalOrIp ? `http://${address}` : `https://${address}`;
+  // If it has a port that is NOT 443, default to http
+  const portMatch = address.match(/:([0-9]+)$/);
+  const hasNonHttpsPort = portMatch && portMatch[1] !== '443';
+                      
+  return (isLocalOrIp || hasNonHttpsPort) ? `http://${address}` : `https://${address}`;
 };
 
 class AuthService {
@@ -454,5 +458,6 @@ axios.interceptors.response.use(
     }
 );
 
+export { formatServerUrl };
 export default authService;
 

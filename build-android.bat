@@ -1,6 +1,10 @@
 @echo off
 echo Starting Android Release Build...
 
+echo Bumping version...
+node bump-version.js
+if %errorlevel% neq 0 exit /b %errorlevel%
+
 cd android
 if %errorlevel% neq 0 exit /b %errorlevel%
 
