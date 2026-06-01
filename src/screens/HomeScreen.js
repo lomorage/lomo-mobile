@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
-import { StyleSheet, View, FlatList, Image, Dimensions, TouchableOpacity, Text, ActivityIndicator, RefreshControl, DeviceEventEmitter, AppState, PanResponder, Animated } from 'react-native';
+import { StyleSheet, View, Dimensions, TouchableOpacity, Text, ActivityIndicator, RefreshControl, DeviceEventEmitter, AppState, PanResponder, Animated } from 'react-native';
+import * as Haptics from 'expo-haptics';
+import { Image } from 'expo-image';
+import { FlashList } from '@shopify/flash-list';
 import { Cloud, CheckCircle, Smartphone, PlayCircle, PauseCircle, Settings as SettingsIcon, UploadCloud } from 'lucide-react-native';
 import MediaService from '../services/MediaService';
 import SyncService from '../services/SyncService';
@@ -85,6 +88,7 @@ export default function HomeScreen({ navigation }) {
     const containerHeightRef = useRef(0);
     const [isScrubbing, setIsScrubbing] = useState(false);
     const [scrubText, setScrubText] = useState('');
+    const lastScrubTextRef = useRef('');
     const isScrubbingRef = useRef(false);
     const lastScrubIndexRef = useRef(-1);
     const scrubThumbY = useRef(new Animated.Value(0)).current;
@@ -242,6 +246,13 @@ export default function HomeScreen({ navigation }) {
                if (currentData[i].type === 'header') { text = currentData[i].title; break; }
            }
         }
+        
+        if (lastScrubTextRef.current !== text) {
+            lastScrubTextRef.current = text;
+            try {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            } catch (e) {}
+        }
         setScrubText(text);
 
         // Throttle gallery jumps to 50ms. 
@@ -273,6 +284,22 @@ export default function HomeScreen({ navigation }) {
             onPanResponderRelease: () => {
                 setIsScrubbing(false);
                 isScrubbingRef.current = false;
+                
+                // Snap to nearest header
+                const targetIndex = lastScrubIndexRef.current;
+                const currentData = timelineDataRef.current;
+                if (currentData && currentData.length > 0 && targetIndex >= 0) {
+                    let closestHeaderIndex = 0;
+                    for (let i = targetIndex; i >= 0; i--) {
+                        if (currentData[i] && currentData[i].type === 'header') {
+                            closestHeaderIndex = i;
+                            break;
+                        }
+                    }
+                    if (listRef.current) {
+                        listRef.current.scrollToIndex({ index: closestHeaderIndex, animated: true });
+                    }
+                }
             },
             onPanResponderTerminate: () => {
                 setIsScrubbing(false);
@@ -541,13 +568,10 @@ export default function HomeScreen({ navigation }) {
     });
 
     const RenderAsset = memo(({ asset, globalIndex, navigation, debugMode, currentAssetId, isScrubbing, activeLoadCountRef }) => {
-        // Scrub-Lock: Skip remote photo fetching while scrubbing to prevent network congestion.
-        // Local assets are fine to render because they are fast and don't hit the server.
         const loadStartTime = useRef(0);
-        const shouldShowImage = !isScrubbing || asset.status === 'local';
+        // Scrub-Lock: Skip remote photo fetching while scrubbing to prevent network congestion.
+        const shouldLoad = !isScrubbing || asset.status === 'local';
 
-        // For remote assets, always build the thumbnail URI fresh from AuthService
-        // so a stale/rotated token stored in asset.uri never silently breaks thumbnails.
         const thumbnailUri = (asset.status === 'remote' && asset.hash)
             ? `${AuthService.getServerUrl()}/preview/${asset.hash}?width=300&height=-1&token=${AuthService.getToken()}`
             : safeUri(asset.uri);
@@ -558,11 +582,12 @@ export default function HomeScreen({ navigation }) {
                 style={styles.itemContainer}
                 onPress={() => navigation.navigate('AssetDetail', { initialIndex: globalIndex })}
             >
-                {shouldShowImage ? (
+                {shouldLoad ? (
                     <Image
                         source={{ uri: thumbnailUri }}
                         style={styles.image}
-                        resizeMethod="resize"
+                        contentFit="cover"
+                        cachePolicy="memory-disk"
                         onLoadStart={() => {
                             if (asset.status === 'remote') {
                                 loadStartTime.current = Date.now();
@@ -581,7 +606,7 @@ export default function HomeScreen({ navigation }) {
                              if (asset.status === 'remote') activeLoadCountRef.current--;
                              if (debugMode) {
                                  const diff = loadStartTime.current > 0 ? Date.now() - loadStartTime.current : 'N/A';
-                                 console.log(`[Metrics] Remote asset ${asset.id} error after ${diff}ms (Concurrent: ${activeLoadCountRef.current}):`, e.nativeEvent.error);
+                                 console.log(`[Metrics] Remote asset ${asset.id} error after ${diff}ms (Concurrent: ${activeLoadCountRef.current}):`, e.error || e);
                              }
                         }}
                     />
@@ -695,6 +720,8 @@ export default function HomeScreen({ navigation }) {
                                 <Image 
                                     source={{ uri: assets.find(a => a.id === backupState.currentAssetId)?.uri }} 
                                     style={styles.uploadingThumbnail} 
+                                    contentFit="cover"
+                                    cachePolicy="disk"
                                 />
                             ) : null}
                             <Text style={[styles.backupBannerText, backupState.isPaused && { color: '#666' }]}>
@@ -752,17 +779,15 @@ export default function HomeScreen({ navigation }) {
                         });
                     }}
                 >
-                    <FlatList
+                    <FlashList
                         ref={listRef}
                         data={timelineData}
+                        extraData={{ isScrubbing, currentAssetId: backupState.currentAssetId, debugMode }}
                         renderItem={renderItem}
                         keyExtractor={item => item.id}
                         stickyHeaderIndices={stickyHeaderIndices}
-                        getItemLayout={getItemLayout}
-                        removeClippedSubviews={true}
-                        initialNumToRender={12}
-                        maxToRenderPerBatch={12}
-                        windowSize={7}
+                        getItemType={(item) => item.type}
+                        estimatedItemSize={ITEM_SIZE}
                         showsVerticalScrollIndicator={false}
                         scrollEventThrottle={16}
                         onScroll={(e) => {

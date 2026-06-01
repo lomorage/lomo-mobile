@@ -1,6 +1,6 @@
 {
   "name": "lomo-mobile",
-  "version": "1.0.5",
+  "version": "1.0.10",
   "main": "index.js",
   "scripts": {
     "start": "expo start",
@@ -18,6 +18,7 @@
   "dependencies": {
     "@react-navigation/native": "^7.1.28",
     "@react-navigation/stack": "^7.7.1",
+    "@shopify/flash-list": "2.0.2",
     "axios": "^1.13.5",
     "expo": "~54.0.33",
     "expo-background-task": "~1.0.0",
@@ -27,6 +28,8 @@
     "expo-dev-client": "~6.0.20",
     "expo-device": "~8.0.10",
     "expo-file-system": "~19.0.21",
+    "expo-haptics": "~15.0.8",
+    "expo-image": "~3.0.11",
     "expo-image-picker": "~17.0.10",
     "expo-location": "~19.0.8",
     "expo-media-library": "~18.2.1",
