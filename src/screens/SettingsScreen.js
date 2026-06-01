@@ -1,6 +1,7 @@
 import React from 'react';
-import { StyleSheet, View, ScrollView, Text, Switch, TouchableOpacity, Alert, ActivityIndicator, Platform } from 'react-native';
-import { ChevronLeft, Trash2, RefreshCcw, Server, ChevronRight } from 'lucide-react-native';
+import { StyleSheet, View, ScrollView, Text, Switch, TouchableOpacity, Alert, ActivityIndicator, Platform, Modal, TextInput } from 'react-native';
+import { ChevronLeft, Trash2, RefreshCcw, Server, ChevronRight, Globe } from 'lucide-react-native';
+import Constants from 'expo-constants';
 import { useSettings } from '../context/SettingsContext';
 import { useAuth } from '../context/AuthContext';
 import SyncService from '../services/SyncService';
@@ -23,14 +24,27 @@ export default function SettingsScreen({ navigation }) {
     const [stats, setStats] = React.useState({ local: 0, remote: 0 });
     const [isScanning, setIsScanning] = React.useState(false);
     const [serverUrl, setServerUrl] = React.useState(AuthService.getServerUrl());
+    const [localUrl, setLocalUrl] = React.useState(AuthService.getLocalUrl());
+    const [remoteUrl, setRemoteUrl] = React.useState(AuthService.getRemoteUrl());
     const [serverName, setServerName] = React.useState(AuthService.getServerName());
+    const [serverVersion, setServerVersion] = React.useState('Loading...');
+    const clientVersion = Constants.expoConfig?.version || '1.0.10';
+
+    const [isRemoteModalVisible, setRemoteModalVisible] = React.useState(false);
+    const [tempRemoteUrl, setTempRemoteUrl] = React.useState('');
 
     const [isReachable, setIsReachable] = React.useState(null);
 
     React.useEffect(() => {
         loadStats();
         checkServerReachability();
+        fetchServerVersion();
     }, [serverUrl]);
+
+    const fetchServerVersion = async () => {
+        const ver = await AuthService.getServerVersion();
+        setServerVersion(ver);
+    };
 
     const checkServerReachability = async () => {
         if (!serverUrl) {
@@ -73,6 +87,8 @@ export default function SettingsScreen({ navigation }) {
             if (success) {
                 const newUrl = AuthService.getServerUrl();
                 setServerUrl(newUrl);
+                setLocalUrl(AuthService.getLocalUrl());
+                setRemoteUrl(AuthService.getRemoteUrl());
                 setServerName(AuthService.getServerName());
                 setIsReachable(true);
                 Alert.alert("Server Found ✓", `Connected to:\n${newUrl}`);
@@ -85,10 +101,23 @@ export default function SettingsScreen({ navigation }) {
             }
         } catch (e) {
             setIsReachable(false);
-            Alert.alert("Scan Error", "An unexpected error occurred during discovery.");
-        } finally {
-            setIsScanning(false);
+            Alert.alert("Error", "Failed to probe network.");
         }
+        setIsScanning(false);
+    };
+
+    const handleSaveRemoteUrl = async () => {
+        let url = tempRemoteUrl.trim();
+        if (url) {
+            url = AuthService.formatUrl(url);
+        }
+        await AuthService.setRemoteUrl(url);
+        setRemoteUrl(AuthService.getRemoteUrl());
+        setRemoteModalVisible(false);
+        AuthService.determineBestConnection().then(() => {
+            setServerUrl(AuthService.getServerUrl());
+            checkServerReachability();
+        });
     };
 
     return (
@@ -292,6 +321,8 @@ export default function SettingsScreen({ navigation }) {
                         </View>
                         <Text style={styles.settingDescription}>{serverUrl || 'Not configured'}</Text>
                         {serverName && <Text style={styles.serverBadge}>Identity: {serverName}</Text>}
+                        {localUrl && <Text style={{fontSize: 12, color: '#666', marginTop: 8}}>• Local: {localUrl}</Text>}
+                        {remoteUrl && <Text style={{fontSize: 12, color: '#666', marginTop: 2}}>• Remote: {remoteUrl}</Text>}
                     </View>
                     <Server color="#4A5568" size={24} />
                 </View>
@@ -311,6 +342,20 @@ export default function SettingsScreen({ navigation }) {
                         ? <ActivityIndicator size="small" color="#007AFF" />
                         : <RefreshCcw color="#007AFF" size={20} />
                     }
+                </TouchableOpacity>
+
+                <TouchableOpacity 
+                    style={[styles.settingRow, { marginTop: 10 }]}
+                    onPress={() => {
+                        setTempRemoteUrl(remoteUrl || '');
+                        setRemoteModalVisible(true);
+                    }}
+                >
+                    <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabel}>Set Remote Address</Text>
+                        <Text style={styles.settingDescription}>Configure your domain for remote access.</Text>
+                    </View>
+                    <Globe color="#007AFF" size={20} />
                 </TouchableOpacity>
 
                 <TouchableOpacity 
@@ -348,7 +393,63 @@ export default function SettingsScreen({ navigation }) {
                     </View>
                 </TouchableOpacity>
             </View>
+
+            <View style={styles.section}>
+                <Text style={styles.sectionTitle}>About</Text>
+                
+                <View style={styles.settingRow}>
+                    <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabel}>Client Version</Text>
+                        <Text style={styles.settingDescription}>{clientVersion}</Text>
+                    </View>
+                </View>
+                
+                <View style={styles.settingRow}>
+                    <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabel}>Server Version</Text>
+                        <Text style={styles.settingDescription}>{serverVersion}</Text>
+                    </View>
+                </View>
+            </View>
             </ScrollView>
+
+            <Modal
+                visible={isRemoteModalVisible}
+                transparent={true}
+                animationType="fade"
+                onRequestClose={() => setRemoteModalVisible(false)}
+            >
+                <View style={styles.modalOverlay}>
+                    <View style={styles.modalContent}>
+                        <Text style={styles.modalTitle}>Remote Address</Text>
+                        <Text style={styles.modalDescription}>
+                            Enter your public domain or remote IP address.
+                        </Text>
+                        <TextInput
+                            style={styles.modalInput}
+                            value={tempRemoteUrl}
+                            onChangeText={setTempRemoteUrl}
+                            placeholder="https://lomo.your-domain.com"
+                            autoCapitalize="none"
+                            autoCorrect={false}
+                        />
+                        <View style={styles.modalButtons}>
+                            <TouchableOpacity 
+                                style={[styles.modalButton, styles.modalButtonCancel]} 
+                                onPress={() => setRemoteModalVisible(false)}
+                            >
+                                <Text style={styles.modalButtonTextCancel}>Cancel</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity 
+                                style={[styles.modalButton, styles.modalButtonSave]} 
+                                onPress={handleSaveRemoteUrl}
+                            >
+                                <Text style={styles.modalButtonTextSave}>Save</Text>
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                </View>
+            </Modal>
         </View>
     );
 }
@@ -388,10 +489,11 @@ const styles = StyleSheet.create({
     sectionTitle: {
         fontSize: 13,
         fontWeight: '600',
-        color: '#666',
+        color: '#64748B',
         textTransform: 'uppercase',
-        marginLeft: 20,
-        marginBottom: 10,
+        letterSpacing: 0.5,
+        marginBottom: 8,
+        marginLeft: 16,
     },
     settingRow: {
         flexDirection: 'row',
@@ -445,6 +547,73 @@ const styles = StyleSheet.create({
     },
     statusText: {
         fontSize: 12,
+        fontWeight: '600',
+    },
+    modalOverlay: {
+        flex: 1,
+        backgroundColor: 'rgba(0,0,0,0.5)',
+        justifyContent: 'center',
+        alignItems: 'center',
+        padding: 24,
+    },
+    modalContent: {
+        backgroundColor: '#FFF',
+        borderRadius: 16,
+        padding: 24,
+        width: '100%',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.1,
+        shadowRadius: 12,
+        elevation: 4,
+    },
+    modalTitle: {
+        fontSize: 18,
+        fontWeight: '700',
+        color: '#1A202C',
+        marginBottom: 8,
+    },
+    modalDescription: {
+        fontSize: 14,
+        color: '#718096',
+        marginBottom: 20,
+    },
+    modalInput: {
+        borderWidth: 1,
+        borderColor: '#E2E8F0',
+        borderRadius: 8,
+        padding: 12,
+        fontSize: 16,
+        color: '#2D3748',
+        backgroundColor: '#F8FAFC',
+        marginBottom: 24,
+    },
+    modalButtons: {
+        flexDirection: 'row',
+        justifyContent: 'flex-end',
+        gap: 12,
+    },
+    modalButton: {
+        paddingVertical: 10,
+        paddingHorizontal: 20,
+        borderRadius: 8,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    modalButtonCancel: {
+        backgroundColor: '#EDF2F7',
+    },
+    modalButtonSave: {
+        backgroundColor: '#007AFF',
+    },
+    modalButtonTextCancel: {
+        color: '#4A5568',
+        fontSize: 15,
+        fontWeight: '600',
+    },
+    modalButtonTextSave: {
+        color: '#FFF',
+        fontSize: 15,
         fontWeight: '600',
     }
 });

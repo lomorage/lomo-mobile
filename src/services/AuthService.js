@@ -7,6 +7,8 @@ axios.defaults.timeout = 60000; // Global 60s fallback to prevent native Java So
 
 const TOKEN_KEY = 'lomo_auth_token';
 const SERVER_KEY = 'lomo_server_url';
+const REMOTE_SERVER_KEY = 'lomo_remote_server_url';
+const LOCAL_SERVER_KEY = 'lomo_local_server_url';
 const USERNAME_KEY = 'lomo_username';
 const SERVER_NAME_KEY = 'lomo_server_name';
 
@@ -85,6 +87,8 @@ class AuthService {
   constructor() {
     this.token = null;
     this.serverUrl = null;
+    this.remoteUrl = null;
+    this.localUrl = null;
     this.serverName = null;
     this.isProbing = false;
     this.isShowingProbeAlert = false;
@@ -106,7 +110,13 @@ class AuthService {
     try {
       this.token = await SecureStore.getItemAsync(TOKEN_KEY);
       this.serverUrl = await SecureStore.getItemAsync(SERVER_KEY);
+      this.remoteUrl = await SecureStore.getItemAsync(REMOTE_SERVER_KEY);
+      this.localUrl = await SecureStore.getItemAsync(LOCAL_SERVER_KEY);
       this.serverName = await SecureStore.getItemAsync(SERVER_NAME_KEY);
+      
+      if (this.isAuthenticated()) {
+          this.determineBestConnection();
+      }
       return this.isAuthenticated();
     } catch (e) {
       console.error('Failed to initialize auth state', e);
@@ -114,8 +124,68 @@ class AuthService {
     }
   }
 
+  formatUrl(address) {
+      return formatServerUrl(address);
+  }
+
+  async setRemoteUrl(url) {
+      this.remoteUrl = url;
+      if (url) {
+          await SecureStore.setItemAsync(REMOTE_SERVER_KEY, url);
+      } else {
+          await SecureStore.deleteItemAsync(REMOTE_SERVER_KEY);
+      }
+  }
+
+  async setLocalUrl(url) {
+      this.localUrl = url;
+      if (url) {
+          await SecureStore.setItemAsync(LOCAL_SERVER_KEY, url);
+      } else {
+          await SecureStore.deleteItemAsync(LOCAL_SERVER_KEY);
+      }
+  }
+
+  async determineBestConnection() {
+      if (this.localUrl) {
+          try {
+             const controller = new AbortController();
+             const timeoutId = setTimeout(() => controller.abort(), 2000);
+             const response = await fetch(`${this.localUrl}/system`, { method: 'GET', signal: controller.signal });
+             clearTimeout(timeoutId);
+             if (response.status === 200) {
+                 await this.updateServerUrl(this.localUrl);
+                 return true;
+             }
+          } catch(e) {}
+      }
+      
+      if (this.remoteUrl) {
+          try {
+             const controller = new AbortController();
+             const timeoutId = setTimeout(() => controller.abort(), 3000);
+             const response = await fetch(`${this.remoteUrl}/system`, { method: 'GET', signal: controller.signal });
+             clearTimeout(timeoutId);
+             if (response.status === 200) {
+                 await this.updateServerUrl(this.remoteUrl);
+                 return true;
+             }
+          } catch(e) {}
+      }
+      
+      return await this.autoProbe();
+  }
+
   getServerName() {
     return this.serverName;
+  }
+
+  getRemoteUrl() {
+    return this.remoteUrl;
+  }
+
+  getLocalUrl() {
+    return this.localUrl;
   }
 
   async updateServerUrl(url, name = null) {
@@ -154,6 +224,7 @@ class AuthService {
       if (this.serverName) {
         const match = discovered.find(s => s.name === this.serverName);
         if (match) {
+          await this.setLocalUrl(match.fullUrl);
           if (match.fullUrl !== this.serverUrl) {
             console.log(`[AuthService] Auto-probe: matched by name, new address: ${match.fullUrl}`);
             await this.updateServerUrl(match.fullUrl);
@@ -179,6 +250,7 @@ class AuthService {
           clearTimeout(timeoutId);
           // Any response means the server is reachable
           console.log(`[AuthService] Auto-probe: ${server.fullUrl} is reachable (status ${response.status}). Updating.`);
+          await this.setLocalUrl(server.fullUrl);
           await this.updateServerUrl(server.fullUrl, server.name);
           return true;
         } catch (e) {
@@ -244,6 +316,18 @@ class AuthService {
         this.token = response.data.Token;
         
         await SecureStore.setItemAsync(TOKEN_KEY, this.token);
+        
+        // Save user's explicit input as remote URL unless it's clearly a private IP
+        const isLocalOrIp = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?::[0-9]+)?$/.test(serverAddress) || 
+                            /^\[?[0-9a-fA-F:]+\]?(?::[0-9]+)?$/.test(serverAddress) || 
+                            /^localhost(?::[0-9]+)?$/.test(serverAddress) ||
+                            /\.local(?::[0-9]+)?$/.test(serverAddress);
+        if (isLocalOrIp) {
+            await this.setLocalUrl(this.serverUrl);
+        } else {
+            await this.setRemoteUrl(this.serverUrl);
+        }
+        
         await SecureStore.setItemAsync(SERVER_KEY, this.serverUrl);
         await SecureStore.setItemAsync(USERNAME_KEY, username);
         if (this.serverName) {
@@ -295,6 +379,21 @@ class AuthService {
       console.error('Failed to get disks:', error.message);
       throw new Error('Could not connect to server to fetch storage info');
     }
+  }
+
+  async getServerVersion() {
+    if (!this.serverUrl) return 'Unknown';
+    try {
+      const response = await axios.get(`${this.serverUrl}/system`, {
+         headers: this.token ? { 'Authorization': `token=${this.token}` } : {}
+      });
+      if (response.status === 200 && response.data && response.data.LomodVersion) {
+         return response.data.LomodVersion;
+      }
+    } catch (e) {
+      console.log('Failed to fetch server version:', e.message);
+    }
+    return 'Unknown';
   }
 
   async register(serverAddress, username, password, homedir, nickName = "", autoLogin = true) {
@@ -383,45 +482,71 @@ axios.interceptors.response.use(
             authService.isShowingProbeAlert = true;
 
             return new Promise((resolve, reject) => {
-                Alert.alert(
-                    "Connection Lost",
-                    "We couldn't reach your Lomorage server. This may happen if its IP address changed. Tap \"Re-scan\" to search for it on your local network.",
-                    [
-                        {
-                            text: "Cancel",
-                            style: "cancel",
-                            onPress: () => {
-                                authService.isShowingProbeAlert = false;
-                                reject(error);
-                            }
-                        },
-                        {
-                            text: "Re-scan Network",
-                            onPress: async () => {
-                                console.log('[AuthService] User requested re-probe after network error.');
-                                const found = await authService.autoProbe();
-                                authService.isShowingProbeAlert = false;
+                const attemptSilentFailover = async () => {
+                    console.log('[AuthService] Network error, attempting silent dual-connection failover...');
+                    const success = await authService.determineBestConnection();
+                    if (success) {
+                        originalRequest._retry = true;
+                        const newBaseUrl = authService.getServerUrl();
+                        try {
+                            const parsedUrl = new URL(originalRequest.url);
+                            const newUrl = new URL(parsedUrl.pathname + parsedUrl.search, newBaseUrl);
+                            originalRequest.url = newUrl.href;
+                        } catch (parseErr) {
+                            originalRequest.baseURL = newBaseUrl;
+                        }
+                        console.log(`[AuthService] Retrying request silently at: ${originalRequest.url}`);
+                        try {
+                            const resp = await axios(originalRequest);
+                            resolve(resp);
+                        } catch (e) {
+                            reject(e);
+                        }
+                        return true;
+                    }
+                    return false;
+                };
 
-                                if (found) {
-                                    // Rebuild the request URL using the fresh server URL
-                                    originalRequest._retry = true;
-                                    const newBaseUrl = authService.getServerUrl();
-                                    try {
-                                        const parsedUrl = new URL(originalRequest.url);
-                                        const newUrl = new URL(parsedUrl.pathname + parsedUrl.search, newBaseUrl);
-                                        originalRequest.url = newUrl.href;
-                                    } catch (parseErr) {
-                                        originalRequest.baseURL = newBaseUrl;
-                                    }
-                                    console.log(`[AuthService] Retrying request at: ${originalRequest.url}`);
-                                    resolve(axios(originalRequest));
-                                } else {
+                attemptSilentFailover().then(success => {
+                    if (success) return;
+                    
+                    authService.isShowingProbeAlert = true;
+                    Alert.alert(
+                        "Connection Lost",
+                        "We couldn't reach your Lomorage server. Tap \"Re-scan\" to search for it on your local network.",
+                        [
+                            {
+                                text: "Cancel",
+                                style: "cancel",
+                                onPress: () => {
+                                    authService.isShowingProbeAlert = false;
                                     reject(error);
                                 }
+                            },
+                            {
+                                text: "Re-scan Network",
+                                onPress: async () => {
+                                    const found = await authService.autoProbe();
+                                    authService.isShowingProbeAlert = false;
+                                    if (found) {
+                                        originalRequest._retry = true;
+                                        const newBaseUrl = authService.getServerUrl();
+                                        try {
+                                            const parsedUrl = new URL(originalRequest.url);
+                                            const newUrl = new URL(parsedUrl.pathname + parsedUrl.search, newBaseUrl);
+                                            originalRequest.url = newUrl.href;
+                                        } catch (parseErr) {
+                                            originalRequest.baseURL = newBaseUrl;
+                                        }
+                                        resolve(axios(originalRequest));
+                                    } else {
+                                        reject(error);
+                                    }
+                                }
                             }
-                        }
-                    ]
-                );
+                        ]
+                    );
+                });
             });
         }
 

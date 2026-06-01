@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { StyleSheet, Dimensions } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { useSharedValue, useAnimatedStyle, withSpring, runOnJS } from 'react-native-reanimated';
@@ -13,7 +13,10 @@ export default function ZoomableMedia({ children, onZoomStateChange, style }) {
     const savedTranslationX = useSharedValue(0);
     const savedTranslationY = useSharedValue(0);
 
+    const [isZoomedInternal, setIsZoomedInternal] = useState(false);
+
     const updateZoomState = (isZoomed) => {
+        setIsZoomedInternal(isZoomed);
         if (onZoomStateChange) {
             onZoomStateChange(isZoomed);
         }
@@ -67,6 +70,7 @@ export default function ZoomableMedia({ children, onZoomStateChange, style }) {
 
     const panGesture = Gesture.Pan()
         .minPointers(1)
+        .enabled(isZoomedInternal)
         .onUpdate((event) => {
             if (scale.value > 1) {
                 // Limit pan boundaries based on current scale

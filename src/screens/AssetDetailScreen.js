@@ -1,7 +1,9 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { StyleSheet, View, Dimensions, TouchableOpacity, Text, FlatList, Alert, DeviceEventEmitter, Pressable, ActivityIndicator, Animated, Vibration } from 'react-native';
 import { Image } from 'expo-image';
-import { ChevronLeft, Upload, Trash2 } from 'lucide-react-native';
+import { ChevronLeft, Upload, Trash2, Share } from 'lucide-react-native';
+import * as Sharing from 'expo-sharing';
+import * as FileSystem from 'expo-file-system/legacy';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import AuthService from '../services/AuthService';
 import MediaService from '../services/MediaService';
@@ -109,6 +111,7 @@ export default function AssetDetailScreen({ route, navigation }) {
     const [isPreparingLive, setIsPreparingLive] = useState(false);
     const [isLivePlaying, setIsLivePlaying] = useState(false);
     const [flatListScrollEnabled, setFlatListScrollEnabled] = useState(true);
+    const [isSharing, setIsSharing] = useState(false);
     const scaleAnim = useRef(new Animated.Value(1)).current;
     const fadeAnim = useRef(new Animated.Value(0)).current;
 
@@ -186,6 +189,41 @@ export default function AssetDetailScreen({ route, navigation }) {
     }, [currentIndex, assets]);
     
     const currentAsset = assets[currentIndex] || {};
+
+    const handleShare = async () => {
+        if (!currentAsset || isSharing) return;
+        
+        try {
+            setIsSharing(true);
+            const isAvailable = await Sharing.isAvailableAsync();
+            if (!isAvailable) {
+                Alert.alert("Sharing isn't available on your platform");
+                return;
+            }
+
+            let uriToShare = currentAsset.uri;
+
+            if (currentAsset.status === 'remote' && currentAsset.hash) {
+                const remoteUrl = `${AuthService.getServerUrl()}/asset/${currentAsset.hash}?token=${AuthService.getToken()}`;
+                const extension = currentAsset.name ? currentAsset.name.split('.').pop() : (currentAsset.mediaType === 'video' ? 'mp4' : 'jpg');
+                const fileUri = FileSystem.cacheDirectory + `share_${currentAsset.hash}.${extension}`;
+                
+                const info = await FileSystem.getInfoAsync(fileUri);
+                if (!info.exists) {
+                    await FileSystem.downloadAsync(remoteUrl, fileUri);
+                }
+                uriToShare = fileUri;
+            }
+
+            await Sharing.shareAsync(uriToShare);
+
+        } catch (error) {
+            console.error('Error sharing:', error);
+            Alert.alert("Share Error", error.message);
+        } finally {
+            setIsSharing(false);
+        }
+    };
 
     const handleUpload = async () => {
         if (!currentAsset || currentAsset.status === 'remote' || currentAsset.status === 'synced') return;
@@ -493,6 +531,14 @@ export default function AssetDetailScreen({ route, navigation }) {
                             <Upload color={isUploading ? "#ccc" : "#007AFF"} size={24} />
                         </TouchableOpacity>
                     ) : null}
+                    
+                    <TouchableOpacity onPress={handleShare} style={styles.iconButton} disabled={isSharing}>
+                        {isSharing ? (
+                            <ActivityIndicator size="small" color="#007AFF" />
+                        ) : (
+                            <Share color="#007AFF" size={24} />
+                        )}
+                    </TouchableOpacity>
                     <TouchableOpacity onPress={handleDelete} style={styles.iconButton}>
                         <Trash2 color="#ef4444" size={24} />
                     </TouchableOpacity>
