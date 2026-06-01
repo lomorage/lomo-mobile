@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { StyleSheet, View, Image, Dimensions, TouchableOpacity, Text, FlatList, Alert, DeviceEventEmitter, Pressable, ActivityIndicator } from 'react-native';
+import { StyleSheet, View, Image, Dimensions, TouchableOpacity, Text, FlatList, Alert, DeviceEventEmitter, Pressable, ActivityIndicator, Animated, Vibration } from 'react-native';
 import { ChevronLeft, Upload, Trash2 } from 'lucide-react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import AuthService from '../services/AuthService';
@@ -8,6 +8,7 @@ import SyncService from '../services/SyncService';
 import UploadService from '../services/UploadService';
 import { useSettings } from '../context/SettingsContext';
 import GalleryStore from '../store/GalleryStore';
+import ZoomableMedia from '../components/ZoomableMedia';
 
 const { width, height } = Dimensions.get('window');
 
@@ -105,6 +106,9 @@ export default function AssetDetailScreen({ route, navigation }) {
     const [extractedVideoUris, setExtractedVideoUris] = useState({});
     const [isPreparingLive, setIsPreparingLive] = useState(false);
     const [isLivePlaying, setIsLivePlaying] = useState(false);
+    const [flatListScrollEnabled, setFlatListScrollEnabled] = useState(true);
+    const scaleAnim = useRef(new Animated.Value(1)).current;
+    const fadeAnim = useRef(new Animated.Value(0)).current;
 
     useEffect(() => {
         let active = true;
@@ -174,6 +178,8 @@ export default function AssetDetailScreen({ route, navigation }) {
         return () => {
             active = false;
             setIsLivePlaying(false); // Stop playing when index changes
+            scaleAnim.setValue(1.0);
+            fadeAnim.setValue(0);
         };
     }, [currentIndex, assets]);
     
@@ -291,6 +297,54 @@ export default function AssetDetailScreen({ route, navigation }) {
         }
     }).current;
 
+    const handlePressIn = useCallback((isLive, liveVideoUri) => {
+        if (isLive && liveVideoUri) {
+            try {
+                Vibration.vibrate(10);
+            } catch (e) {}
+
+            scaleAnim.setValue(1);
+            fadeAnim.setValue(0);
+            setIsLivePlaying(true);
+
+            Animated.parallel([
+                Animated.spring(scaleAnim, {
+                    toValue: 0.96,
+                    useNativeDriver: true,
+                    speed: 12,
+                    bounciness: 4
+                }),
+                Animated.timing(fadeAnim, {
+                    toValue: 1,
+                    duration: 200,
+                    useNativeDriver: true
+                })
+            ]).start();
+        }
+    }, [scaleAnim, fadeAnim]);
+
+    const handlePressOut = useCallback(() => {
+        if (isLivePlaying) {
+            Animated.parallel([
+                Animated.spring(scaleAnim, {
+                    toValue: 1.0,
+                    useNativeDriver: true,
+                    speed: 12,
+                    bounciness: 4
+                }),
+                Animated.timing(fadeAnim, {
+                    toValue: 0,
+                    duration: 250,
+                    useNativeDriver: true
+                })
+            ]).start((result) => {
+                if (result.finished) {
+                    setIsLivePlaying(false);
+                }
+            });
+        }
+    }, [isLivePlaying, scaleAnim, fadeAnim]);
+
     const renderItem = ({ item, index }) => {
         // Always derive the URI fresh from AuthService so a stale/rotated token
         // in item.uri never silently breaks image loading.
@@ -332,37 +386,46 @@ export default function AssetDetailScreen({ route, navigation }) {
 
         return (
             <View style={{ width, height: height * 0.7, justifyContent: 'center', alignItems: 'center', position: 'relative' }}>
-                {shouldMountVideo ? (
-                    <AssetVideoPlayer uri={uri} style={styles.image} shouldPlay={isVisible} />
-                ) : (
-                    <Pressable
-                        style={{ width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center', position: 'relative' }}
-                        onPressIn={() => {
-                            if (isLive && liveVideoUri) {
-                                setIsLivePlaying(true);
-                            }
-                        }}
-                        onPressOut={() => {
-                            setIsLivePlaying(false);
-                        }}
-                    >
-                        {/* Static Image is ALWAYS rendered as the base background layer */}
-                        <Image
-                            source={{ uri: staticImageUri }}
-                            style={styles.image}
-                            resizeMode="contain"
-                        />
+                <ZoomableMedia 
+                    onZoomStateChange={(isZoomed) => setFlatListScrollEnabled(!isZoomed)}
+                    style={{ width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center' }}
+                >
+                    {shouldMountVideo ? (
+                        <AssetVideoPlayer uri={uri} style={styles.image} shouldPlay={isVisible} />
+                    ) : (
+                        <Pressable
+                            style={{ width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center', position: 'relative' }}
+                            onPressIn={() => handlePressIn(isLive, liveVideoUri)}
+                            onPressOut={handlePressOut}
+                        >
+                            <Animated.View style={{
+                                width: '100%',
+                                height: '100%',
+                                justifyContent: 'center',
+                                alignItems: 'center',
+                                transform: [{ scale: scaleAnim }]
+                            }}>
+                                {/* Static Image is ALWAYS rendered as the base background layer */}
+                                <Image
+                                    source={{ uri: staticImageUri }}
+                                    style={styles.image}
+                                    resizeMode="contain"
+                                />
 
-                        {/* Looping Video Player is absolute positioned on top of the Image when playing */}
-                        {shouldPlayLive ? (
-                            <AssetVideoPlayer 
-                                uri={liveVideoUri} 
-                                style={[styles.image, StyleSheet.absoluteFill]} 
-                                shouldPlay={true} 
-                            />
-                        ) : null}
-                    </Pressable>
-                )}
+                                {/* Looping Video Player is absolute positioned on top of the Image when playing */}
+                                {shouldPlayLive ? (
+                                    <Animated.View style={[StyleSheet.absoluteFill, { opacity: fadeAnim }]}>
+                                        <AssetVideoPlayer 
+                                            uri={liveVideoUri} 
+                                            style={styles.image} 
+                                            shouldPlay={true} 
+                                        />
+                                    </Animated.View>
+                                ) : null}
+                            </Animated.View>
+                        </Pressable>
+                    )}
+                </ZoomableMedia>
                 {isLive ? (
                     <View style={styles.liveBadgeContainer}>
                         {isPreparingLive && isVisible ? (
@@ -422,6 +485,7 @@ export default function AssetDetailScreen({ route, navigation }) {
                         keyExtractor={item => item.id}
                         horizontal
                         pagingEnabled
+                        scrollEnabled={flatListScrollEnabled}
                         showsHorizontalScrollIndicator={false}
                         initialScrollIndex={Math.min(initialIndex, assets.length - 1)}
                         getItemLayout={(data, index) => ({ length: width, offset: width * index, index })}

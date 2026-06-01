@@ -4,6 +4,7 @@ import * as SecureStore from 'expo-secure-store';
 import * as TaskManager from 'expo-task-manager';
 import * as BackgroundTask from 'expo-background-task';
 import * as Network from 'expo-network';
+import * as Battery from 'expo-battery';
 import UploadService from './UploadService';
 import GalleryStore from '../store/GalleryStore';
 
@@ -17,6 +18,8 @@ class AutoBackupManager {
         this.isPaused = false;
         this.autoBackupEnabled = true;
         this.wifiOnlyBackup = true;
+        this.chargingOnlyBackup = false;
+        this.nightBackupOnly = false;
         this.consecutiveErrors = 0;
 
         this.initSettings();
@@ -28,6 +31,12 @@ class AutoBackupManager {
             if (settings.wifiOnlyBackup !== undefined) {
                 this.wifiOnlyBackup = settings.wifiOnlyBackup;
             }
+            if (settings.chargingOnlyBackup !== undefined) {
+                this.chargingOnlyBackup = settings.chargingOnlyBackup;
+            }
+            if (settings.nightBackupOnly !== undefined) {
+                this.nightBackupOnly = settings.nightBackupOnly;
+            }
             if (!this.autoBackupEnabled) {
                 this.pause();
                 this.queue = [];
@@ -37,6 +46,21 @@ class AutoBackupManager {
             }
             this.updateNotification();
         });
+
+        // Plug-in auto-wake listener: Resume backup when charger connects
+        try {
+            Battery.addBatteryStateListener(({ batteryState }) => {
+                const isCharging = 
+                    batteryState === Battery.BatteryState.CHARGING || 
+                    batteryState === Battery.BatteryState.FULL;
+                if (this.chargingOnlyBackup && isCharging && this.isPaused) {
+                    console.log('[AutoBackupManager] Power connected. Auto-resuming backup.');
+                    this.resume();
+                }
+            });
+        } catch (e) {
+            console.warn('[AutoBackupManager] Failed to add battery state listener:', e);
+        }
 
         // Note: We no longer listen to AppState changes here. 
         // HomeScreen manages foregrounding and will call syncQueueWithGallery() 
@@ -134,6 +158,12 @@ class AutoBackupManager {
             
             const savedWifiOnly = await SecureStore.getItemAsync('lomorage_wifi_only');
             if (savedWifiOnly !== null) this.wifiOnlyBackup = savedWifiOnly === 'true';
+
+            const savedChargingOnly = await SecureStore.getItemAsync('lomorage_charging_only');
+            if (savedChargingOnly !== null) this.chargingOnlyBackup = savedChargingOnly === 'true';
+
+            const savedNightBackup = await SecureStore.getItemAsync('lomorage_night_backup');
+            if (savedNightBackup !== null) this.nightBackupOnly = savedNightBackup === 'true';
         } catch(e) {}
     }
 
@@ -179,6 +209,24 @@ class AutoBackupManager {
         }
     }
 
+    async isDeviceCharging() {
+        try {
+            const batteryState = await Battery.getBatteryStateAsync();
+            return (
+                batteryState === Battery.BatteryState.CHARGING ||
+                batteryState === Battery.BatteryState.FULL
+            );
+        } catch (e) {
+            console.warn('[AutoBackupManager] Battery check failed, assuming charging:', e);
+            return true; // Fail open
+        }
+    }
+
+    isNightTime() {
+        const hour = new Date().getHours();
+        return hour >= 2 && hour < 5; // Between 2 AM and 5 AM
+    }
+
     async startBackup() {
         if (this.isBackingUp || this.queue.length === 0 || this.isPaused) return;
         this.isBackingUp = true;
@@ -198,9 +246,32 @@ class AutoBackupManager {
                 }
             }
 
+            // Charging-only enforcement: pause upload if disconnected from charger
+            if (this.chargingOnlyBackup) {
+                const charging = await this.isDeviceCharging();
+                if (!charging) {
+                    console.log('[AutoBackupManager] Charging-only mode enabled and not charging. Pausing backup.');
+                    this.pause();
+                    DeviceEventEmitter.emit('backupError', 'Backup paused: device is not charging.');
+                    break;
+                }
+            }
+
+            // Night-only enforcement: pause upload if outside late-night window
+            if (this.nightBackupOnly) {
+                const nightTime = this.isNightTime();
+                if (!nightTime) {
+                    console.log('[AutoBackupManager] Night-only mode enabled and outside backup window. Pausing backup.');
+                    this.pause();
+                    DeviceEventEmitter.emit('backupError', 'Backup paused: outside late-night window.');
+                    break;
+                }
+            }
+
             try {
                 // If the asset somehow became synced, skip it
                 if (asset.status !== 'local') {
+                    this.currentIndex++;
                     continue;
                 }
 

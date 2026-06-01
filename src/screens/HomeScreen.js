@@ -614,7 +614,12 @@ export default function HomeScreen({ navigation }) {
         );
     }, (prevProps, nextProps) => {
         if (prevProps.isScrubbing !== nextProps.isScrubbing) return false;
-        if (prevProps.asset.id !== nextProps.asset.id || prevProps.asset.status !== nextProps.asset.status) return false;
+        if (
+            prevProps.asset.id !== nextProps.asset.id || 
+            prevProps.asset.status !== nextProps.asset.status ||
+            prevProps.asset.hash !== nextProps.asset.hash ||
+            prevProps.asset.uri !== nextProps.asset.uri
+        ) return false;
         if (prevProps.debugMode !== nextProps.debugMode) return false;
         if (prevProps.currentAssetId !== nextProps.currentAssetId && (prevProps.asset.id === prevProps.currentAssetId || prevProps.asset.id === nextProps.currentAssetId)) return false;
         return true;
@@ -754,10 +759,10 @@ export default function HomeScreen({ navigation }) {
                         keyExtractor={item => item.id}
                         stickyHeaderIndices={stickyHeaderIndices}
                         getItemLayout={getItemLayout}
-                        removeClippedSubviews={false}
-                        initialNumToRender={6}
-                        maxToRenderPerBatch={6}
-                        windowSize={3}
+                        removeClippedSubviews={true}
+                        initialNumToRender={12}
+                        maxToRenderPerBatch={12}
+                        windowSize={7}
                         showsVerticalScrollIndicator={false}
                         scrollEventThrottle={16}
                         onScroll={(e) => {

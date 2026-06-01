@@ -7,7 +7,18 @@ import SyncService from '../services/SyncService';
 import AuthService from '../services/AuthService';
 
 export default function SettingsScreen({ navigation }) {
-    const { debugMode, toggleDebugMode, autoBackupEnabled, toggleAutoBackup, wifiOnlyBackup, toggleWifiOnly } = useSettings();
+    const { 
+        debugMode, 
+        toggleDebugMode, 
+        autoBackupEnabled, 
+        toggleAutoBackup, 
+        wifiOnlyBackup, 
+        toggleWifiOnly, 
+        chargingOnlyBackup, 
+        toggleChargingOnly, 
+        nightBackupOnly, 
+        toggleNightBackup 
+    } = useSettings();
     const { logout } = useAuth();
     const [stats, setStats] = React.useState({ local: 0, remote: 0 });
     const [isScanning, setIsScanning] = React.useState(false);
@@ -115,6 +126,34 @@ export default function SettingsScreen({ navigation }) {
                     <Switch
                         value={wifiOnlyBackup}
                         onValueChange={toggleWifiOnly}
+                        disabled={!autoBackupEnabled}
+                        trackColor={{ false: '#d1d1d1', true: '#4CAF50' }}
+                        thumbColor={'#fff'}
+                    />
+                </View>
+
+                <View style={[styles.settingRow, { opacity: autoBackupEnabled ? 1 : 0.5 }]}>
+                    <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabel}>Charging Only</Text>
+                        <Text style={styles.settingDescription}>Upload only when the device is connected to a power source.</Text>
+                    </View>
+                    <Switch
+                        value={chargingOnlyBackup}
+                        onValueChange={toggleChargingOnly}
+                        disabled={!autoBackupEnabled}
+                        trackColor={{ false: '#d1d1d1', true: '#4CAF50' }}
+                        thumbColor={'#fff'}
+                    />
+                </View>
+
+                <View style={[styles.settingRow, { opacity: autoBackupEnabled ? 1 : 0.5 }]}>
+                    <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabel}>Late-Night Backup (2 AM - 5 AM)</Text>
+                        <Text style={styles.settingDescription}>Defer auto-uploads to late hours to save daytime network bandwidth and CPU.</Text>
+                    </View>
+                    <Switch
+                        value={nightBackupOnly}
+                        onValueChange={toggleNightBackup}
                         disabled={!autoBackupEnabled}
                         trackColor={{ false: '#d1d1d1', true: '#4CAF50' }}
                         thumbColor={'#fff'}

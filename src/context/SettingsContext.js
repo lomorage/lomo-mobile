@@ -7,6 +7,8 @@ export function SettingsProvider({ children }) {
     const [debugMode, setDebugMode] = useState(false);
     const [autoBackupEnabled, setAutoBackupEnabled] = useState(true);
     const [wifiOnlyBackup, setWifiOnlyBackup] = useState(true);
+    const [chargingOnlyBackup, setChargingOnlyBackup] = useState(false);
+    const [nightBackupOnly, setNightBackupOnly] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
 
     useEffect(() => {
@@ -26,6 +28,14 @@ export function SettingsProvider({ children }) {
             const savedWifiOnly = await SecureStore.getItemAsync('lomorage_wifi_only');
             if (savedWifiOnly !== null) {
                 setWifiOnlyBackup(savedWifiOnly === 'true');
+            }
+            const savedChargingOnly = await SecureStore.getItemAsync('lomorage_charging_only');
+            if (savedChargingOnly !== null) {
+                setChargingOnlyBackup(savedChargingOnly === 'true');
+            }
+            const savedNightBackup = await SecureStore.getItemAsync('lomorage_night_backup');
+            if (savedNightBackup !== null) {
+                setNightBackupOnly(savedNightBackup === 'true');
             }
         } catch (error) {
             console.error('Failed to load settings', error);
@@ -51,7 +61,12 @@ export function SettingsProvider({ children }) {
             setAutoBackupEnabled(newValue);
             // Notify background manager immediately
             import('react-native').then(({ DeviceEventEmitter }) => {
-                DeviceEventEmitter.emit('settingsChanged', { autoBackupEnabled: newValue, wifiOnlyBackup });
+                DeviceEventEmitter.emit('settingsChanged', { 
+                    autoBackupEnabled: newValue, 
+                    wifiOnlyBackup, 
+                    chargingOnlyBackup, 
+                    nightBackupOnly 
+                });
             });
         } catch (error) {}
     };
@@ -62,13 +77,62 @@ export function SettingsProvider({ children }) {
             await SecureStore.setItemAsync('lomorage_wifi_only', newValue.toString());
             setWifiOnlyBackup(newValue);
             import('react-native').then(({ DeviceEventEmitter }) => {
-                DeviceEventEmitter.emit('settingsChanged', { autoBackupEnabled, wifiOnlyBackup: newValue });
+                DeviceEventEmitter.emit('settingsChanged', { 
+                    autoBackupEnabled, 
+                    wifiOnlyBackup: newValue, 
+                    chargingOnlyBackup, 
+                    nightBackupOnly 
+                });
+            });
+        } catch (error) {}
+    };
+
+    const toggleChargingOnly = async () => {
+        try {
+            const newValue = !chargingOnlyBackup;
+            await SecureStore.setItemAsync('lomorage_charging_only', newValue.toString());
+            setChargingOnlyBackup(newValue);
+            import('react-native').then(({ DeviceEventEmitter }) => {
+                DeviceEventEmitter.emit('settingsChanged', { 
+                    autoBackupEnabled, 
+                    wifiOnlyBackup, 
+                    chargingOnlyBackup: newValue, 
+                    nightBackupOnly 
+                });
+            });
+        } catch (error) {}
+    };
+
+    const toggleNightBackup = async () => {
+        try {
+            const newValue = !nightBackupOnly;
+            await SecureStore.setItemAsync('lomorage_night_backup', newValue.toString());
+            setNightBackupOnly(newValue);
+            import('react-native').then(({ DeviceEventEmitter }) => {
+                DeviceEventEmitter.emit('settingsChanged', { 
+                    autoBackupEnabled, 
+                    wifiOnlyBackup, 
+                    chargingOnlyBackup, 
+                    nightBackupOnly: newValue 
+                });
             });
         } catch (error) {}
     };
 
     return (
-        <SettingsContext.Provider value={{ debugMode, toggleDebugMode, autoBackupEnabled, toggleAutoBackup, wifiOnlyBackup, toggleWifiOnly, isLoading }}>
+        <SettingsContext.Provider value={{ 
+            debugMode, 
+            toggleDebugMode, 
+            autoBackupEnabled, 
+            toggleAutoBackup, 
+            wifiOnlyBackup, 
+            toggleWifiOnly, 
+            chargingOnlyBackup, 
+            toggleChargingOnly, 
+            nightBackupOnly, 
+            toggleNightBackup, 
+            isLoading 
+        }}>
             {children}
         </SettingsContext.Provider>
     );
