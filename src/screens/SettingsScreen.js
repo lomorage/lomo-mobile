@@ -1,5 +1,5 @@
 import React from 'react';
-import { StyleSheet, View, ScrollView, Text, Switch, TouchableOpacity, Alert, ActivityIndicator, Platform, Modal, TextInput } from 'react-native';
+import { StyleSheet, View, ScrollView, Text, Switch, TouchableOpacity, Alert, ActivityIndicator, Platform, Modal, TextInput, DeviceEventEmitter } from 'react-native';
 import { ChevronLeft, Trash2, RefreshCcw, Server, ChevronRight, Globe } from 'lucide-react-native';
 import Constants from 'expo-constants';
 import { useSettings } from '../context/SettingsContext';
@@ -39,29 +39,45 @@ export default function SettingsScreen({ navigation }) {
         loadStats();
         checkServerReachability();
         fetchServerVersion();
-    }, [serverUrl]);
+        
+        const sub = DeviceEventEmitter.addListener('onServerUrlChanged', (newUrl) => {
+            setServerUrl(newUrl);
+            setLocalUrl(AuthService.getLocalUrl());
+            setRemoteUrl(AuthService.getRemoteUrl());
+            checkServerReachability(newUrl);
+        });
+
+        return () => sub.remove();
+    }, []);
 
     const fetchServerVersion = async () => {
         const ver = await AuthService.getServerVersion();
         setServerVersion(ver);
     };
 
-    const checkServerReachability = async () => {
-        if (!serverUrl) {
+    const checkServerReachability = async (urlToCheck = serverUrl) => {
+        if (!urlToCheck) {
             setIsReachable(false);
             return;
         }
         try {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 3000);
-            const response = await fetch(`${serverUrl}/`, {
+            const response = await fetch(`${urlToCheck}/`, {
                 method: 'GET',
                 signal: controller.signal,
             });
             clearTimeout(timeoutId);
             setIsReachable(response.status === 200 || response.status < 500);
         } catch (e) {
-            setIsReachable(false);
+            console.log('[SettingsScreen] Server unreachable. Attempting smart dual-connection failover...');
+            const success = await AuthService.determineBestConnection();
+            if (success) {
+                setServerUrl(AuthService.getServerUrl());
+                setIsReachable(true);
+            } else {
+                setIsReachable(false);
+            }
         }
     };
 
@@ -110,6 +126,12 @@ export default function SettingsScreen({ navigation }) {
         let url = tempRemoteUrl.trim();
         if (url) {
             url = AuthService.formatUrl(url);
+            
+            const atsCheck = AuthService.checkIOSATS(url);
+            if (!atsCheck.valid) {
+                Alert.alert("iOS Security Restriction", atsCheck.message);
+                return;
+            }
         }
         await AuthService.setRemoteUrl(url);
         setRemoteUrl(AuthService.getRemoteUrl());

@@ -1,7 +1,8 @@
 import * as SecureStore from 'expo-secure-store';
 import axios from 'axios';
 import Argon2 from 'react-native-argon2';
-import { Alert } from 'react-native';
+import { Alert, Platform, DeviceEventEmitter } from 'react-native';
+import NetInfo from '@react-native-community/netinfo';
 
 axios.defaults.timeout = 60000; // Global 60s fallback to prevent native Java SocketTimeout popups
 
@@ -93,8 +94,39 @@ class AuthService {
     this.isProbing = false;
     this.isShowingProbeAlert = false;
     this._isShowingSessionAlert = false;
-    // Callback to notify the app (AuthContext) that the session expired
     this._onSessionExpired = null;
+    this._lastNetType = null;
+
+    // Use system-level network change events for instant, reliable switching
+    NetInfo.addEventListener((state) => {
+        const netType = state.type; // 'wifi', 'cellular', 'none', etc.
+        const isConnected = state.isConnected;
+
+        if (!isConnected || !this.isAuthenticated()) {
+            this._lastNetType = netType;
+            return;
+        }
+
+        const typeChanged = netType !== this._lastNetType;
+        this._lastNetType = netType;
+
+        if (!typeChanged) return; // Same network type, no need to probe
+
+        console.log(`[AuthService] Network type changed to "${netType}", re-evaluating best connection...`);
+
+        if (netType === 'wifi') {
+            // Switched to Wi-Fi → immediately probe local URL first
+            this.determineBestConnection();
+        } else if (netType === 'cellular') {
+            // Switched to cellular → local won't work, fall back to remote
+            if (this.remoteUrl) {
+                console.log('[AuthService] Switched to cellular, switching to remote URL.');
+                this.updateServerUrl(this.remoteUrl);
+            }
+        } else {
+            this.determineBestConnection();
+        }
+    });
   }
 
   /**
@@ -128,6 +160,26 @@ class AuthService {
       return formatServerUrl(address);
   }
 
+  checkIOSATS(url) {
+      if (Platform.OS !== 'ios') return { valid: true };
+      if (!url) return { valid: true };
+      if (url.startsWith('https://')) return { valid: true };
+      
+      const domainPart = url.replace('http://', '');
+      const isLocalOrIp = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?::[0-9]+)?$/.test(domainPart) || 
+                          /^\[?[0-9a-fA-F:]+\]?(?::[0-9]+)?$/.test(domainPart) || 
+                          /^localhost(?::[0-9]+)?$/.test(domainPart) ||
+                          /\.local(?::[0-9]+)?$/.test(domainPart);
+                          
+      if (!isLocalOrIp) {
+          return {
+              valid: false,
+              message: "Apple iOS strict security policy (ATS) blocks plain HTTP connections to public domains. Please configure HTTPS for your domain, or use your local IP address instead."
+          };
+      }
+      return { valid: true };
+  }
+
   async setRemoteUrl(url) {
       this.remoteUrl = url;
       if (url) {
@@ -147,10 +199,11 @@ class AuthService {
   }
 
   async determineBestConnection() {
+      // 1. Try Local URL first
       if (this.localUrl) {
           try {
              const controller = new AbortController();
-             const timeoutId = setTimeout(() => controller.abort(), 2000);
+             const timeoutId = setTimeout(() => controller.abort(), 800); // Reduced to 800ms for faster fallback
              const response = await fetch(`${this.localUrl}/system`, { method: 'GET', signal: controller.signal });
              clearTimeout(timeoutId);
              if (response.status === 200) {
@@ -160,6 +213,11 @@ class AuthService {
           } catch(e) {}
       }
       
+      // 2. If Local URL failed, fire off a background mDNS probe in case the IP changed
+      // We don't await this so we don't block the Remote URL fallback below
+      this.autoProbe().catch(console.error);
+      
+      // 3. Fallback to Remote URL immediately
       if (this.remoteUrl) {
           try {
              const controller = new AbortController();
@@ -173,7 +231,7 @@ class AuthService {
           } catch(e) {}
       }
       
-      return await this.autoProbe();
+      return false;
   }
 
   getServerName() {
@@ -189,6 +247,8 @@ class AuthService {
   }
 
   async updateServerUrl(url, name = null) {
+      if (this.serverUrl === url && (!name || this.serverName === name)) return;
+      
       this.serverUrl = url;
       await SecureStore.setItemAsync(SERVER_KEY, url);
       if (name) {
@@ -196,6 +256,7 @@ class AuthService {
           await SecureStore.setItemAsync(SERVER_NAME_KEY, name);
       }
       console.log(`[AuthService] Server URL updated to: ${url}`);
+      DeviceEventEmitter.emit('onServerUrlChanged', url);
   }
 
   /**
@@ -287,6 +348,12 @@ class AuthService {
 
     try {
       const url = formatServerUrl(serverAddress);
+      
+      const atsCheck = this.checkIOSATS(url);
+      if (!atsCheck.valid) {
+          throw new Error(atsCheck.message);
+      }
+
       this.serverUrl = url;
       this.serverName = serverName;
 
@@ -488,13 +555,16 @@ axios.interceptors.response.use(
                     if (success) {
                         originalRequest._retry = true;
                         const newBaseUrl = authService.getServerUrl();
-                        try {
-                            const parsedUrl = new URL(originalRequest.url);
-                            const newUrl = new URL(parsedUrl.pathname + parsedUrl.search, newBaseUrl);
-                            originalRequest.url = newUrl.href;
-                        } catch (parseErr) {
-                            originalRequest.baseURL = newBaseUrl;
+                        
+                        let relativePath = originalRequest.url;
+                        if (relativePath.startsWith('http')) {
+                            const match = relativePath.match(/^https?:\/\/[^\/]+(\/.*)$/);
+                            relativePath = match ? match[1] : '/';
                         }
+                        if (!relativePath.startsWith('/')) relativePath = '/' + relativePath;
+                        
+                        originalRequest.url = newBaseUrl + relativePath;
+                        originalRequest.baseURL = newBaseUrl;
                         console.log(`[AuthService] Retrying request silently at: ${originalRequest.url}`);
                         try {
                             const resp = await axios(originalRequest);
@@ -531,13 +601,16 @@ axios.interceptors.response.use(
                                     if (found) {
                                         originalRequest._retry = true;
                                         const newBaseUrl = authService.getServerUrl();
-                                        try {
-                                            const parsedUrl = new URL(originalRequest.url);
-                                            const newUrl = new URL(parsedUrl.pathname + parsedUrl.search, newBaseUrl);
-                                            originalRequest.url = newUrl.href;
-                                        } catch (parseErr) {
-                                            originalRequest.baseURL = newBaseUrl;
+                                        
+                                        let relativePath = originalRequest.url;
+                                        if (relativePath.startsWith('http')) {
+                                            const match = relativePath.match(/^https?:\/\/[^\/]+(\/.*)$/);
+                                            relativePath = match ? match[1] : '/';
                                         }
+                                        if (!relativePath.startsWith('/')) relativePath = '/' + relativePath;
+                                        
+                                        originalRequest.url = newBaseUrl + relativePath;
+                                        originalRequest.baseURL = newBaseUrl;
                                         resolve(axios(originalRequest));
                                     } else {
                                         reject(error);
