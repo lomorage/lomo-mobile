@@ -359,13 +359,11 @@ export default function HomeScreen({ navigation }) {
                 return;
             }
 
-            // 1. Load Local assets and Disk Caches concurrently for instant UI rendering
-            const [localResult] = await Promise.all([
-                MediaService.getAssets(5000),
+            // 1. Load Disk Caches concurrently
+            await Promise.all([
                 SyncService.loadLocalHashCache(),
                 SyncService.loadRemoteTree()
             ]);
-            let localAssets = localResult.assets;
 
             const isVideoExtension = (filename) => {
                 if (!filename) return false;
@@ -373,66 +371,96 @@ export default function HomeScreen({ navigation }) {
                 return ['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext);
             };
 
-            // 2. Perform Intelligent Heuristic Deduplication for instant render
             const serverUrl = AuthService.getServerUrl();
             const token = AuthService.getToken();
-            
-            // Use local hash cache to identify synced items even before deep sync
-            const initialAssets = localAssets.map(a => {
-                const cached = SyncService.localHashCache[a.id];
-                const hash = a.hash || cached?.hash;
-                const isSynced = hash && SyncService.remoteTree?.getNodeByHash(hash);
-                return {
-                    ...a,
-                    hash: hash || a.hash,
-                    status: isSynced ? 'synced' : 'local'
-                };
-            });
 
-            const localHashes = new Set(initialAssets.filter(a => a.hash).map(a => a.hash));
-            // Optimization: Bin local dates into a Set for O(1) proximity lookup
-            // This turns an O(N^2) search (300M comparisons) into O(N) (18k comparisons).
-            const localDateSet = new Set(localAssets.map(a => Math.floor((a.creationTime || a.modificationTime || 0) / 2000)));
+            // Helper to merge local and remote assets into state
+            const mergeAndSetAssets = (currentLocalAssets, finalize = false) => {
+                const initialAssets = currentLocalAssets.map(a => {
+                    const cached = SyncService.localHashCache[a.id];
+                    const hash = a.hash || cached?.hash;
+                    const isSynced = hash && SyncService.remoteTree?.getNodeByHash(hash);
+                    return {
+                        ...a,
+                        hash: hash || a.hash,
+                        status: isSynced ? 'synced' : 'local'
+                    };
+                });
 
-            let remoteAssets = [];
-            if (SyncService.remoteTree) {
-                const allRemoteNodes = [];
-                const collectNodes = (node) => {
-                    if (node.tag) { allRemoteNodes.push(node); return; }
-                    node.children.forEach(collectNodes);
-                };
-                collectNodes(SyncService.remoteTree);
+                const localHashes = new Set(initialAssets.filter(a => a.hash).map(a => a.hash));
+                const localDateSet = new Set(currentLocalAssets.map(a => Math.floor((a.creationTime || a.modificationTime || 0) / 2000)));
 
-                remoteAssets = allRemoteNodes
-                    .filter(node => {
-                        // 100% Match: Hash already exists in local list
-                        if (localHashes.has(node.hash)) return false;
-                        
-                        // Heuristic Match: Date proximity (binned lookup)
-                        if (node.date) {
-                            const remoteTime = node.date.getTime();
-                            if (localDateSet.has(Math.floor(remoteTime / 2000))) return false;
-                        }
-                        return true;
-                    })
-                    .map(node => ({
-                        id: `remote-${node.hash}`,
-                        hash: node.hash,
-                        uri: `${serverUrl}/preview/${node.hash}?width=500&height=-1&token=${token}`,
-                        status: 'remote',
-                        creationTime: node.date ? node.date.getTime() : 0,
-                        mediaType: isVideoExtension(node.tag) ? 'video' : 'photo'
-                    }));
-            }
+                let remoteAssets = [];
+                if (SyncService.remoteTree) {
+                    const allRemoteNodes = [];
+                    const collectNodes = (node) => {
+                        if (node.tag) { allRemoteNodes.push(node); return; }
+                        node.children.forEach(collectNodes);
+                    };
+                    collectNodes(SyncService.remoteTree);
 
-            const combinedInitial = [...initialAssets, ...remoteAssets].sort((a, b) => (b.creationTime || 0) - (a.creationTime || 0));
+                    remoteAssets = allRemoteNodes
+                        .filter(node => {
+                            if (localHashes.has(node.hash)) return false;
+                            if (node.date) {
+                                const remoteTime = node.date.getTime();
+                                if (localDateSet.has(Math.floor(remoteTime / 2000))) return false;
+                            }
+                            return true;
+                        })
+                        .map(node => ({
+                            id: `remote-${node.hash}`,
+                            hash: node.hash,
+                            uri: `${serverUrl}/preview/${node.hash}?width=500&height=-1&token=${token}`,
+                            status: 'remote',
+                            creationTime: node.date ? node.date.getTime() : 0,
+                            mediaType: isVideoExtension(node.tag) ? 'video' : 'photo'
+                        }));
+                }
+
+                const combined = [...initialAssets, ...remoteAssets].sort((a, b) => (b.creationTime || 0) - (a.creationTime || 0));
+                
+                if (isMounted.current) {
+                    GalleryStore.setAssets(combined);
+                    setAssets(combined);
+                    if (finalize) {
+                        const AutoBackupManager = require('../services/AutoBackupManager').default;
+                        AutoBackupManager.syncQueueWithGallery();
+                    }
+                }
+            };
+
+            // Fast Path: Load ONLY the first 200 items for instant UI render
+            const firstPage = await MediaService.getAssets(200);
+            let cumulativeLocalAssets = firstPage.assets || [];
 
             if (isMounted.current) {
-                GalleryStore.setAssets(combinedInitial);
-                setAssets(combinedInitial);
-                setLoading(false);
+                mergeAndSetAssets(cumulativeLocalAssets, !firstPage.hasNextPage);
+                setLoading(false); // Unblock UI INSTANTLY!
                 setSyncing(true);
-                AutoBackupManager.syncQueueWithGallery();
+            }
+
+            // P0 Fix: Background fetch the REST of the gallery to break the 5000-photo limit
+            // We fetch silently in the background and re-merge, so UI is fluid.
+            if (firstPage.hasNextPage) {
+                const backgroundFetchRest = async () => {
+                    let after = firstPage.endCursor;
+                    let hasNextPage = true;
+                    while (hasNextPage && isMounted.current) {
+                        const result = await MediaService.getAssets(500, after);
+                        cumulativeLocalAssets = cumulativeLocalAssets.concat(result.assets || []);
+                        after = result.endCursor;
+                        hasNextPage = result.hasNextPage && (result.assets?.length > 0);
+                        
+                        // Merge and render incrementally
+                        mergeAndSetAssets(cumulativeLocalAssets, !hasNextPage);
+                        
+                        // Yield to let React render and UI stay smooth
+                        await new Promise(r => setTimeout(r, 100));
+                    }
+                };
+                // Kick off background fetch without awaiting
+                backgroundFetchRest();
             }
 
             // 3. Update Remote Knowledge on network background (gracefully handle failures)
@@ -725,7 +753,12 @@ export default function HomeScreen({ navigation }) {
                                 />
                             ) : null}
                             <Text style={[styles.backupBannerText, backupState.isPaused && { color: '#666' }]}>
-                                {backupState.isPaused ? `Backup Paused (${backupState.pendingCount} items)` : `Backing up ${backupState.pendingCount} left...`}
+                                {backupState.isPaused
+                                    ? `Backup Paused${backupState.pauseReason ? ` — ${backupState.pauseReason}` : ''} (${backupState.pendingCount} items)`
+                                    : backupState.retryMessage
+                                        ? backupState.retryMessage
+                                        : `Backing up ${backupState.pendingCount} left...`
+                                }
                             </Text>
                         </View>
                         {backupState.isPaused ? (

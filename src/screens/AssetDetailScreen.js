@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { StyleSheet, View, Dimensions, TouchableOpacity, Text, FlatList, Alert, DeviceEventEmitter, Pressable, ActivityIndicator, Animated, Vibration } from 'react-native';
 import { Image } from 'expo-image';
-import { ChevronLeft, Upload, Trash2, Share } from 'lucide-react-native';
+import { ChevronLeft, CloudUpload, Trash2, Share } from 'lucide-react-native';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
 import { useVideoPlayer, VideoView } from 'expo-video';
@@ -528,7 +528,7 @@ export default function AssetDetailScreen({ route, navigation }) {
                             style={styles.iconButton}
                             disabled={isUploading}
                         >
-                            <Upload color={isUploading ? "#ccc" : "#007AFF"} size={24} />
+                            <CloudUpload color={isUploading ? "#ccc" : "#007AFF"} size={24} />
                         </TouchableOpacity>
                     ) : null}
                     

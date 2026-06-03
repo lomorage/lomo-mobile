@@ -110,6 +110,36 @@ class MediaService {
     return result;
   }
 
+  /**
+   * P0 Fix: Fetch ALL assets from the library via pagination.
+   * Replaces the previous hardcoded getAssets(5000) which silently dropped photos beyond 5000.
+   * Calls onPage(assets, pageNum) for each page so callers can process incrementally.
+   */
+  async getAllAssets(onPage = null, pageSize = 500) {
+    let allAssets = [];
+    let after = null;
+    let hasNextPage = true;
+    let pageNum = 0;
+
+    while (hasNextPage) {
+      pageNum++;
+      const result = await this.getAssets(pageSize, after);
+      const assets = result.assets || [];
+      allAssets = allAssets.concat(assets);
+
+      if (onPage) {
+        await onPage(assets, pageNum);
+      }
+
+      after = result.endCursor;
+      hasNextPage = result.hasNextPage && assets.length > 0;
+
+      console.log(`[MediaService] getAllAssets page ${pageNum}: ${assets.length} assets (total: ${allAssets.length}, hasNextPage: ${hasNextPage})`);
+    }
+
+    return allAssets;
+  }
+
   async getAssetInfo(assetId) {
     try {
       const info = await MediaLibrary.getAssetInfoAsync(assetId);
