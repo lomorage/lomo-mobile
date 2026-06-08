@@ -21,6 +21,8 @@ export default function SettingsScreen({ navigation }) {
         toggleChargingOnly, 
         nightBackupOnly, 
         toggleNightBackup,
+        adaptiveConcurrencyEnabled,
+        toggleAdaptiveConcurrency,
         hashConcurrency,
         updateHashConcurrency,
         uploadConcurrency,
@@ -301,8 +303,25 @@ export default function SettingsScreen({ navigation }) {
 
                 <View style={styles.settingRow}>
                     <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabel}>Adaptive Concurrency</Text>
+                        <Text style={styles.settingDescription}>Automatically use single-thread for large videos to prevent SD card thrashing, while keeping multi-thread for photos. Also auto-throttles on network errors.</Text>
+                    </View>
+                    <Switch
+                        value={adaptiveConcurrencyEnabled}
+                        onValueChange={toggleAdaptiveConcurrency}
+                        trackColor={{ false: '#d1d1d1', true: '#4CAF50' }}
+                        thumbColor={'#fff'}
+                    />
+                </View>
+
+                <View style={[styles.settingRow, { opacity: adaptiveConcurrencyEnabled ? 0.7 : 1 }]}>
+                    <View style={styles.settingTextContainer}>
                         <Text style={styles.settingLabel}>Upload Concurrency</Text>
-                        <Text style={styles.settingDescription}>Parallel network uploads. Keep low for weak network connections.</Text>
+                        <Text style={styles.settingDescription}>
+                            {adaptiveConcurrencyEnabled 
+                                ? 'Parallel uploads for photos (videos are auto-forced to 1).' 
+                                : 'Strict parallel uploads (warning: may crash RPi on videos).'}
+                        </Text>
                     </View>
                     <View style={{flexDirection: 'row', alignItems: 'center'}}>
                         <TouchableOpacity onPress={() => updateUploadConcurrency(Math.max(1, uploadConcurrency - 1))} style={styles.stepperButton}>

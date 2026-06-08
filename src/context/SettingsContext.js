@@ -9,6 +9,7 @@ export function SettingsProvider({ children }) {
     const [wifiOnlyBackup, setWifiOnlyBackup] = useState(true);
     const [chargingOnlyBackup, setChargingOnlyBackup] = useState(false);
     const [nightBackupOnly, setNightBackupOnly] = useState(false);
+    const [adaptiveConcurrencyEnabled, setAdaptiveConcurrencyEnabled] = useState(true);
     const [hashConcurrency, setHashConcurrency] = useState(5);
     const [uploadConcurrency, setUploadConcurrency] = useState(3);
     const [isLoading, setIsLoading] = useState(true);
@@ -38,6 +39,10 @@ export function SettingsProvider({ children }) {
             const savedNightBackup = await SecureStore.getItemAsync('lomorage_night_backup');
             if (savedNightBackup !== null) {
                 setNightBackupOnly(savedNightBackup === 'true');
+            }
+            const savedAdaptive = await SecureStore.getItemAsync('lomorage_adaptive_concurrency');
+            if (savedAdaptive !== null) {
+                setAdaptiveConcurrencyEnabled(savedAdaptive === 'true');
             }
             const savedHashConcurrency = await SecureStore.getItemAsync('lomorage_hash_concurrency');
             if (savedHashConcurrency !== null) {
@@ -129,6 +134,26 @@ export function SettingsProvider({ children }) {
         } catch (error) {}
     };
 
+    const toggleNightBackupOnly = async () => {
+        try {
+            const newValue = !nightBackupOnly;
+            await SecureStore.setItemAsync('lomorage_night_backup', newValue.toString());
+            setNightBackupOnly(newValue);
+        } catch (error) {
+            console.error('Failed to update night backup only setting', error);
+        }
+    };
+
+    const toggleAdaptiveConcurrency = async () => {
+        try {
+            const newValue = !adaptiveConcurrencyEnabled;
+            await SecureStore.setItemAsync('lomorage_adaptive_concurrency', newValue.toString());
+            setAdaptiveConcurrencyEnabled(newValue);
+        } catch (error) {
+            console.error('Failed to update adaptive concurrency setting', error);
+        }
+    };
+
     const updateHashConcurrency = async (val) => {
         try {
             await SecureStore.setItemAsync('lomorage_hash_concurrency', val.toString());
@@ -154,7 +179,10 @@ export function SettingsProvider({ children }) {
             chargingOnlyBackup, 
             toggleChargingOnly, 
             nightBackupOnly, 
-            toggleNightBackup, 
+            toggleNightBackup,
+            toggleNightBackupOnly,
+            adaptiveConcurrencyEnabled,
+            toggleAdaptiveConcurrency,
             hashConcurrency,
             updateHashConcurrency,
             uploadConcurrency,

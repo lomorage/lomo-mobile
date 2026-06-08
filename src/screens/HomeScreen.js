@@ -99,6 +99,8 @@ export default function HomeScreen({ navigation }) {
     const stickyHeaderIndicesRef = useRef([]);
     const lastJumpTimeRef = useRef(0);
     const globalActiveLoadCount = useRef(0);
+    const pendingAssetUpdates = useRef(new Map());
+    const flushTimerRef = useRef(null);
 
     const safeUri = useCallback((uri) => {
         if (!uri) return null;
@@ -327,8 +329,23 @@ export default function HomeScreen({ navigation }) {
             setAssets(prev => prev.filter(a => a.id !== deletedId));
         });
         
+        flushTimerRef.current = setInterval(() => {
+            if (pendingAssetUpdates.current.size > 0) {
+                setAssets(prev => {
+                    const newAssets = prev.map(a => {
+                        if (pendingAssetUpdates.current.has(a.id)) {
+                            return pendingAssetUpdates.current.get(a.id);
+                        }
+                        return a;
+                    });
+                    pendingAssetUpdates.current.clear();
+                    return newAssets;
+                });
+            }
+        }, 1000); // Batch asset updates to 1 FPS to prevent massive UI flashing during concurrent uploads
+
         const subUpdate = DeviceEventEmitter.addListener('assetUpdated', (updatedAsset) => {
-            setAssets(prev => prev.map(a => a.id === updatedAsset.id ? updatedAsset : a));
+            pendingAssetUpdates.current.set(updatedAsset.id, updatedAsset);
         });
         
         const subBackupState = DeviceEventEmitter.addListener('backupState', (state) => {
@@ -351,6 +368,7 @@ export default function HomeScreen({ navigation }) {
         });
 
         return () => { 
+            if (flushTimerRef.current) clearInterval(flushTimerRef.current);
             isMounted.current = false; 
             subscription.remove();
             subDelete.remove();
@@ -358,13 +376,13 @@ export default function HomeScreen({ navigation }) {
             subBackupState.remove();
             subBackupProgress.remove();
         };
-    }, []);
+    }, [loadAndSync]);
 
     useEffect(() => {
         GalleryStore.setAssets(assets);
     }, [assets]);
 
-    const loadAndSync = async () => {
+    const loadAndSync = useCallback(async () => {
         setLoading(true);
         setError(null);
         try {
@@ -549,7 +567,7 @@ export default function HomeScreen({ navigation }) {
                  setLoading(false);
             }
         }
-    };
+    }, [loading]);
 
     const StatusIcon = memo(({ item, currentAssetId, activeAssetIds = [] }) => {
         if (item.id === currentAssetId || activeAssetIds.includes(item.id)) {
@@ -714,6 +732,13 @@ export default function HomeScreen({ navigation }) {
         return Math.min(1, Math.max(0, totalProgress));
     }, [backupState.completedCount, backupState.totalCount, activeUploads]);
 
+    const flashListExtraData = useMemo(() => ({
+        isScrubbing,
+        currentAssetId: backupState.currentAssetId,
+        activeAssetIds: backupState.activeAssetIds,
+        debugMode
+    }), [isScrubbing, backupState.currentAssetId, backupState.activeAssetIds, debugMode]);
+
     return (
         <View style={styles.container}>
             <View style={styles.header}>
@@ -786,7 +811,7 @@ export default function HomeScreen({ navigation }) {
                     <FlashList
                         ref={listRef}
                         data={timelineData}
-                        extraData={{ isScrubbing, currentAssetId: backupState.currentAssetId, activeAssetIds: backupState.activeAssetIds, debugMode }}
+                        extraData={flashListExtraData}
                         renderItem={renderItem}
                         keyExtractor={item => item.id}
                         stickyHeaderIndices={stickyHeaderIndices}
