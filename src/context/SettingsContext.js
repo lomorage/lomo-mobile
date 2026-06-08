@@ -9,6 +9,8 @@ export function SettingsProvider({ children }) {
     const [wifiOnlyBackup, setWifiOnlyBackup] = useState(true);
     const [chargingOnlyBackup, setChargingOnlyBackup] = useState(false);
     const [nightBackupOnly, setNightBackupOnly] = useState(false);
+    const [hashConcurrency, setHashConcurrency] = useState(5);
+    const [uploadConcurrency, setUploadConcurrency] = useState(3);
     const [isLoading, setIsLoading] = useState(true);
 
     useEffect(() => {
@@ -36,6 +38,14 @@ export function SettingsProvider({ children }) {
             const savedNightBackup = await SecureStore.getItemAsync('lomorage_night_backup');
             if (savedNightBackup !== null) {
                 setNightBackupOnly(savedNightBackup === 'true');
+            }
+            const savedHashConcurrency = await SecureStore.getItemAsync('lomorage_hash_concurrency');
+            if (savedHashConcurrency !== null) {
+                setHashConcurrency(parseInt(savedHashConcurrency, 10));
+            }
+            const savedUploadConcurrency = await SecureStore.getItemAsync('lomorage_upload_concurrency');
+            if (savedUploadConcurrency !== null) {
+                setUploadConcurrency(parseInt(savedUploadConcurrency, 10));
             }
         } catch (error) {
             console.error('Failed to load settings', error);
@@ -119,6 +129,20 @@ export function SettingsProvider({ children }) {
         } catch (error) {}
     };
 
+    const updateHashConcurrency = async (val) => {
+        try {
+            await SecureStore.setItemAsync('lomorage_hash_concurrency', val.toString());
+            setHashConcurrency(val);
+        } catch (error) {}
+    };
+
+    const updateUploadConcurrency = async (val) => {
+        try {
+            await SecureStore.setItemAsync('lomorage_upload_concurrency', val.toString());
+            setUploadConcurrency(val);
+        } catch (error) {}
+    };
+
     return (
         <SettingsContext.Provider value={{ 
             debugMode, 
@@ -131,6 +155,10 @@ export function SettingsProvider({ children }) {
             toggleChargingOnly, 
             nightBackupOnly, 
             toggleNightBackup, 
+            hashConcurrency,
+            updateHashConcurrency,
+            uploadConcurrency,
+            updateUploadConcurrency,
             isLoading 
         }}>
             {children}

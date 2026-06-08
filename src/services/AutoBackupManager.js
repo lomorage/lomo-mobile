@@ -25,6 +25,10 @@ class AutoBackupManager {
         this.retryCount = 0;       // for exponential backoff
         this.retryMessage = null;  // user-friendly retry message
         this._retryTimer = null;   // pending backoff timer
+        this.activeAssetIds = new Set();
+        this.activeUploads = {}; // Map of assetId -> progress (0.0 to 1.0)
+        this.completedSessionCount = 0;
+        this.completedCount = 0;
 
         this.initSettings();
         
@@ -169,12 +173,6 @@ class AutoBackupManager {
             const savedNightBackup = await SecureStore.getItemAsync('lomorage_night_backup');
             if (savedNightBackup !== null) this.nightBackupOnly = savedNightBackup === 'true';
 
-            // P0 Fix: persist isPaused so background task respects user's manual pause
-            const savedIsPaused = await SecureStore.getItemAsync('lomorage_is_paused');
-            if (savedIsPaused === 'true') {
-                this.isPaused = true;
-                this.pauseReason = await SecureStore.getItemAsync('lomorage_pause_reason') || 'Paused';
-            }
         } catch(e) {}
     }
 
@@ -241,113 +239,165 @@ class AutoBackupManager {
     async startBackup() {
         if (this.isBackingUp || this.queue.length === 0 || this.isPaused) return;
         this.isBackingUp = true;
+        this.completedSessionCount = 0;
         this.emitState();
 
-        while (this.currentIndex < this.queue.length && !this.isPaused) {
-            const asset = this.queue[this.currentIndex];
+        let uploadConcurrency = 3;
+        try {
+            const savedConfig = await SecureStore.getItemAsync('lomorage_upload_concurrency');
+            if (savedConfig) uploadConcurrency = parseInt(savedConfig, 10);
+        } catch (e) {}
 
-            // Wi-Fi-only enforcement: pause upload if disconnected from Wi-Fi
-            if (this.wifiOnlyBackup) {
-                const onWifi = await this.isWifiConnected();
-                if (!onWifi) {
-                    console.log('[AutoBackupManager] Wi-Fi-only mode enabled and not on Wi-Fi. Pausing backup.');
-                    this.pause('Not connected to Wi-Fi');
-                    break;
-                }
-            }
-
-            // Charging-only enforcement: pause upload if disconnected from charger
-            if (this.chargingOnlyBackup) {
-                const charging = await this.isDeviceCharging();
-                if (!charging) {
-                    console.log('[AutoBackupManager] Charging-only mode enabled and not charging. Pausing backup.');
-                    this.pause('Device is not charging');
-                    break;
-                }
-            }
-
-            // Night-only enforcement: pause upload if outside late-night window
-            if (this.nightBackupOnly) {
-                const nightTime = this.isNightTime();
-                if (!nightTime) {
-                    console.log('[AutoBackupManager] Night-only mode enabled and outside backup window. Pausing backup.');
-                    this.pause('Outside night backup window (2–5 AM)');
-                    break;
-                }
-            }
-
-            try {
-                // If the asset somehow became synced, skip it
-                if (asset.status !== 'local') {
-                    this.currentIndex++;
-                    continue;
+        const worker = async () => {
+            let loops = 0;
+            while (this.currentIndex < this.queue.length && !this.isPaused) {
+                loops++;
+                // CRITICAL FIX: Yield to the JS event loop to prevent ANR when skipping many synced assets
+                if (loops % 50 === 0) {
+                    await new Promise(resolve => setTimeout(resolve, 1));
                 }
 
-                // Call UploadService and pass a progress callback
-                const result = await UploadService.uploadAsset(asset, (progress) => {
-                    DeviceEventEmitter.emit('backupProgress', {
-                        assetId: asset.id,
-                        totalCount: this.queue.length,
-                        currentIndex: this.currentIndex,
-                        progress: progress
-                    });
-                });
+                // Reserve an index so multiple workers don't pick the same asset
+                const myIndex = this.currentIndex++;
+                if (myIndex >= this.queue.length) break;
+                
+                const asset = this.queue[myIndex];
 
-                if (result.success) {
-                    // Update global state
-                    const updatedAsset = { ...asset, status: 'synced', hash: result.hash };
-                    const currentAssets = GalleryStore.getAssets();
-                    const newAssets = currentAssets.map(a => a.id === asset.id ? updatedAsset : a);
-                    GalleryStore.setAssets(newAssets);
-                    
-                    // Tell the UI this specific asset finished
-                    DeviceEventEmitter.emit('assetUpdated', updatedAsset);
-                    this.consecutiveErrors = 0; // Reset on success
-                }
-            } catch (error) {
-                console.error(`[AutoBackup] Failed to backup asset ${asset.id}:`, error);
-
-                // 'different hash' is an iOS data-integrity issue (file transcoded differently).
-                // We MUST invalidate the cache and retry immediately with the NEW hash,
-                // instead of skipping it silently, because otherwise resumable uploads after app restart
-                // will fail permanently if the file size/bytes changed slightly.
-                if (error.isDifferentHash) {
-                    console.log(`[AutoBackup] Invalidating hash cache for ${asset.id} due to different hash error. Will retry immediately.`);
-                    const SyncService = require('./SyncService').default;
-                    delete SyncService.localHashCache[asset.id];
-                    delete asset.hash;
-                    // Do NOT increment currentIndex, so it retries immediately!
-                    continue;
+                // Wi-Fi-only enforcement: pause upload if disconnected from Wi-Fi
+                if (this.wifiOnlyBackup) {
+                    const onWifi = await this.isWifiConnected();
+                    if (!onWifi) {
+                        console.log('[AutoBackupManager] Wi-Fi-only mode enabled and not on Wi-Fi. Pausing backup.');
+                        this.pause('Not connected to Wi-Fi');
+                        break;
+                    }
                 }
 
-                this.consecutiveErrors++;
-                this.retryCount++;
+                // Charging-only enforcement: pause upload if disconnected from charger
+                if (this.chargingOnlyBackup) {
+                    const charging = await this.isDeviceCharging();
+                    if (!charging) {
+                        console.log('[AutoBackupManager] Charging-only mode enabled and not charging. Pausing backup.');
+                        this.pause('Device is not charging');
+                        break;
+                    }
+                }
 
-                // P1 Fix: Exponential backoff — wait before retrying, pause only after 4 failures
-                const backoffDelays = [5000, 30000, 120000]; // 5s, 30s, 2min
-                if (this.retryCount <= backoffDelays.length) {
-                    const delay = backoffDelays[this.retryCount - 1];
-                    console.log(`[AutoBackup] Error #${this.retryCount}, retrying in ${delay/1000}s...`);
-                    this.retryMessage = `Connection lost, retrying in ${delay/1000}s...`;
+                // Night-only enforcement: pause upload if outside late-night window
+                if (this.nightBackupOnly) {
+                    const nightTime = this.isNightTime();
+                    if (!nightTime) {
+                        console.log('[AutoBackupManager] Night-only mode enabled and outside backup window. Pausing backup.');
+                        this.pause('Outside night backup window (2–5 AM)');
+                        break;
+                    }
+                }
+
+                // Designate this asset as the UI's representative asset if there isn't one
+                if (!this.currentAssetId) {
+                    this.currentAssetId = asset.id;
                     this.emitState();
-                    await new Promise(resolve => {
-                        this._retryTimer = setTimeout(resolve, delay);
-                    });
-                    this._retryTimer = null;
-                    this.retryMessage = null;
-                    // Don't increment currentIndex — retry the same asset
-                    continue;
-                } else {
-                    console.log('[AutoBackup] Too many consecutive errors, pausing with backoff exhausted.');
-                    this.pause('Connection issues — tap to resume');
-                    break;
                 }
-            }
 
-            this.currentIndex++;
-            this.emitState();
-            this.updateNotification();
+                try {
+                    // If the asset somehow became synced, skip it
+                    if (asset.status !== 'local') {
+                        continue;
+                    }
+
+                    this.activeAssetIds.add(asset.id);
+                    this.activeUploads[asset.id] = 0;
+                    this.emitState();
+
+                    // Call UploadService and pass a progress callback
+                    const result = await UploadService.uploadAsset(asset, (progress) => {
+                        this.activeUploads[asset.id] = progress;
+                        
+                        // We still emit the main backupProgress for backward compatibility,
+                        // but now we also pass the full map of active uploads.
+                        DeviceEventEmitter.emit('backupProgress', {
+                            progress: progress,
+                            activeUploads: { ...this.activeUploads }
+                        });
+                    });
+
+                    if (result.success) {
+                        // Update global state
+                        const updatedAsset = { ...asset, status: 'synced', hash: result.hash };
+                        const currentAssets = GalleryStore.getAssets();
+                        const newAssets = currentAssets.map(a => a.id === asset.id ? updatedAsset : a);
+                        GalleryStore.setAssets(newAssets);
+                        
+                        // Tell the UI this specific asset finished
+                        DeviceEventEmitter.emit('assetUpdated', updatedAsset);
+                        this.consecutiveErrors = 0; // Reset on success
+                        this.completedSessionCount++;
+
+                        if (this.currentAssetId === asset.id) {
+                            this.currentAssetId = null; // Let another active worker grab the spotlight
+                        }
+                    } else {
+                        if (this.currentAssetId === asset.id) this.currentAssetId = null;
+                    }
+                } catch (error) {
+                    console.error(`[AutoBackup] Failed to backup asset ${asset.id}:`, error);
+                    if (this.currentAssetId === asset.id) this.currentAssetId = null;
+
+                    if (error.isDifferentHash) {
+                        console.log(`[AutoBackup] Invalidating hash cache for ${asset.id} due to different hash error. Will retry immediately.`);
+                        const SyncService = require('./SyncService').default;
+                        delete SyncService.localHashCache[asset.id];
+                        delete asset.hash;
+                        
+                        // Push back to queue to retry
+                        this.queue.splice(this.currentIndex, 0, asset);
+                        continue;
+                    }
+
+                    this.consecutiveErrors++;
+                    this.retryCount++;
+
+                    const backoffDelays = [5000, 30000, 120000]; // 5s, 30s, 2min
+                    if (this.retryCount <= backoffDelays.length) {
+                        const delay = backoffDelays[this.retryCount - 1];
+                        this.retryMessage = `Retrying in ${delay / 1000}s...`;
+                        console.log(`[AutoBackup] Error encountered, backing off for ${delay}ms`);
+                        this.pause(this.retryMessage);
+                        this._retryTimer = setTimeout(() => {
+                            this._retryTimer = null;
+                            this.retryMessage = null;
+                            this.resume();
+                        }, delay);
+                        break;
+                    } else {
+                        console.error('[AutoBackup] Max retries exceeded. Pausing permanently.');
+                        this.pause('Backup failed. Check network or server.');
+                        break;
+                    }
+                } finally {
+                    if (this.activeAssetIds.has(asset.id)) {
+                        this.activeAssetIds.delete(asset.id);
+                        delete this.activeUploads[asset.id];
+                        this.emitState();
+                        
+                        // Ensure UI knows it was removed
+                        DeviceEventEmitter.emit('backupProgress', {
+                            progress: 1,
+                            activeUploads: { ...this.activeUploads }
+                        });
+                    }
+                }
+
+                this.emitState();
+                this.updateNotification();
+            }
+        };
+
+        const workers = [];
+        for (let i = 0; i < uploadConcurrency; i++) {
+            workers.push(worker());
         }
+        await Promise.all(workers);
 
         this.isBackingUp = false;
         this.updateNotification();
@@ -369,9 +419,6 @@ class AutoBackupManager {
     pause(reason = 'Paused') {
         this.isPaused = true;
         this.pauseReason = reason;
-        // P0 Fix: persist pause state so background task respects it
-        SecureStore.setItemAsync('lomorage_is_paused', 'true').catch(() => {});
-        SecureStore.setItemAsync('lomorage_pause_reason', reason).catch(() => {});
         // Cancel any pending backoff timer
         if (this._retryTimer) {
             clearTimeout(this._retryTimer);
@@ -399,9 +446,6 @@ class AutoBackupManager {
         this.consecutiveErrors = 0;
         this.retryCount = 0;
         this.retryMessage = null;
-        // P0 Fix: clear persisted pause state
-        SecureStore.deleteItemAsync('lomorage_is_paused').catch(() => {});
-        SecureStore.deleteItemAsync('lomorage_pause_reason').catch(() => {});
         // Re-evaluate queue and start
         this.syncQueueWithGallery();
         this.updateNotification();
@@ -414,9 +458,12 @@ class AutoBackupManager {
             pauseReason: this.pauseReason,    // P1 Fix: expose reason for UI
             retryCount: this.retryCount,       // expose for UI ("Retrying in Xs...")
             retryMessage: this.retryMessage,
+            activeAssetIds: Array.from(this.activeAssetIds),
+            activeUploads: { ...this.activeUploads },
             pendingCount: Math.max(0, this.queue.length - this.currentIndex),
+            completedCount: this.completedSessionCount,
             totalCount: this.queue.length,
-            currentAssetId: this.queue[this.currentIndex]?.id || null
+            currentAssetId: this.currentAssetId
         });
     }
 }

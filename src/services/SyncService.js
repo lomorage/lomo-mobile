@@ -1,5 +1,6 @@
 import * as Crypto from 'expo-crypto';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as SecureStore from 'expo-secure-store';
 import axios from 'axios';
 import MediaService from './MediaService';
 import AuthService from './AuthService';
@@ -414,84 +415,111 @@ class SyncService {
   async precalculateHashes(assets, onProgress) {
     console.log(`Pre-calculating hashes for ${assets.length} assets...`);
     await this.loadLocalHashCache();
-    let cacheUpdated = false;
     let hashedCount = 0;
+    let completedCount = 0;
     let lastUiUpdateTime = Date.now();
+    this._lastCacheSaveTime = Date.now();
     
-    for (let i = 0; i < assets.length; i++) {
-      const asset = assets[i];
+    let hashConcurrency = 5;
+    try {
+      const savedConfig = await SecureStore.getItemAsync('lomorage_hash_concurrency');
+      if (savedConfig) hashConcurrency = parseInt(savedConfig, 10);
+    } catch (e) {}
 
-      if (!asset.uri && !asset.localUri) {
-        console.warn(`[SyncService] Asset ${asset.id} has no URI, skipping hash calculation`);
-        continue;
-      }
-      
-      let hash = asset.hash;
-      if (!hash) {
-        const cached = this.localHashCache[asset.id];
-        if (cached && cached.modificationTime === asset.modificationTime) {
-          hash = cached.hash;
-        } else {
-          try {
-            let uri = asset.uri || asset.localUri;
-            console.log(`[SyncService] Hashing asset ${asset.id} (${asset.filename}) via URI: ${uri}`);
-            hash = await MediaService.calculateHash(uri);
-            
-            if (!hash) {
-              console.log(`[SyncService] Hash attempt 1 failed for ${asset.id}, resolving full asset info...`);
-              const info = await MediaService.getAssetInfo(asset.id);
-              if (info) {
-                const fallbackUri = info.uri || info.localUri;
-                if (fallbackUri) {
-                  console.log(`[SyncService] Fallback URI for ${asset.id}: ${fallbackUri}`);
-                  hash = await MediaService.calculateHash(fallbackUri);
+    const processQueue = [...assets];
+
+    const worker = async () => {
+      let loops = 0;
+      while (processQueue.length > 0) {
+        loops++;
+        // CRITICAL FIX: Yield to the JS event loop every 50 iterations to prevent ANR
+        // If many items hit the cache, this loop would run synchronously and block the UI completely.
+        if (loops % 50 === 0) {
+            await new Promise(resolve => setTimeout(resolve, 1));
+        }
+
+        const asset = processQueue.shift();
+        if (!asset) break;
+
+        if (!asset.uri && !asset.localUri) {
+          console.warn(`[SyncService] Asset ${asset.id} has no URI, skipping hash calculation`);
+          completedCount++;
+          continue;
+        }
+        
+        let hash = asset.hash;
+        if (!hash) {
+          const cached = this.localHashCache[asset.id];
+          if (cached && cached.modificationTime === asset.modificationTime) {
+            hash = cached.hash;
+          } else {
+            try {
+              let uri = asset.uri || asset.localUri;
+              hash = await MediaService.calculateHash(uri, true); // silent log
+              
+              if (!hash) {
+                const info = await MediaService.getAssetInfo(asset.id);
+                if (info) {
+                  const fallbackUri = info.uri || info.localUri;
+                  if (fallbackUri) {
+                    hash = await MediaService.calculateHash(fallbackUri, true);
+                  }
                 }
               }
+            } catch (hashError) {
+              console.error(`[SyncService] Error during hash calculation for ${asset.id}:`, hashError);
             }
-          } catch (hashError) {
-            console.error(`[SyncService] Error during hash calculation for ${asset.id}:`, hashError);
-          }
 
-          if (hash) {
-            this.localHashCache[asset.id] = {
-              hash,
-              modificationTime: asset.modificationTime,
-              filename: asset.filename || 'unknown',
-              size: asset.mediaSubtypes?.[0] || asset.mediaType
-            };
-            cacheUpdated = true;
+            if (hash) {
+              const filename = asset.filename || 'unknown';
+              const size = asset.mediaSubtypes?.[0] || asset.mediaType;
+              this.localHashCache[asset.id] = {
+                hash,
+                modificationTime: asset.modificationTime,
+                filename: filename,
+                size: size
+              };
+              
+              const now = Date.now();
+              if (now - this._lastCacheSaveTime > 5000) {
+                 this._lastCacheSaveTime = now;
+                 // Don't await so we don't block hashing, save asynchronously
+                 this.saveLocalHashCache().catch(()=>{});
+              }
+            }
           }
         }
-      }
-      
-      if (hash) {
-        hashedCount++;
-        asset.hash = hash.toLowerCase(); // Persist back to asset
         
-        // Save cache periodically
-        if (hashedCount % 20 === 0 && cacheUpdated) {
-          await this.saveLocalHashCache();
-          cacheUpdated = false;
+        if (hash) {
+          hashedCount++;
+          asset.hash = hash.toLowerCase(); // Persist back to asset
         }
-      }
+        completedCount++;
 
-      if (onProgress) {
-        const now = Date.now();
-        if (now - lastUiUpdateTime > 250 || i === assets.length - 1) {
-          lastUiUpdateTime = now;
-          onProgress({ 
-            current: i + 1, 
-            total: assets.length, 
-            message: `Analyzing new media...`,
-            triggerUiUpdate: true 
-          });
+        if (onProgress) {
+          const now = Date.now();
+          if (now - lastUiUpdateTime > 250 || completedCount === assets.length) {
+            lastUiUpdateTime = now;
+            onProgress({ 
+              current: completedCount, 
+              total: assets.length, 
+              message: `Analyzing new media...`,
+              triggerUiUpdate: true 
+            });
+          }
         }
       }
+    };
+
+    const workers = [];
+    for (let i = 0; i < hashConcurrency; i++) {
+      workers.push(worker());
     }
+    await Promise.all(workers);
     
-    if (cacheUpdated) {
-      this.saveLocalHashCache();
-    }
+    // Always save at the end of the batch
+    await this.saveLocalHashCache();
+    
     console.log(`[SyncService] Pre-calculated hashes for ${hashedCount}/${assets.length} assets`);
   }
 

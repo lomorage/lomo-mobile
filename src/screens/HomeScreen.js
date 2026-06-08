@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
-import { StyleSheet, View, Dimensions, TouchableOpacity, Text, ActivityIndicator, RefreshControl, DeviceEventEmitter, AppState, PanResponder, Animated } from 'react-native';
+import { StyleSheet, View, Dimensions, TouchableOpacity, Text, ActivityIndicator, RefreshControl, DeviceEventEmitter, AppState, PanResponder, Animated, Modal } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 import { FlashList } from '@shopify/flash-list';
-import { Cloud, CheckCircle, Smartphone, PlayCircle, PauseCircle, Settings as SettingsIcon, UploadCloud } from 'lucide-react-native';
+import { Cloud, CheckCircle, Smartphone, PlayCircle, PauseCircle, Settings as SettingsIcon, UploadCloud, X } from 'lucide-react-native';
 import MediaService from '../services/MediaService';
 import SyncService from '../services/SyncService';
 import AuthService from '../services/AuthService';
@@ -73,6 +73,8 @@ export default function HomeScreen({ navigation }) {
     const [syncProgress, setSyncProgress] = useState(null);
     const [backupState, setBackupState] = useState({ isBackingUp: false, pendingCount: 0, totalCount: 0, currentAssetId: null });
     const [backupProgress, setBackupProgress] = useState(0);
+    const [activeUploads, setActiveUploads] = useState({});
+    const [isBottomSheetVisible, setBottomSheetVisible] = useState(false);
     const [error, setError] = useState(null);
     const [permissionStatus, setPermissionStatus] = useState('granted');
     const [loading, setLoading] = useState(true);
@@ -329,9 +331,23 @@ export default function HomeScreen({ navigation }) {
             setAssets(prev => prev.map(a => a.id === updatedAsset.id ? updatedAsset : a));
         });
         
-        const subBackupState = DeviceEventEmitter.addListener('backupState', setBackupState);
+        const subBackupState = DeviceEventEmitter.addListener('backupState', (state) => {
+            setBackupState(state);
+            if (state.activeUploads) {
+                // Throttle React state updates slightly to avoid dropping frames if events fire extremely fast
+                setActiveUploads(prev => {
+                    // Only update if it's actually different to avoid unnecessary re-renders
+                    return { ...prev, ...state.activeUploads };
+                });
+            }
+        });
         const subBackupProgress = DeviceEventEmitter.addListener('backupProgress', (data) => {
             setBackupProgress(data.progress || 0);
+            if (data.activeUploads) {
+                setActiveUploads(prev => {
+                    return { ...prev, ...data.activeUploads };
+                });
+            }
         });
 
         return () => { 
@@ -535,8 +551,8 @@ export default function HomeScreen({ navigation }) {
         }
     };
 
-    const StatusIcon = memo(({ item, currentAssetId }) => {
-        if (item.id === currentAssetId) {
+    const StatusIcon = memo(({ item, currentAssetId, activeAssetIds = [] }) => {
+        if (item.id === currentAssetId || activeAssetIds.includes(item.id)) {
             return <ActivityIndicator size="small" color="#007AFF" style={styles.statusIcon} />;
         }
         switch (item.status) {
@@ -550,7 +566,7 @@ export default function HomeScreen({ navigation }) {
         }
     });
 
-    const RenderAsset = memo(({ asset, globalIndex, navigation, debugMode, currentAssetId, isScrubbing, activeLoadCountRef }) => {
+    const RenderAsset = memo(({ asset, globalIndex, navigation, debugMode, currentAssetId, activeAssetIds, isScrubbing, activeLoadCountRef }) => {
         const loadStartTime = useRef(0);
         // Scrub-Lock: Skip remote photo fetching while scrubbing to prevent network congestion.
         const shouldLoad = !isScrubbing || asset.status === 'local';
@@ -596,7 +612,7 @@ export default function HomeScreen({ navigation }) {
                 ) : (
                     <View style={[styles.image, { backgroundColor: '#f0f0f0' }]} />
                 )}
-                <StatusIcon item={asset} currentAssetId={currentAssetId} />
+                <StatusIcon item={asset} currentAssetId={currentAssetId} activeAssetIds={activeAssetIds} />
                 {isLivePhoto(asset) ? (
                     <View style={styles.livePhotoBadge}>
                         <LivePhotoIcon size={12} color="#fff" />
@@ -630,10 +646,17 @@ export default function HomeScreen({ navigation }) {
         ) return false;
         if (prevProps.debugMode !== nextProps.debugMode) return false;
         if (prevProps.currentAssetId !== nextProps.currentAssetId && (prevProps.asset.id === prevProps.currentAssetId || prevProps.asset.id === nextProps.currentAssetId)) return false;
+        
+        const prevActive = prevProps.activeAssetIds || [];
+        const nextActive = nextProps.activeAssetIds || [];
+        const wasActive = prevActive.includes(prevProps.asset.id);
+        const isActive = nextActive.includes(nextProps.asset.id);
+        if (wasActive !== isActive) return false;
+
         return true;
     });
 
-    const TimelineRow = memo(({ item, navigation, debugMode, currentAssetId, isScrubbing, activeLoadCountRef }) => (
+    const TimelineRow = memo(({ item, navigation, debugMode, currentAssetId, activeAssetIds, isScrubbing, activeLoadCountRef }) => (
         <View style={styles.row}>
             {item.items.map((asset) => (
                 <RenderAsset 
@@ -643,6 +666,7 @@ export default function HomeScreen({ navigation }) {
                     navigation={navigation}
                     debugMode={debugMode}
                     currentAssetId={currentAssetId}
+                    activeAssetIds={activeAssetIds}
                     isScrubbing={isScrubbing}
                     activeLoadCountRef={activeLoadCountRef}
                 />
@@ -667,11 +691,28 @@ export default function HomeScreen({ navigation }) {
                 navigation={navigation}
                 debugMode={debugMode}
                 currentAssetId={backupState.currentAssetId}
+                activeAssetIds={backupState.activeAssetIds}
                 isScrubbing={isScrubbing}
                 activeLoadCountRef={globalActiveLoadCount}
             />
         );
-    }, [navigation, debugMode, backupState.currentAssetId, isScrubbing]);
+    }, [navigation, debugMode, backupState.currentAssetId, backupState.activeAssetIds, isScrubbing]);
+
+    const smoothOverallProgress = useMemo(() => {
+        if (!backupState || backupState.totalCount === 0) return 1;
+        
+        const completed = backupState.completedCount || 0;
+        let activeFractionSum = 0;
+        
+        if (activeUploads) {
+            for (const key in activeUploads) {
+                activeFractionSum += (activeUploads[key] || 0);
+            }
+        }
+        
+        const totalProgress = (completed + activeFractionSum) / backupState.totalCount;
+        return Math.min(1, Math.max(0, totalProgress));
+    }, [backupState.completedCount, backupState.totalCount, activeUploads]);
 
     return (
         <View style={styles.container}>
@@ -689,58 +730,33 @@ export default function HomeScreen({ navigation }) {
                 </View>
                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                     {syncing ? <ActivityIndicator size="small" color="#007AFF" style={{ marginRight: 10 }} /> : null}
+                    
+                    {/* OPTION A: Backup Status Icon */}
+                    {(backupState.totalCount > 0 || backupState.isBackingUp) && (
+                        <TouchableOpacity 
+                            onPress={() => setBottomSheetVisible(true)} 
+                            style={{ marginRight: 15, width: 36, height: 36, justifyContent: 'center', alignItems: 'center' }}
+                        >
+                            <Cloud size={24} color={backupState.isPaused ? '#999' : '#007AFF'} />
+                            {backupState.pendingCount > 0 ? (
+                                <View style={{ width: 24, height: 4, backgroundColor: '#E5E5EA', borderRadius: 2, marginTop: 4, overflow: 'hidden' }}>
+                                    <View style={{ height: '100%', backgroundColor: backupState.isPaused ? '#999' : '#007AFF', width: `${smoothOverallProgress * 100}%` }} />
+                                </View>
+                            ) : (
+                                <View style={{ position: 'absolute', right: -2, bottom: -2, backgroundColor: '#fff', borderRadius: 8 }}>
+                                    <CheckCircle size={14} color="#34C759" />
+                                </View>
+                            )}
+                        </TouchableOpacity>
+                    )}
+
                     <TouchableOpacity onPress={() => navigation.navigate('Settings')} style={styles.settingsButton}>
                         <SettingsIcon size={24} color="#333" />
                     </TouchableOpacity>
                 </View>
             </View>
 
-            {backupState.isBackingUp || (backupState.isPaused && backupState.pendingCount > 0) ? (
-                <View style={[styles.backupBanner, backupState.isPaused && { backgroundColor: '#f5f5f5' }]}>
-                    <View style={styles.backupBannerTop}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                            {backupState.currentAssetId && !backupState.isPaused ? (
-                                <Image 
-                                    source={{ uri: assets.find(a => a.id === backupState.currentAssetId)?.uri }} 
-                                    style={styles.uploadingThumbnail} 
-                                    contentFit="cover"
-                                    cachePolicy="disk"
-                                />
-                            ) : null}
-                            <Text style={[styles.backupBannerText, backupState.isPaused && { color: '#666' }]}>
-                                {backupState.isPaused
-                                    ? `Backup Paused${backupState.pauseReason ? ` — ${backupState.pauseReason}` : ''} (${backupState.pendingCount} items)`
-                                    : backupState.retryMessage
-                                        ? backupState.retryMessage
-                                        : `Backing up ${backupState.pendingCount} left...`
-                                }
-                            </Text>
-                        </View>
-                        {backupState.isPaused ? (
-                            <TouchableOpacity onPress={() => AutoBackupManager.resume()} style={{ padding: 4 }}>
-                                <PlayCircle size={22} color="#007AFF" />
-                            </TouchableOpacity>
-                        ) : (
-                            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                                <ActivityIndicator size="small" color="#007AFF" style={{ marginRight: 12 }} />
-                                <TouchableOpacity onPress={() => AutoBackupManager.pause()} style={{ padding: 4 }}>
-                                    <PauseCircle size={22} color="#007AFF" />
-                                </TouchableOpacity>
-                            </View>
-                        )}
-                    </View>
-                    <View style={styles.progressBarBg}>
-                        <View style={[styles.progressBarFill, { width: `${backupProgress * 100}%`, backgroundColor: backupState.isPaused ? '#ccc' : '#007AFF' }]} />
-                    </View>
-                </View>
-            ) : backupState.totalCount > 0 && !backupState.isPaused ? (
-                <View style={[styles.backupBanner, { backgroundColor: '#E8F5E9', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]}>
-                    <Text style={[styles.backupBannerText, { color: '#2E7D32' }]}>
-                        Backup complete ({backupState.totalCount})
-                    </Text>
-                    <CheckCircle size={16} color="#2E7D32" />
-                </View>
-            ) : null}
+            {/* REMOVED BIG BANNER FOR OPTION A */}
 
             {error ? (
                 <View style={styles.errorBanner}>
@@ -770,7 +786,7 @@ export default function HomeScreen({ navigation }) {
                     <FlashList
                         ref={listRef}
                         data={timelineData}
-                        extraData={{ isScrubbing, currentAssetId: backupState.currentAssetId, debugMode }}
+                        extraData={{ isScrubbing, currentAssetId: backupState.currentAssetId, activeAssetIds: backupState.activeAssetIds, debugMode }}
                         renderItem={renderItem}
                         keyExtractor={item => item.id}
                         stickyHeaderIndices={stickyHeaderIndices}
@@ -798,21 +814,80 @@ export default function HomeScreen({ navigation }) {
                     />
 
                     {timelineData.length > 30 && (
-                        <View 
-                            style={styles.scrubberHitbox}
-                            {...panResponder.panHandlers}
-                        >
-                            <Animated.View style={[styles.scrollThumb, { transform: [{ translateY: scrubThumbY }] }]} />
+                        <View style={[styles.scrubberContainer, isScrubbing && styles.scrubberContainerActive]} {...panResponder.panHandlers}>
+                            <View style={styles.scrubberTrack} />
+                            <Animated.View style={[styles.scrubberThumb, { transform: [{ translateY: scrubThumbY }] }]} />
                         </View>
                     )}
 
                     {isScrubbing && (
-                        <Animated.View style={[styles.scrubTooltip, { transform: [{ translateY: scrubTooltipY }] }]}>
-                            <Text style={styles.scrubTooltipText}>{scrubText}</Text>
+                        <Animated.View style={[styles.scrubberTooltip, { transform: [{ translateY: scrubTooltipY }] }]}>
+                            <Text style={styles.scrubberTooltipText}>{scrubText}</Text>
                         </Animated.View>
                     )}
                 </View>
             )}
+
+            <Modal visible={isBottomSheetVisible} transparent animationType="slide" onRequestClose={() => setBottomSheetVisible(false)}>
+                <View style={styles.bottomSheetOverlay}>
+                    <TouchableOpacity style={styles.bottomSheetDismissArea} onPress={() => setBottomSheetVisible(false)} />
+                    <View style={styles.bottomSheetContainer}>
+                        <View style={styles.bottomSheetHeaderModal}>
+                            <Text style={styles.bottomSheetTitle}>Backup Status</Text>
+                            <TouchableOpacity onPress={() => setBottomSheetVisible(false)} style={{ padding: 4 }}>
+                                <X size={24} color="#333" />
+                            </TouchableOpacity>
+                        </View>
+                        
+                        <View style={styles.bottomSheetSummary}>
+                            <Text style={styles.bottomSheetSummaryText}>
+                                {backupState.isPaused 
+                                    ? `Paused (${backupState.pendingCount} left)` 
+                                    : backupState.pendingCount > 0 
+                                        ? `Backing up... ${Math.round(smoothOverallProgress * 100)}%`
+                                        : 'Backup Complete!'}
+                            </Text>
+                            {backupState.pendingCount > 0 && (
+                                backupState.isPaused ? (
+                                    <TouchableOpacity onPress={() => AutoBackupManager.resume()} style={styles.playPauseBtn}>
+                                        <PlayCircle size={28} color="#007AFF" />
+                                    </TouchableOpacity>
+                                ) : (
+                                    <TouchableOpacity onPress={() => AutoBackupManager.pause()} style={styles.playPauseBtn}>
+                                        <PauseCircle size={28} color="#007AFF" />
+                                    </TouchableOpacity>
+                                )
+                            )}
+                        </View>
+
+                        <Animated.ScrollView style={{ maxHeight: 350, paddingHorizontal: 20 }}>
+                            {backupState.activeAssetIds && backupState.activeAssetIds.map(assetId => {
+                                const asset = assets.find(a => a.id === assetId);
+                                if (!asset) return null;
+                                const prog = activeUploads[assetId] || 0;
+                                return (
+                                    <View key={asset.id} style={styles.activeUploadRow}>
+                                        <Image source={{ uri: safeUri(asset.uri) }} style={styles.activeUploadThumb} cachePolicy="disk" />
+                                        <View style={{ flex: 1, marginLeft: 12 }}>
+                                            <Text style={styles.activeUploadName} numberOfLines={1}>{asset.filename || asset.id}</Text>
+                                            <View style={styles.progressBarBgSmall}>
+                                                <View style={[styles.progressBarFillSmall, { width: `${prog * 100}%` }]} />
+                                            </View>
+                                        </View>
+                                        <Text style={styles.activeUploadProgText}>{Math.round(prog * 100)}%</Text>
+                                    </View>
+                                );
+                            })}
+                            {(!backupState.activeAssetIds || backupState.activeAssetIds.length === 0) && !backupState.isPaused && backupState.pendingCount > 0 && (
+                                <Text style={styles.emptyStateText}>Preparing uploads...</Text>
+                            )}
+                            {backupState.totalCount > 0 && backupState.pendingCount === 0 && (
+                                <Text style={styles.emptyStateText}>All items are safely backed up to Lomorage.</Text>
+                            )}
+                        </Animated.ScrollView>
+                    </View>
+                </View>
+            </Modal>
         </View>
     );
 }
@@ -855,65 +930,6 @@ const styles = StyleSheet.create({
         borderRadius: 8,
         marginBottom: 10,
     },
-    backupBanner: {
-        backgroundColor: '#F0F8FF',
-        padding: 12,
-        marginHorizontal: 15,
-        borderRadius: 8,
-        marginBottom: 10,
-        justifyContent: 'center',
-    },
-    backupBannerTop: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        marginBottom: 8,
-    },
-    backupBannerText: {
-        color: '#007AFF',
-        fontSize: 14,
-        fontWeight: 'bold',
-    },
-    uploadingThumbnail: {
-        width: 24,
-        height: 24,
-        borderRadius: 4,
-        marginRight: 8,
-        backgroundColor: '#ccc',
-    },
-    progressBarBg: {
-        height: 4,
-        width: '100%',
-        backgroundColor: 'rgba(0,122,255,0.2)',
-        borderRadius: 2,
-        overflow: 'hidden',
-    },
-    progressBarFill: {
-        height: '100%',
-        backgroundColor: '#007AFF',
-    },
-    iosNotificationBanner: {
-        backgroundColor: '#F0F8FF',
-        paddingHorizontal: 15,
-        paddingVertical: 10,
-        marginHorizontal: 15,
-        borderRadius: 8,
-        marginBottom: 8,
-        borderLeftWidth: 3,
-        borderLeftColor: '#007AFF',
-    },
-    iosNotificationRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        marginBottom: 8,
-    },
-    iosNotificationText: {
-        flex: 1,
-        fontSize: 13,
-        fontWeight: '600',
-        color: '#007AFF',
-    },
-
     errorText: {
         flex: 1,
         color: '#D32F2F',
@@ -987,10 +1003,6 @@ const styles = StyleSheet.create({
         shadowRadius: 1.5,
         elevation: 3,
     },
-    clearButton: {
-        padding: 5,
-        marginLeft: 10,
-    },
     debugOverlay: {
         position: 'absolute',
         top: 2,
@@ -1002,9 +1014,8 @@ const styles = StyleSheet.create({
     },
     debugText: {
         color: '#fff',
-        fontSize: 10,
-        fontWeight: 'bold',
-        textAlign: 'center'
+        fontFamily: 'monospace',
+        fontSize: 9,
     },
     dateHeaderContainer: {
         width: '100%',
@@ -1020,7 +1031,7 @@ const styles = StyleSheet.create({
         fontWeight: '700',
         color: '#1a1a1a',
     },
-    scrubberHitbox: {
+    scrubberContainer: {
         position: 'absolute',
         right: 0,
         top: 0,
@@ -1028,16 +1039,24 @@ const styles = StyleSheet.create({
         width: 30,
         zIndex: 10,
     },
-    scrollThumb: {
+    scrubberTrack: {
+        position: 'absolute',
+        right: 6,
+        top: 0,
+        bottom: 0,
+        width: 2,
+        backgroundColor: '#E5E5EA',
+    },
+    scrubberThumb: {
         position: 'absolute',
         right: 4,
         top: 0,
         width: 6,
         height: 40,
-        backgroundColor: 'rgba(0,122,255,0.6)',
+        backgroundColor: '#007AFF',
         borderRadius: 4,
     },
-    scrubTooltip: {
+    scrubberTooltip: {
         position: 'absolute',
         right: 40,
         top: 0,
@@ -1053,9 +1072,97 @@ const styles = StyleSheet.create({
         shadowRadius: 4,
         zIndex: 11,
     },
-    scrubTooltipText: {
+    scrubberTooltipText: {
         color: '#fff',
         fontWeight: 'bold',
         fontSize: 14,
+    },
+    bottomSheetOverlay: {
+        flex: 1,
+        backgroundColor: 'rgba(0,0,0,0.5)',
+        justifyContent: 'flex-end',
+    },
+    bottomSheetDismissArea: {
+        flex: 1,
+    },
+    bottomSheetContainer: {
+        backgroundColor: '#fff',
+        borderTopLeftRadius: 20,
+        borderTopRightRadius: 20,
+        paddingBottom: 40,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: -3 },
+        shadowOpacity: 0.1,
+        shadowRadius: 5,
+        elevation: 10,
+    },
+    bottomSheetHeaderModal: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        paddingHorizontal: 20,
+        paddingTop: 20,
+        paddingBottom: 15,
+        borderBottomWidth: 1,
+        borderBottomColor: '#f0f0f0',
+    },
+    bottomSheetTitle: {
+        fontSize: 18,
+        fontWeight: 'bold',
+        color: '#1c1c1e',
+    },
+    bottomSheetSummary: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        paddingHorizontal: 20,
+        paddingVertical: 15,
+    },
+    bottomSheetSummaryText: {
+        fontSize: 16,
+        fontWeight: '600',
+        color: '#333',
+    },
+    activeUploadRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginBottom: 15,
+    },
+    activeUploadThumb: {
+        width: 48,
+        height: 48,
+        borderRadius: 8,
+        backgroundColor: '#e5e5ea',
+    },
+    activeUploadName: {
+        fontSize: 14,
+        color: '#1c1c1e',
+        marginBottom: 6,
+        fontWeight: '500',
+    },
+    progressBarBgSmall: {
+        height: 6,
+        backgroundColor: '#e5e5ea',
+        borderRadius: 3,
+        overflow: 'hidden',
+    },
+    progressBarFillSmall: {
+        height: '100%',
+        backgroundColor: '#007AFF',
+        borderRadius: 3,
+    },
+    activeUploadProgText: {
+        fontSize: 13,
+        color: '#8e8e93',
+        fontWeight: '600',
+        marginLeft: 15,
+        width: 36,
+        textAlign: 'right',
+    },
+    emptyStateText: {
+        textAlign: 'center',
+        color: '#8e8e93',
+        marginTop: 20,
+        fontSize: 15,
     }
 });

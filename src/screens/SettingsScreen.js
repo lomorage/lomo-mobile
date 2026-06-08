@@ -20,7 +20,11 @@ export default function SettingsScreen({ navigation }) {
         chargingOnlyBackup, 
         toggleChargingOnly, 
         nightBackupOnly, 
-        toggleNightBackup 
+        toggleNightBackup,
+        hashConcurrency,
+        updateHashConcurrency,
+        uploadConcurrency,
+        updateUploadConcurrency
     } = useSettings();
     const { logout } = useAuth();
     const [stats, setStats] = React.useState({ local: 0, remote: 0 });
@@ -277,6 +281,38 @@ export default function SettingsScreen({ navigation }) {
                         trackColor={{ false: '#d1d1d1', true: '#4CAF50' }}
                         thumbColor={'#fff'}
                     />
+                </View>
+
+                <View style={styles.settingRow}>
+                    <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabel}>Hash Concurrency</Text>
+                        <Text style={styles.settingDescription}>Parallel photo hashing. Higher is faster but uses more memory.</Text>
+                    </View>
+                    <View style={{flexDirection: 'row', alignItems: 'center'}}>
+                        <TouchableOpacity onPress={() => updateHashConcurrency(Math.max(1, hashConcurrency - 1))} style={styles.stepperButton}>
+                            <Text style={styles.stepperText}>-</Text>
+                        </TouchableOpacity>
+                        <Text style={styles.stepperValue}>{hashConcurrency}</Text>
+                        <TouchableOpacity onPress={() => updateHashConcurrency(Math.min(20, hashConcurrency + 1))} style={styles.stepperButton}>
+                            <Text style={styles.stepperText}>+</Text>
+                        </TouchableOpacity>
+                    </View>
+                </View>
+
+                <View style={styles.settingRow}>
+                    <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabel}>Upload Concurrency</Text>
+                        <Text style={styles.settingDescription}>Parallel network uploads. Keep low for weak network connections.</Text>
+                    </View>
+                    <View style={{flexDirection: 'row', alignItems: 'center'}}>
+                        <TouchableOpacity onPress={() => updateUploadConcurrency(Math.max(1, uploadConcurrency - 1))} style={styles.stepperButton}>
+                            <Text style={styles.stepperText}>-</Text>
+                        </TouchableOpacity>
+                        <Text style={styles.stepperValue}>{uploadConcurrency}</Text>
+                        <TouchableOpacity onPress={() => updateUploadConcurrency(Math.min(10, uploadConcurrency + 1))} style={styles.stepperButton}>
+                            <Text style={styles.stepperText}>+</Text>
+                        </TouchableOpacity>
+                    </View>
                 </View>
 
                 <TouchableOpacity 
@@ -673,5 +709,29 @@ const styles = StyleSheet.create({
         color: '#FFF',
         fontSize: 15,
         fontWeight: '600',
+    },
+    stepperButton: {
+        borderWidth: 1,
+        borderColor: '#E2E8F0',
+        borderRadius: 6,
+        width: 32,
+        height: 32,
+        justifyContent: 'center',
+        alignItems: 'center',
+        backgroundColor: '#FFF'
+    },
+    stepperText: {
+        fontSize: 18,
+        color: '#4A5568',
+        fontWeight: 'bold',
+        marginTop: -2,
+    },
+    stepperValue: {
+        fontSize: 16,
+        fontWeight: '600',
+        color: '#1A202C',
+        marginHorizontal: 12,
+        minWidth: 20,
+        textAlign: 'center'
     }
 });

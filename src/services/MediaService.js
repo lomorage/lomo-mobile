@@ -291,6 +291,9 @@ class MediaService {
       return true;
     } catch (error) {
       console.error('[MediaService] Error deleting local asset:', error.message);
+      if (error.message && error.message.includes("didn't grant write permission")) {
+         throw new Error("System deletion was cancelled. Android requires you to explicitly tap 'Allow' or 'Move to Trash' in the popup to delete photos from the device.");
+      }
       throw error;
     }
   }
