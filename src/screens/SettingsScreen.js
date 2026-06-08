@@ -6,6 +6,8 @@ import { useSettings } from '../context/SettingsContext';
 import { useAuth } from '../context/AuthContext';
 import SyncService from '../services/SyncService';
 import AuthService from '../services/AuthService';
+import Logger from '../utils/logger';
+import { Send } from 'lucide-react-native';
 
 export default function SettingsScreen({ navigation }) {
     const { 
@@ -23,6 +25,7 @@ export default function SettingsScreen({ navigation }) {
     const { logout } = useAuth();
     const [stats, setStats] = React.useState({ local: 0, remote: 0 });
     const [isScanning, setIsScanning] = React.useState(false);
+    const [isExportingLogs, setIsExportingLogs] = React.useState(false);
     const [serverUrl, setServerUrl] = React.useState(AuthService.getServerUrl());
     const [localUrl, setLocalUrl] = React.useState(AuthService.getLocalUrl());
     const [remoteUrl, setRemoteUrl] = React.useState(AuthService.getRemoteUrl());
@@ -142,6 +145,22 @@ export default function SettingsScreen({ navigation }) {
         });
     };
 
+    const handleExportLogs = async () => {
+        if (isExportingLogs) return;
+        setIsExportingLogs(true);
+        try {
+            const token = await AuthService.getToken();
+            const result = await Logger.exportLogs(serverUrl, token);
+            if (result.success && !result.serverLogIncluded) {
+                Alert.alert("Partial Success", "Client logs exported, but server logs could not be downloaded.");
+            }
+        } catch (error) {
+            Alert.alert("Export Failed", "Could not package and export logs: " + error.message);
+        } finally {
+            setIsExportingLogs(false);
+        }
+    };
+
     return (
         <View style={styles.container}>
             <View style={styles.header}>
@@ -259,6 +278,23 @@ export default function SettingsScreen({ navigation }) {
                         thumbColor={'#fff'}
                     />
                 </View>
+
+                <TouchableOpacity 
+                    style={styles.settingRow}
+                    onPress={handleExportLogs}
+                    disabled={isExportingLogs}
+                >
+                    <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabel}>Send Logs</Text>
+                        <Text style={styles.settingDescription}>
+                            {isExportingLogs ? 'Packaging logs...' : 'Export local and server logs as a zip file.'}
+                        </Text>
+                    </View>
+                    {isExportingLogs 
+                        ? <ActivityIndicator size="small" color="#007AFF" /> 
+                        : <Send color="#007AFF" size={20} />
+                    }
+                </TouchableOpacity>
 
                 <TouchableOpacity 
                     style={styles.settingRow}

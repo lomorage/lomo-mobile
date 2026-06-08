@@ -1,4 +1,6 @@
 import 'react-native-gesture-handler';
+import Logger from './src/utils/logger';
+Logger.init();
 import React, { useEffect } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import * as BackgroundTask from 'expo-background-task';

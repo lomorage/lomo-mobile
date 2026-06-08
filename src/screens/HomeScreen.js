@@ -418,7 +418,11 @@ export default function HomeScreen({ navigation }) {
                         }));
                 }
 
-                const combined = [...initialAssets, ...remoteAssets].sort((a, b) => (b.creationTime || 0) - (a.creationTime || 0));
+                const combined = [...initialAssets, ...remoteAssets].sort((a, b) => {
+                    const timeA = a.creationTime || a.modificationTime || 0;
+                    const timeB = b.creationTime || b.modificationTime || 0;
+                    return timeB - timeA;
+                });
                 
                 if (isMounted.current) {
                     GalleryStore.setAssets(combined);
@@ -438,137 +442,88 @@ export default function HomeScreen({ navigation }) {
                 mergeAndSetAssets(cumulativeLocalAssets, !firstPage.hasNextPage);
                 setLoading(false); // Unblock UI INSTANTLY!
                 setSyncing(true);
+                setSyncProgress({ message: 'Fetching remote layout...' });
             }
+
+            // Fire off fetchRemoteOverview concurrently
+            const remoteOverviewPromise = SyncService.fetchRemoteOverview().catch(err => {
+                console.warn('[HomeScreen] Remote overview failed:', err.message);
+            });
 
             // P0 Fix: Background fetch the REST of the gallery to break the 5000-photo limit
-            // We fetch silently in the background and re-merge, so UI is fluid.
+            // We AWAIT this so we have the full local assets before deep sync
             if (firstPage.hasNextPage) {
-                const backgroundFetchRest = async () => {
-                    let after = firstPage.endCursor;
-                    let hasNextPage = true;
-                    while (hasNextPage && isMounted.current) {
-                        const result = await MediaService.getAssets(500, after);
-                        cumulativeLocalAssets = cumulativeLocalAssets.concat(result.assets || []);
-                        after = result.endCursor;
-                        hasNextPage = result.hasNextPage && (result.assets?.length > 0);
-                        
-                        // Merge and render incrementally
-                        mergeAndSetAssets(cumulativeLocalAssets, !hasNextPage);
-                        
-                        // Yield to let React render and UI stay smooth
-                        await new Promise(r => setTimeout(r, 100));
-                    }
-                };
-                // Kick off background fetch without awaiting
-                backgroundFetchRest();
-            }
-
-            // 3. Update Remote Knowledge on network background (gracefully handle failures)
-            try {
-                await SyncService.fetchRemoteOverview();
-            } catch (err) {
-                console.warn('[HomeScreen] Remote overview failed:', err.message);
-                // We don't throw here, just continue with local assets and let deep sync handle it
-            }
-
-            // 4. Perform Deep Hash Crypto-Sync asynchronously
-             setTimeout(async () => {
-                let diff = null;
-                const initialAssetsJson = JSON.stringify(combinedInitial.map(a => ({ id: a.id, status: a.status })));
-                 try {
-                     setSyncProgress({ message: 'Syncing with server...' });
-                    diff = await SyncService.sync(localAssets, (progress) => {
-                        if (!isMounted.current) return;
-                        setSyncProgress(progress);
-                        
-                        if (progress.triggerUiUpdate) {
-                            // Efficiently update only the items that got new hashes
-                            const localHashMap = new Map(localAssets.map(a => [a.id, a.hash]));
-                            setAssets(currentAssets => {
-                                let changed = false;
-                                const next = currentAssets.map(item => {
-                                    if (item.status === 'local' || item.status === 'synced') {
-                                        const latestHash = localHashMap.get(item.id);
-                                        if (latestHash !== undefined && latestHash !== item.hash) {
-                                            changed = true;
-                                            const remoteNode = SyncService.remoteTree?.getNodeByHash(latestHash);
-                                            return { 
-                                                ...item, 
-                                                hash: latestHash,
-                                                status: remoteNode ? 'synced' : 'local'
-                                            };
-                                        }
-                                    }
-                                    return item;
-                                });
-                                return changed ? next : currentAssets;
-                            });
-                        }
-                    });
-
-                    if (!isMounted.current) return;
-
-                    const localWithHash = localAssets.filter(a => a.hash).length;
-                    console.log('[HomeScreen] Deep sync finished. Diff:', {
-                        upload: diff?.uploadAssets?.length,
-                        download: diff?.downloadAssets?.length,
-                        localWithHash,
-                    });
+                let after = firstPage.endCursor;
+                let hasNextPage = true;
+                while (hasNextPage && isMounted.current) {
+                    const result = await MediaService.getAssets(500, after);
+                    cumulativeLocalAssets = cumulativeLocalAssets.concat(result.assets || []);
+                    after = result.endCursor;
+                    hasNextPage = result.hasNextPage && (result.assets?.length > 0);
                     
-                 } catch (syncErr) {
-                     console.error('Error during async sync:', syncErr);
-                     if (isMounted.current) setError(String(syncErr.message || syncErr));
-                 } finally {
-                     if (isMounted.current) {
-                          // Final merge to catch any remainder and true download assets
-                          const merged = localAssets.map(a => {
-                              const hash = a.hash;
-                              if (!hash) return { ...a, status: 'local' };
-                              const remoteNode = SyncService.remoteTree?.getNodeByHash(hash);
-                              return {
-                                  ...a,
-                                  hash,
-                                  status: remoteNode ? 'synced' : 'local'
-                              };
-                          });
+                    // Merge and render incrementally
+                    mergeAndSetAssets(cumulativeLocalAssets, false);
+                    
+                    // Yield to let React render and UI stay smooth
+                    await new Promise(r => setTimeout(r, 100));
+                }
+            }
 
-                          const localHashes = new Set(merged.filter(a => a.hash).map(a => a.hash));
-                          let trueRemoteOnly = [];
-                          if (diff && diff.downloadAssets) {
-                              trueRemoteOnly = diff.downloadAssets
-                                  .filter(node => !localHashes.has(node.hash))
-                                  .map(node => ({
-                                      id: `remote-${node.hash}`,
-                                      hash: node.hash,
-                                      uri: `${serverUrl}/preview/${node.hash}?width=500&height=-1&token=${token}`,
-                                      status: 'remote',
-                                      creationTime: node.date ? node.date.getTime() : 0,
-                                      mediaType: isVideoExtension(node.tag) ? 'video' : 'photo'
-                                  }));
-                          } else {
-                              // Fallback: If sync failed, use precisely the same heuristic as before
-                              trueRemoteOnly = remoteAssets.filter(ra => !localHashes.has(ra.hash));
-                          }
+            // Wait for remote overview to finish if it hasn't already
+            await remoteOverviewPromise;
 
-                          merged.push(...trueRemoteOnly);
-                                merged.sort((a, b) => (b.creationTime || b.modificationTime || 0) - (a.creationTime || a.modificationTime || 0));
-                                
-                                // No-Op Detection: Only trigger expensive re-render if something actually changed
-                                const finalJson = JSON.stringify(merged.map(a => ({ id: a.id, status: a.status })));
-                                if (finalJson !== initialAssetsJson) {
-                                    GalleryStore.setAssets(merged);
-                                    setAssets(merged);
-                                    AutoBackupManager.syncQueueWithGallery(); // Restart queue on changes
+            if (!isMounted.current) return;
+
+            // 4. Perform Deep Hash Crypto-Sync
+            try {
+                setSyncProgress({ message: 'Syncing with server...' });
+                const diff = await SyncService.sync(cumulativeLocalAssets, (progress) => {
+                    if (!isMounted.current) return;
+                    setSyncProgress(progress);
+                    
+                    if (progress.triggerUiUpdate) {
+                        // Efficiently update only the items that got new hashes without full recalculation
+                        const localHashMap = new Map(cumulativeLocalAssets.map(a => [a.id, a.hash]));
+                        setAssets(currentAssets => {
+                            let changed = false;
+                            const next = currentAssets.map(item => {
+                                if (item.status === 'local' || item.status === 'synced') {
+                                    const latestHash = localHashMap.get(item.id);
+                                    if (latestHash !== undefined && latestHash !== item.hash) {
+                                        changed = true;
+                                        const remoteNode = SyncService.remoteTree?.getNodeByHash(latestHash);
+                                        return { 
+                                            ...item, 
+                                            hash: latestHash,
+                                            status: remoteNode ? 'synced' : 'local'
+                                        };
+                                    }
                                 }
-                           
-                           setSyncing(false);
-                           setSyncProgress(null);
-                           
-                           // Ensure queue starts safely if there are pending items post-load
-                           AutoBackupManager.syncQueueWithGallery();
-                      }
-                 }
-             }, 100);
+                                return item;
+                            });
+                            return changed ? next : currentAssets;
+                        });
+                    }
+                });
+
+                if (!isMounted.current) return;
+
+                console.log('[HomeScreen] Deep sync finished. Diff:', {
+                    upload: diff?.uploadAssets?.length,
+                    download: diff?.downloadAssets?.length,
+                });
+                
+            } catch (syncErr) {
+                console.error('Error during deep sync:', syncErr);
+                if (isMounted.current) setError(String(syncErr.message || syncErr));
+            } finally {
+                if (isMounted.current) {
+                    // One final explicit UI refresh to ensure any out-of-sync states are caught and to start backup queue
+                    mergeAndSetAssets(cumulativeLocalAssets, true);
+                    setSyncing(false);
+                    setSyncProgress(null);
+                }
+            }
 
         } catch (err) {
             console.error('Initial load error:', err);
@@ -724,9 +679,9 @@ export default function HomeScreen({ navigation }) {
                 <View style={{ flex: 1 }}>
                     <Text style={styles.title}>Lomorage</Text>
                     <Text style={styles.subtitle}>
-                        {`${assets.length} items${syncing ? ` • ${debugMode ? (syncProgress?.message || 'Syncing...') : 'Looking for new photos...'}` : error ? ' • Offline' : ''}`}
+                        {`${assets.length} items${syncing ? ` • ${syncProgress?.message || 'Checking local media...'}` : error ? ' • Offline' : ''}`}
                     </Text>
-                    {debugMode && syncing && syncProgress?.total > 0 && syncProgress?.current !== undefined ? (
+                    {syncing && syncProgress?.total > 0 && syncProgress?.current !== undefined ? (
                         <Text style={styles.progressText}>
                              {`(${syncProgress.current}/${syncProgress.total})`}
                         </Text>

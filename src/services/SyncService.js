@@ -411,10 +411,8 @@ class SyncService {
     }
   }
 
-  async buildLocalTree(assets, onProgress) {
-    console.log(`Building local Merkle Tree for ${assets.length} assets...`);
-    const root = new AssetMerkleRoot();
-    
+  async precalculateHashes(assets, onProgress) {
+    console.log(`Pre-calculating hashes for ${assets.length} assets...`);
     await this.loadLocalHashCache();
     let cacheUpdated = false;
     let hashedCount = 0;
@@ -427,16 +425,6 @@ class SyncService {
         console.warn(`[SyncService] Asset ${asset.id} has no URI, skipping hash calculation`);
         continue;
       }
-
-      const date = new Date(asset.creationTime);
-      const year = date.getUTCFullYear();
-      const month = date.getUTCMonth() + 1;
-      const day = date.getUTCDate();
-      
-      // Diagnostic Root Cause Log: Use this to compare with server-side EXIF clustering
-      if (this.debugMode) {
-          console.log(`[Diagnostic] Asset ${asset.hash.substring(0,8)} | TS: ${asset.creationTime} | Bucket: ${year}/${month}/${day} (UTC)`);
-      }
       
       let hash = asset.hash;
       if (!hash) {
@@ -445,16 +433,11 @@ class SyncService {
           hash = cached.hash;
         } else {
           try {
-            // Prefer the original content:// URI (asset.uri on Android). 
-            // Our native hasher calls MediaStore.setRequireOriginal() on content:// URIs,
-            // which bypasses Android's EXIF byte redaction and reads the original file.
-            // Fall back to file:// localUri if asset.uri is missing.
             let uri = asset.uri || asset.localUri;
             console.log(`[SyncService] Hashing asset ${asset.id} (${asset.filename}) via URI: ${uri}`);
             hash = await MediaService.calculateHash(uri);
             
             if (!hash) {
-              // Fallback: try file:// path from full asset info
               console.log(`[SyncService] Hash attempt 1 failed for ${asset.id}, resolving full asset info...`);
               const info = await MediaService.getAssetInfo(asset.id);
               if (info) {
@@ -469,14 +452,12 @@ class SyncService {
             console.error(`[SyncService] Error during hash calculation for ${asset.id}:`, hashError);
           }
 
-          
           if (hash) {
             this.localHashCache[asset.id] = {
               hash,
               modificationTime: asset.modificationTime,
-              // Add human-readable metadata for debugging
               filename: asset.filename || 'unknown',
-              size: asset.mediaSubtypes?.[0] || asset.mediaType // Expo doesn't provide size natively in getAssetsAsync, but this helps
+              size: asset.mediaSubtypes?.[0] || asset.mediaType
             };
             cacheUpdated = true;
           }
@@ -485,19 +466,12 @@ class SyncService {
       
       if (hash) {
         hashedCount++;
-        const lowerHash = hash.toLowerCase();
-        asset.hash = lowerHash; // Persist hash back to asset object for deduplication in UI
-        root.addAsset(year, month, day, lowerHash, asset.id, date);
+        asset.hash = hash.toLowerCase(); // Persist back to asset
         
-        // Save cache periodically so we don't start from scratch if app restarts
+        // Save cache periodically
         if (hashedCount % 20 === 0 && cacheUpdated) {
-          await this.saveLocalHashCache(); // Await to prevent Expo FS race conditions
+          await this.saveLocalHashCache();
           cacheUpdated = false;
-        }
-      } else {
-        // Log skip without being too spammy if it's many assets
-        if (hashedCount % 100 === 0) {
-          console.log(`[SyncService] No hash for asset ${asset.id} yet, count: ${hashedCount}`);
         }
       }
 
@@ -508,7 +482,7 @@ class SyncService {
           onProgress({ 
             current: i + 1, 
             total: assets.length, 
-            message: `Hashing local assets...`,
+            message: `Analyzing new media...`,
             triggerUiUpdate: true 
           });
         }
@@ -516,7 +490,42 @@ class SyncService {
     }
     
     if (cacheUpdated) {
-      this.saveLocalHashCache(); // Don't block on saving cache
+      this.saveLocalHashCache();
+    }
+    console.log(`[SyncService] Pre-calculated hashes for ${hashedCount}/${assets.length} assets`);
+  }
+
+  async buildLocalTree(assets, onProgress) {
+    console.log(`Building local Merkle Tree for ${assets.length} assets...`);
+    const root = new AssetMerkleRoot();
+    
+    await this.loadLocalHashCache();
+    let hashedCount = 0;
+    
+    for (let i = 0; i < assets.length; i++) {
+      const asset = assets[i];
+      let hash = asset.hash;
+      
+      if (!hash) {
+        const cached = this.localHashCache[asset.id];
+        if (cached && cached.modificationTime === asset.modificationTime) {
+          hash = cached.hash;
+        }
+      }
+
+      if (hash) {
+        hashedCount++;
+        const lowerHash = hash.toLowerCase();
+        asset.hash = lowerHash;
+        
+        const time = asset.creationTime || asset.modificationTime || Date.now();
+        const date = new Date(time);
+        const year = date.getUTCFullYear();
+        const month = date.getUTCMonth() + 1;
+        const day = date.getUTCDate();
+        
+        root.addAsset(year, month, day, lowerHash, asset.id, date);
+      }
     }
     
     console.log(`[SyncService] Built local tree with ${hashedCount}/${assets.length} hashed assets`);
@@ -700,6 +709,9 @@ class SyncService {
     this.isSyncing = true;
     
     try {
+      if (onProgress) onProgress({ message: 'Analyzing new media...', current: 0, total: localAssets.length });
+      await this.precalculateHashes(localAssets, onProgress);
+
       if (onProgress) onProgress({ message: 'Building local integrity map...' });
       await this.buildLocalTree(localAssets, onProgress);
       

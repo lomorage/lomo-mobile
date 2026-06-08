@@ -1,6 +1,6 @@
 {
   "name": "lomo-mobile",
-  "version": "1.0.42",
+  "version": "1.0.48",
   "main": "index.js",
   "scripts": {
     "start": "expo start",
@@ -42,6 +42,7 @@
     "expo-task-manager": "~14.0.6",
     "expo-video": "~3.0.16",
     "js-sha1": "^0.7.0",
+    "jszip": "^3.10.1",
     "lucide-react-native": "^0.564.0",
     "react": "19.1.0",
     "react-native": "0.81.5",
