@@ -4,6 +4,9 @@ jest.mock('expo-secure-store', () => ({
   setItemAsync: jest.fn(),
   deleteItemAsync: jest.fn(),
 }));
+jest.mock('@react-native-community/netinfo', () => ({
+  addEventListener: jest.fn(),
+}));
 
 import { formatServerUrl } from '../AuthService';
 
