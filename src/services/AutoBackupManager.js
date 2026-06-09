@@ -417,32 +417,44 @@ class AutoBackupManager {
             if (this.currentAssetId === asset.id) this.currentAssetId = null;
 
             if (error.isDifferentHash) {
-                console.log(`[AutoBackup] Invalidating hash cache for ${asset.id} due to different hash error. Will retry immediately.`);
+                console.log(`[AutoBackup] Invalidating hash cache for ${asset.id} due to different hash error. Will retry at end of queue.`);
                 const SyncService = require('./SyncService').default;
                 delete SyncService.localHashCache[asset.id];
                 delete asset.hash;
                 
-                // Push back to queue to retry
-                this.queue.splice(this.currentIndex, 0, asset);
+                // Push back to end of queue to retry later without blocking
+                this.queue.push(asset);
                 return false;
             }
 
             this.consecutiveErrors++;
-            this.retryCount++;
 
+            // Circuit Breaker: Only pause the ENTIRE system if we have 5 consecutive failures
+            if (this.consecutiveErrors < 5) {
+                console.warn(`[AutoBackup] Minor error encountered for ${asset.id}. Pushing to end of queue. System stays alive.`);
+                // We add a tiny artificial delay before resolving so the tight loop doesn't spin too fast on instant errors
+                await new Promise(r => setTimeout(r, 2000));
+                this.queue.push(asset);
+                return false;
+            }
+
+            // Circuit Breaker TRIPPED! Global Exponential Backoff
+            this.retryCount++;
             const backoffDelays = [5000, 30000, 120000]; // 5s, 30s, 2min
             if (this.retryCount <= backoffDelays.length) {
                 const delay = backoffDelays[this.retryCount - 1];
-                this.retryMessage = `Retrying in ${delay / 1000}s...`;
-                console.log(`[AutoBackup] Error encountered, backing off for ${delay}ms`);
+                this.retryMessage = `Network error. Resuming in ${delay / 1000}s...`;
+                console.log(`[AutoBackup] Circuit Breaker tripped! Backing off for ${delay}ms`);
                 this.pause(this.retryMessage);
                 this._retryTimer = setTimeout(() => {
                     this._retryTimer = null;
                     this.retryMessage = null;
+                    // Reset consecutive errors so we have 5 more chances after waking up
+                    this.consecutiveErrors = 0; 
                     this.resume();
                 }, delay);
             } else {
-                console.error('[AutoBackup] Max retries exceeded. Pausing permanently.');
+                console.error('[AutoBackup] Max retries exceeded. Circuit Breaker locked open permanently.');
                 this.pause('Backup failed. Check network or server.');
             }
             return false;
@@ -471,15 +483,14 @@ class AutoBackupManager {
             this._retryTimer = null;
         }
         
-        // ABORT the currently uploading file immediately!
+        // ABORT ALL currently uploading files immediately!
         try {
             const UploadService = require('./UploadService').default;
-            const currentAsset = this.queue[this.currentIndex];
-            if (currentAsset && currentAsset.id) {
-                UploadService.cancelUpload(currentAsset.id);
+            for (const assetId of this.activeAssetIds) {
+                UploadService.cancelUpload(assetId);
             }
         } catch (e) {
-            console.warn('[AutoBackup] Failed to cancel current upload:', e);
+            console.warn('[AutoBackup] Failed to cancel current uploads:', e);
         }
 
         this.updateNotification();

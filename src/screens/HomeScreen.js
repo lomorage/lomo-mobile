@@ -461,10 +461,9 @@ export default function HomeScreen({ navigation }) {
                 if (isMounted.current) {
                     GalleryStore.setAssets(combined);
                     setAssets(combined);
-                    if (finalize) {
-                        const AutoBackupManager = require('../services/AutoBackupManager').default;
-                        AutoBackupManager.syncQueueWithGallery();
-                    }
+                    // Always sync queue immediately so new photos start backing up on app launch
+                    const AutoBackupManager = require('../services/AutoBackupManager').default;
+                    AutoBackupManager.syncQueueWithGallery();
                 }
             };
 
