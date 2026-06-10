@@ -1,9 +1,10 @@
 import * as Crypto from 'expo-crypto';
 import * as FileSystem from 'expo-file-system/legacy';
-import * as SecureStore from 'expo-secure-store';
 import axios from 'axios';
-import MediaService from './MediaService';
 import AuthService from './AuthService';
+import MediaService from './MediaService';
+import AssetDBService from './AssetDBService';
+import * as SecureStore from 'expo-secure-store';
 
 /**
  * Parses a date string from the backend and ensures it's treated as UTC.
@@ -174,6 +175,32 @@ class MerkleNode {
     }
     return node;
   }
+
+  /**
+   * Deserializes from cache asynchronously to prevent blocking the JS thread (ANR).
+   * Yields control back to the event loop every 1000 nodes.
+   */
+  static async fromJSONAsync(data, yieldCounterRef = { count: 0 }) {
+    yieldCounterRef.count++;
+    if (yieldCounterRef.count % 1000 === 0) {
+      // Yield to JS event loop
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+
+    const node = new MerkleNode(data.id, data.hash);
+    node.tag = data.tag;
+    node.date = parseBackendDate(data.date);
+    if (data.children) {
+      const children = [];
+      for (const c of data.children) {
+        const child = await MerkleNode.fromJSONAsync(c, yieldCounterRef);
+        child.parentNode = node;
+        children.push(child);
+      }
+      node.children = children;
+    }
+    return node;
+  }
 }
 
 class AssetMerkleRoot extends MerkleNode {
@@ -246,6 +273,25 @@ class AssetMerkleRoot extends MerkleNode {
         child.parentNode = root;
         return child;
       });
+    }
+    root.updateAssetsMap();
+    return root;
+  }
+
+  static async fromJSONAsync(data) {
+    const root = new AssetMerkleRoot();
+    root.id = data.id;
+    root.hash = data.hash;
+
+    const yieldCounterRef = { count: 0 };
+    if (data.children) {
+      const children = [];
+      for (const c of data.children) {
+        const child = await MerkleNode.fromJSONAsync(c, yieldCounterRef);
+        child.parentNode = root;
+        children.push(child);
+      }
+      root.children = children;
     }
     root.updateAssetsMap();
     return root;
@@ -418,6 +464,7 @@ class SyncService {
     let hashedCount = 0;
     let completedCount = 0;
     let lastUiUpdateTime = Date.now();
+    let lastActualUiUpdateTime = Date.now();
     this._lastCacheSaveTime = Date.now();
     
     let hashConcurrency = 5;
@@ -500,11 +547,15 @@ class SyncService {
           const now = Date.now();
           if (now - lastUiUpdateTime > 250 || completedCount === assets.length) {
             lastUiUpdateTime = now;
+            const shouldTriggerUi = (now - lastActualUiUpdateTime > 3000) || (completedCount === assets.length);
+            if (shouldTriggerUi) {
+              lastActualUiUpdateTime = now;
+            }
             onProgress({ 
               current: completedCount, 
               total: assets.length, 
               message: `Analyzing new media...`,
-              triggerUiUpdate: true 
+              triggerUiUpdate: shouldTriggerUi
             });
           }
         }
@@ -531,6 +582,10 @@ class SyncService {
     let hashedCount = 0;
     
     for (let i = 0; i < assets.length; i++) {
+      // Yield to the JS event loop every 500 iterations to prevent blocking during tree construction
+      if (i % 500 === 0) {
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
       const asset = assets[i];
       let hash = asset.hash;
       
@@ -597,7 +652,13 @@ class SyncService {
       const info = await FileSystem.getInfoAsync(path);
       if (info.exists) {
         const data = await FileSystem.readAsStringAsync(path);
-        this.remoteTree = AssetMerkleRoot.fromJSON(JSON.parse(data));
+        this.remoteTree = await AssetMerkleRoot.fromJSONAsync(JSON.parse(data));
+
+        // Trigger background migration & healing asynchronously so we don't block
+        this._migrateAndHealRemoteAssets().catch(err => {
+          console.error('[SyncService] Failed to migrate/heal remote assets:', err);
+        });
+
         return true;
       }
     } catch (e) {
@@ -606,57 +667,246 @@ class SyncService {
     return false;
   }
 
-  async fetchRemoteOverview() {
+  async _migrateAndHealRemoteAssets() {
+    if (!this.remoteTree) return;
+    
+    await AssetDBService.init();
+    const sqlCount = await AssetDBService.getRemoteAssetsCount();
+    const treeAssets = Array.from(this.remoteTree.assetsMap.values());
+
+    console.log(`[SyncService] _migrateAndHealRemoteAssets: SQLite remote count=${sqlCount}, MerkleTree assets=${treeAssets.length}`);
+
+    // Case 1: JSON to SQLite migration
+    if (sqlCount === 0 && treeAssets.length > 0) {
+      console.log('[SyncService] Migrating remote assets from JSON cache to SQLite...');
+      await AssetDBService.insertRemoteAssets(treeAssets);
+      console.log('[SyncService] JSON to SQLite migration completed.');
+      
+      const { DeviceEventEmitter } = require('react-native');
+      DeviceEventEmitter.emit('remoteAssetsUpdated');
+      return;
+    }
+
+    // Case 2: Heal missing filenames in existing SQLite database
+    if (sqlCount > 0 && treeAssets.length > 0) {
+      const db = AssetDBService.db;
+      if (!db) return;
+      
+      try {
+        const nullRows = await db.getAllAsync(
+          `SELECT id, hash FROM MediaAsset WHERE isLocal = 0 AND filename IS NULL`
+        );
+        
+        if (nullRows && nullRows.length > 0) {
+          console.log(`[SyncService] Found ${nullRows.length} legacy remote assets with NULL filenames in SQLite. Healing...`);
+          const updates = [];
+          
+          const isVideoExtension = (filename) => {
+            if (!filename) return false;
+            const ext = filename.split('.').pop().toLowerCase();
+            return ['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext);
+          };
+
+          for (const row of nullRows) {
+            const node = this.remoteTree.getNodeByHash(row.hash);
+            if (node) {
+              const filename = node.tag || '';
+              const mediaType = isVideoExtension(filename) ? 'video' : 'photo';
+              updates.push({
+                hash: row.hash,
+                filename,
+                mediaType
+              });
+            }
+          }
+          
+          if (updates.length > 0) {
+            await AssetDBService.updateRemoteAssetFilenames(updates);
+            console.log(`[SyncService] Successfully healed ${updates.length} assets.`);
+            const { DeviceEventEmitter } = require('react-native');
+            DeviceEventEmitter.emit('remoteAssetsUpdated');
+          }
+        }
+      } catch (e) {
+        console.error('[SyncService] Error during auto-healing:', e);
+      }
+    }
+  }
+
+  /**
+   * Fetches month-level Merkle tree from the server (no individual asset details).
+   * This is a lightweight call that returns: { Hash, Years: [{ Year, Hash, Months: [{ Month, Hash }] }] }
+   * Used for incremental updates: compare month hashes against cache to find changed months.
+   */
+  async fetchRemoteMonthLevel() {
     const url = AuthService.getServerUrl();
     const token = AuthService.getToken();
     if (!url || !token) return null;
 
     try {
-      const response = await axios.get(`${url}/assets/merkletree?all=1`, {
+      // Without ?all=1, the backend returns only year/month level with hashes (no day/asset details)
+      const response = await axios.get(`${url}/assets/merkletree`, {
         headers: { Authorization: `token=${token}` },
-        timeout: 60000,
+        timeout: 30000,
         skipAutoProbe: true
       });
-      
-      const remoteRoot = new AssetMerkleRoot();
-      remoteRoot.hash = response.data.Hash;
-      
-      if (response.data.Years) {
-        for (const y of response.data.Years) {
-          const yearNode = remoteRoot.addChild(new MerkleNode(y.Year, y.Hash));
+      return response.data;
+    } catch (e) {
+      console.error('[SyncService] Failed to fetch month-level tree', e);
+      if (e.response && e.response.status === 401) {
+        const authError = new Error('Your session has expired. Please log out and log in again.');
+        authError.isAuthError = true;
+        throw authError;
+      }
+      const netError = new Error('Could not reach server. Check your connection and try again.');
+      netError.isNetworkError = true;
+      throw netError;
+    }
+  }
+
+  /**
+   * Incrementally updates the remote Merkle tree.
+   * Strategy (matching iOS lomo-ios/AssetSync.swift):
+   * 1. Fetch month-level hashes (lightweight, no individual assets)
+   * 2. Compare each month's hash against cached tree
+   * 3. Only fetch asset-level details for CHANGED months
+   * 4. Reuse cached subtrees for UNCHANGED months
+   * 
+   * On first run (empty cache), this falls back to fetching all months.
+   */
+  async fetchRemoteOverview() {
+    // Lazy-load remote tree cache from disk if it hasn't been loaded into memory yet
+    if (!this.remoteTree) {
+      console.log('[SyncService] Lazy-loading remote tree cache...');
+      await this.loadRemoteTree();
+    }
+
+    const url = AuthService.getServerUrl();
+    const token = AuthService.getToken();
+    if (!url || !token) return null;
+
+    try {
+      // Step 1: Fetch month-level tree (small payload)
+      const monthLevelData = await this.fetchRemoteMonthLevel();
+      if (!monthLevelData) return this.remoteTree;
+
+      // Quick check: if root hash hasn't changed, skip everything
+      if (this.remoteTree && this.remoteTree.hash &&
+          monthLevelData.Hash === this.remoteTree.hash) {
+        console.log('[SyncService] Remote tree unchanged (root hash match), skipping update');
+        return this.remoteTree;
+      }
+
+      // Step 2: Build new tree, reusing cached subtrees for unchanged months
+      const newRoot = new AssetMerkleRoot();
+      newRoot.hash = monthLevelData.Hash;
+      const cachedTree = this.remoteTree; // reference to current cache
+      const changedMonths = []; // months that need asset-level fetch
+
+      if (monthLevelData.Years) {
+        for (const y of monthLevelData.Years) {
+          const yearNode = newRoot.addChild(new MerkleNode(y.Year, y.Hash));
+          
           if (y.Months) {
             for (const m of y.Months) {
-              const monthNode = yearNode.addChild(new MerkleNode(m.Month, m.Hash));
-              if (m.Days) {
-                for (const d of m.Days) {
-                  const dayNode = monthNode.addChild(new MerkleNode(d.Day, d.Hash));
-                      if (d.Assets) {
-                        for (const a of d.Assets) {
-                          const lowerHash = a.Hash.toLowerCase();
-                          // Duplicate check within remote tree itself
-                          if (!remoteRoot.getNodeByHash(lowerHash)) {
-                            const assetNode = new MerkleNode(d.Day, lowerHash);
-                            if (this.debugMode) {
-                              console.log(`[Diagnostic - Remote] Asset ${lowerHash.substring(0,8)} | Server Bucket: ${y.Year}/${m.Month}/${d.Day}`);
-                            }
-                            assetNode.setTag(a.Name);
-                            if (a.Date) assetNode.setDate(parseBackendDate(a.Date));
-                            dayNode.children.push(assetNode);
-                            assetNode.parentNode = dayNode;
-                            remoteRoot.assetsMap.set(lowerHash, assetNode);
-                          }
-                        }
-                      }
+              // Check if this month exists in cache with same hash
+              const cachedYear = cachedTree?.getChild(y.Year);
+              const cachedMonth = cachedYear?.getChild(m.Month);
+              
+              if (cachedMonth && cachedMonth.hash === m.Hash && cachedMonth.children.length > 0) {
+                // UNCHANGED: reuse entire cached subtree (days + assets)
+                const reusedMonth = new MerkleNode(m.Month, m.Hash);
+                // Deep copy children from cache and re-parent them
+                for (const cachedDay of cachedMonth.children) {
+                  const dayClone = this._cloneSubtree(cachedDay);
+                  reusedMonth.addChild(dayClone);
                 }
+                yearNode.addChild(reusedMonth);
+                console.log(`[SyncService] Reusing cached month ${y.Year}/${m.Month} (hash match)`);
+              } else {
+                // CHANGED or NEW: add placeholder, will fetch details
+                const monthNode = yearNode.addChild(new MerkleNode(m.Month, m.Hash));
+                changedMonths.push({ year: y.Year, month: m.Month, node: monthNode });
               }
             }
           }
         }
       }
-      remoteRoot.updateAssetsMap();
-      this.remoteTree = remoteRoot;
+
+      console.log(`[SyncService] Incremental update: ${changedMonths.length} changed months to fetch`);
+
+      // Step 3: Fetch asset-level details concurrently for all changed months
+      const fetchPromises = changedMonths.map(async ({ year, month, node }) => {
+        try {
+          const monthData = await this.fetchRemoteMonth(year, month);
+          return { year, month, node, monthData };
+        } catch (monthErr) {
+          console.warn(`[SyncService] Failed to fetch month ${year}/${month}:`, monthErr.message);
+          return { year, month, node, monthData: null, isError: true };
+        }
+      });
+
+      const fetchedResults = await Promise.all(fetchPromises);
+      let yieldCounter = 0;
+
+      for (const { year, month, node, monthData } of fetchedResults) {
+        if (monthData && monthData.Days) {
+          for (const d of monthData.Days) {
+            const dayNode = node.addChild(new MerkleNode(d.Day, d.Hash));
+            if (d.Assets) {
+              for (const a of d.Assets) {
+                yieldCounter++;
+                if (yieldCounter % 1000 === 0) {
+                  // Yield back to the JS event loop to keep the UI responsive during tree building
+                  await new Promise(resolve => setTimeout(resolve, 0));
+                }
+
+                const lowerHash = a.Hash.toLowerCase();
+                // Duplicate check within tree
+                if (!newRoot.getNodeByHash(lowerHash)) {
+                  const assetNode = new MerkleNode(d.Day, lowerHash);
+                  assetNode.setTag(a.Name);
+                  if (a.Date) assetNode.setDate(parseBackendDate(a.Date));
+                  dayNode.children.push(assetNode);
+                  assetNode.parentNode = dayNode;
+                  newRoot.assetsMap.set(lowerHash, assetNode);
+                }
+              }
+            }
+          }
+        } else {
+          // Fallback to cached data if the response is invalid or request failed
+          console.log(`[SyncService] Falling back to cached data for ${year}/${month} (Failed/Empty fetch)`);
+          const cachedYear = cachedTree?.getChild(year);
+          const cachedMonth = cachedYear?.getChild(month);
+          if (cachedMonth && cachedMonth.children.length > 0) {
+            for (const cachedDay of cachedMonth.children) {
+              const dayClone = this._cloneSubtree(cachedDay);
+              node.addChild(dayClone);
+            }
+          }
+        }
+      }
+
+      // Step 4: Rebuild assets map and save
+      newRoot.updateAssetsMap();
+      this.remoteTree = newRoot;
       await this.saveRemoteTree();
-      return remoteRoot;
+
+      // Insert into local SQLite cache for Photo Map and Gallery Grid
+      await AssetDBService.init();
+      const remoteAssets = Array.from(newRoot.assetsMap.values());
+      await AssetDBService.insertRemoteAssets(remoteAssets);
+
+      // Emit event so the HomeScreen updates the gallery grid
+      const { DeviceEventEmitter } = require('react-native');
+      DeviceEventEmitter.emit('remoteAssetsUpdated');
+
+      // Trigger background GPS sync
+      this.syncRemoteGPS().catch(e => console.error('[SyncService] background remote GPS sync error:', e));
+      this.syncLocalGPS().catch(e => console.error('[SyncService] background local GPS sync error:', e));
+
+      return newRoot;
     } catch (e) {
       console.error('Failed to fetch remote overview', e);
       if (e.response && e.response.status === 401) {
@@ -664,11 +914,26 @@ class SyncService {
         authError.isAuthError = true;
         throw authError;
       }
-      // Network error (timeout, unreachable, etc.)
+      if (e.isAuthError || e.isNetworkError) throw e;
       const netError = new Error('Could not reach server. Check your connection and try again.');
       netError.isNetworkError = true;
       throw netError;
     }
+  }
+
+  /**
+   * Deep clones a MerkleNode subtree for reuse in a new tree.
+   * This is needed because nodes have parentNode references that need to be re-wired.
+   */
+  _cloneSubtree(node) {
+    const clone = new MerkleNode(node.id, node.hash);
+    clone.tag = node.tag;
+    clone.date = node.date;
+    for (const child of node.children) {
+      const childClone = this._cloneSubtree(child);
+      clone.addChild(childClone);
+    }
+    return clone;
   }
 
   async fetchRemoteMonth(year, month) {
@@ -686,6 +951,112 @@ class SyncService {
     } catch (e) {
       console.error(`Failed to fetch remote month ${year}/${month}`, e);
       return null;
+    }
+  }
+
+  async syncRemoteGPS() {
+    if (this._isSyncingGPS) return;
+    this._isSyncingGPS = true;
+    try {
+      const url = AuthService.getServerUrl();
+      const token = AuthService.getToken();
+      if (!url || !token) return;
+
+      while (true) {
+        const pending = await AssetDBService.getRemoteAssetsWithoutGeo(50);
+        if (!pending || pending.length === 0) break;
+
+        const updates = [];
+        const noGeoIds = [];
+
+        // Batch requests with simple Promise.all
+        const promises = pending.map(async (asset) => {
+          try {
+            const res = await axios.get(`${url}/asset/metadata/${asset.hash}`, {
+              headers: { Authorization: `token=${token}` },
+              timeout: 10000,
+              skipAutoProbe: true
+            });
+            const data = res.data;
+            if (data && (data.Latitude !== 0 || data.Longitude !== 0)) {
+              updates.push({
+                id: asset.id,
+                latitude: data.Latitude,
+                longitude: data.Longitude
+              });
+            } else {
+              noGeoIds.push(asset.id);
+            }
+          } catch (e) {
+            // If it's a 404 client error, it means the server has no metadata for this hash,
+            // so we mark it as processed (noGeoIds) to avoid querying again.
+            // For other network/server errors, we do NOT add it to noGeoIds so it is retried later.
+            if (e.response && e.response.status === 404) {
+              noGeoIds.push(asset.id);
+            } else {
+              console.warn(`[SyncService] Failed to fetch GPS for ${asset.hash}:`, e.message);
+            }
+          }
+        });
+
+        await Promise.all(promises);
+
+        if (updates.length > 0) {
+          await AssetDBService.updateAssetsGeo(updates);
+        }
+        if (noGeoIds.length > 0) {
+          await AssetDBService.markAssetsGeoProcessed(noGeoIds);
+        }
+      }
+    } finally {
+      this._isSyncingGPS = false;
+    }
+  }
+
+  async syncLocalGPS() {
+    if (this._isSyncingLocalGPS) return;
+    this._isSyncingLocalGPS = true;
+    try {
+      while (true) {
+        const pending = await AssetDBService.getLocalAssetsWithoutGeo(50);
+        if (!pending || pending.length === 0) break;
+
+        const updates = [];
+        const noGeoIds = [];
+
+        // Batch requests with Promise.all
+        const promises = pending.map(async (asset) => {
+          try {
+            const info = await MediaService.getAssetInfo(asset.id);
+            if (info && info.location && (info.location.latitude !== 0 || info.location.longitude !== 0)) {
+              updates.push({
+                id: asset.id,
+                latitude: info.location.latitude,
+                longitude: info.location.longitude
+              });
+            } else {
+              noGeoIds.push(asset.id);
+            }
+          } catch (e) {
+            console.error(`[SyncService] Failed to fetch local GPS for asset ${asset.id}:`, e);
+            noGeoIds.push(asset.id); // mark processed anyway to avoid retry loop
+          }
+        });
+
+        await Promise.all(promises);
+
+        if (updates.length > 0) {
+          await AssetDBService.updateAssetsGeo(updates);
+        }
+        if (noGeoIds.length > 0) {
+          await AssetDBService.markAssetsGeoProcessed(noGeoIds);
+        }
+
+        // yield to event loop briefly
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+    } finally {
+      this._isSyncingLocalGPS = false;
     }
   }
 
@@ -759,10 +1130,16 @@ class SyncService {
     }
   }
 
-  async findDiffWithDrillDown(localNode, remoteNode, upload, download, level, ctx = { networkError: false }) {
+  async findDiffWithDrillDown(localNode, remoteNode, upload, download, level, ctx = { networkError: false, yieldCount: 0 }) {
     if (!localNode || !remoteNode) return;
     // Short-circuit: stop all further fetching if a network error occurred in this sync pass
     if (ctx.networkError) return;
+
+    ctx.yieldCount = (ctx.yieldCount || 0) + 1;
+    if (ctx.yieldCount % 200 === 0) {
+      // Yield to event loop every 200 nodes compared/visited
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
 
     const diff = localNode.compareNodeList(localNode.children, remoteNode.children, level === 'asset' ? 'hash' : 'id');
 
@@ -771,6 +1148,10 @@ class SyncService {
       const potentials = [];
       this.localTree._collectAssets(node, potentials);
       for (const asset of potentials) {
+        ctx.yieldCount++;
+        if (ctx.yieldCount % 500 === 0) {
+          await new Promise(resolve => setTimeout(resolve, 0));
+        }
         // Double-check global existence to prevent phantom uploads from bucket mismatches
         if (!this.remoteTree.getNodeByHash(asset.hash)) {
           upload.push(asset);
@@ -805,6 +1186,10 @@ class SyncService {
         const potentials = [];
         this.remoteTree._collectAssets(node, potentials);
         for (const assetNode of potentials) {
+          ctx.yieldCount++;
+          if (ctx.yieldCount % 500 === 0) {
+            await new Promise(resolve => setTimeout(resolve, 0));
+          }
           if (!this.localTree.getNodeByHash(assetNode.hash)) {
             download.push(assetNode);
           }

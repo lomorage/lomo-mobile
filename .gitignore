@@ -49,3 +49,5 @@ jest_output*.txt
 # macOS
 .DS_Store
 *.pem
+
+.env

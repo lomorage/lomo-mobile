@@ -11,6 +11,7 @@ import AssetDetailScreen from '../screens/AssetDetailScreen';
 import LoginScreen from '../screens/LoginScreen';
 import RegisterScreen from '../screens/RegisterScreen';
 import SettingsScreen from '../screens/SettingsScreen';
+import PhotoMapScreen from '../screens/PhotoMapScreen';
 import AuthService from '../services/AuthService';
 
 const Stack = createStackNavigator();
@@ -70,6 +71,11 @@ function Navigation() {
                         <Stack.Screen 
                             name="Settings" 
                             component={SettingsScreen} 
+                            options={{ headerShown: false }}
+                        />
+                        <Stack.Screen 
+                            name="PhotoMap" 
+                            component={PhotoMapScreen} 
                             options={{ headerShown: false }}
                         />
                         <Stack.Screen 

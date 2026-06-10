@@ -1,6 +1,6 @@
 {
   "name": "lomo-mobile",
-  "version": "1.0.68",
+  "version": "1.0.86",
   "main": "index.js",
   "scripts": {
     "start": "expo start",
@@ -21,6 +21,7 @@
     "@react-navigation/stack": "^7.7.1",
     "@shopify/flash-list": "2.0.2",
     "axios": "^1.13.5",
+    "dotenv": "^17.4.2",
     "expo": "~54.0.33",
     "expo-background-task": "~1.0.0",
     "expo-battery": "~10.0.8",
@@ -41,6 +42,7 @@
     "expo-notifications": "~0.32.16",
     "expo-secure-store": "~15.0.8",
     "expo-sharing": "~14.0.8",
+    "expo-sqlite": "~16.0.10",
     "expo-status-bar": "~3.0.9",
     "expo-task-manager": "~14.0.6",
     "expo-updates-interface": "2.0.0",
@@ -53,12 +55,14 @@
     "react-native-argon2": "^4.0.0",
     "react-native-gesture-handler": "~2.28.0",
     "react-native-hash": "^3.0.3",
+    "react-native-maps": "^1.27.2",
     "react-native-reanimated": "~4.1.1",
     "react-native-safe-area-context": "~5.6.0",
     "react-native-screens": "~4.16.0",
     "react-native-svg": "15.12.1",
     "react-native-worklets": "0.5.1",
-    "react-native-zeroconf": "^0.14.0"
+    "react-native-zeroconf": "^0.14.0",
+    "supercluster": "^8.0.1"
   },
   "private": true,
   "devDependencies": {

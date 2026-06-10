@@ -10,7 +10,10 @@ if [ $? -ne 0 ]; then
 fi
 
 # Navigate to android directory
-cd android || exit
+echo "Syncing native configurations (Prebuild)..."
+npx expo prebuild -p android || exit 1
+
+cd android || exit 1
 
 echo "Building Production APK..."
 ./gradlew assembleRelease

@@ -342,12 +342,16 @@ class AuthService {
   }
 
   async login(serverAddress, username, password, serverName = null) {
-    if (!serverAddress || !username || !password) {
+    const trimmedServer = serverAddress ? serverAddress.trim() : '';
+    const trimmedUsername = username ? username.trim() : '';
+    const trimmedPassword = password ? password.trim() : '';
+
+    if (!trimmedServer || !trimmedUsername || !trimmedPassword) {
       throw new Error('Server, username, and password are required');
     }
 
     try {
-      const url = formatServerUrl(serverAddress);
+      const url = formatServerUrl(trimmedServer);
       
       const atsCheck = this.checkIOSATS(url);
       if (!atsCheck.valid) {
@@ -359,12 +363,12 @@ class AuthService {
 
       // Hash the password with Argon2id, matching the lomo-ios implementation
       console.log('Hashing password with Argon2id...');
-      const hashedPassword = await hashPassword(username, password);
+      const hashedPassword = await hashPassword(trimmedUsername, trimmedPassword);
       console.log('Password hashed successfully.');
 
       // Build Basic auth header: base64(username:hashedPassword:deviceId)
       const deviceId = 'android-lomo-mobile';
-      const credentials = `${username}:${hashedPassword}:${deviceId}`;
+      const credentials = `${trimmedUsername}:${hashedPassword}:${deviceId}`;
       
       // btoa is not available in React Native, use a simple base64 alternative
       const base64Credentials = stringToBase64(credentials);
@@ -385,10 +389,10 @@ class AuthService {
         await SecureStore.setItemAsync(TOKEN_KEY, this.token);
         
         // Save user's explicit input as remote URL unless it's clearly a private IP
-        const isLocalOrIp = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?::[0-9]+)?$/.test(serverAddress) || 
-                            /^\[?[0-9a-fA-F:]+\]?(?::[0-9]+)?$/.test(serverAddress) || 
-                            /^localhost(?::[0-9]+)?$/.test(serverAddress) ||
-                            /\.local(?::[0-9]+)?$/.test(serverAddress);
+        const isLocalOrIp = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?::[0-9]+)?$/.test(trimmedServer) || 
+                            /^\[?[0-9a-fA-F:]+\]?(?::[0-9]+)?$/.test(trimmedServer) || 
+                            /^localhost(?::[0-9]+)?$/.test(trimmedServer) ||
+                            /\.local(?::[0-9]+)?$/.test(trimmedServer);
         if (isLocalOrIp) {
             await this.setLocalUrl(this.serverUrl);
         } else {
@@ -396,7 +400,7 @@ class AuthService {
         }
         
         await SecureStore.setItemAsync(SERVER_KEY, this.serverUrl);
-        await SecureStore.setItemAsync(USERNAME_KEY, username);
+        await SecureStore.setItemAsync(USERNAME_KEY, trimmedUsername);
         if (this.serverName) {
             await SecureStore.setItemAsync(SERVER_NAME_KEY, this.serverName);
         }
@@ -464,19 +468,24 @@ class AuthService {
   }
 
   async register(serverAddress, username, password, homedir, nickName = "", autoLogin = true) {
-    if (!serverAddress || !username || !password || !homedir) {
+    const trimmedServer = serverAddress ? serverAddress.trim() : '';
+    const trimmedUsername = username ? username.trim() : '';
+    const trimmedPassword = password ? password.trim() : '';
+    const trimmedHomedir = homedir ? homedir.trim() : '';
+
+    if (!trimmedServer || !trimmedUsername || !trimmedPassword || !trimmedHomedir) {
       throw new Error('All fields are required');
     }
 
     try {
-      const url = formatServerUrl(serverAddress);
-      const hashedPassword = await hashPassword(username, password);
+      const url = formatServerUrl(trimmedServer);
+      const hashedPassword = await hashPassword(trimmedUsername, trimmedPassword);
 
       const payload = {
-        Name: username,
+        Name: trimmedUsername,
         Password: hashedPassword,
         NickName: nickName,
-        HomeDir: homedir,
+        HomeDir: trimmedHomedir,
         BotUser: false
       };
 
@@ -489,7 +498,7 @@ class AuthService {
       if (response.status === 200) {
         if (autoLogin) {
             console.log('Registration successful, logging in...');
-            return await this.login(serverAddress, username, password);
+            return await this.login(trimmedServer, trimmedUsername, trimmedPassword);
         }
         return true;
       } else {

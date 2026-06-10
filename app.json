@@ -2,7 +2,7 @@
   "expo": {
     "name": "lomo-mobile",
     "slug": "lomo-mobile",
-    "version": "1.0.68",
+    "version": "1.0.86",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -78,7 +78,8 @@
       ],
       "expo-secure-store",
       "expo-task-manager",
-      "expo-background-task"
+      "expo-background-task",
+      "expo-sqlite"
     ],
     "web": {
       "favicon": "./assets/favicon.png"

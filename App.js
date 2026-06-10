@@ -7,10 +7,16 @@ import * as BackgroundTask from 'expo-background-task';
 import * as TaskManager from 'expo-task-manager';
 import RootNavigator from './src/navigation/RootNavigator';
 import { BACKGROUND_BACKUP_TASK } from './src/services/AutoBackupManager';
+import AssetDBService from './src/services/AssetDBService';
 
 export default function App() {
   useEffect(() => {
-    const registerTask = async () => {
+    const initApp = async () => {
+      try {
+        await AssetDBService.init();
+      } catch (err) {
+        console.error('[App] Failed to init AssetDBService:', err);
+      }
       try {
         const isRegistered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_BACKUP_TASK);
         if (!isRegistered) {
@@ -25,7 +31,7 @@ export default function App() {
         console.error('[App] Background task registration failed:', err);
       }
     };
-    registerTask();
+    initApp();
   }, []);
 
   return (
