@@ -11,6 +11,7 @@ import AssetDBService from '../services/AssetDBService';
 import AutoBackupManager from '../services/AutoBackupManager';
 import { useSettings } from '../context/SettingsContext';
 import GalleryStore from '../store/GalleryStore';
+import MetricsTracker from '../utils/MetricsTracker';
 
 const { width } = Dimensions.get('window');
 const COLUMN_COUNT = 3;
@@ -255,12 +256,20 @@ export default function HomeScreen({ navigation }) {
                     filename: filename
                 };
             });
-
-        const combined = [...initialAssets, ...filteredRemoteAssets].sort((a, b) => {
-            const timeA = a.creationTime || a.modificationTime || 0;
-            const timeB = b.creationTime || b.modificationTime || 0;
-            return timeB - timeA;
-        });
+        // Fast O(N) linear merge of two pre-sorted arrays (descending)
+        const combined = [];
+        let i = 0, j = 0;
+        while (i < initialAssets.length && j < filteredRemoteAssets.length) {
+            const timeA = initialAssets[i].creationTime || initialAssets[i].modificationTime || 0;
+            const timeB = filteredRemoteAssets[j].creationTime || 0;
+            if (timeA >= timeB) {
+                combined.push(initialAssets[i++]);
+            } else {
+                combined.push(filteredRemoteAssets[j++]);
+            }
+        }
+        while (i < initialAssets.length) combined.push(initialAssets[i++]);
+        while (j < filteredRemoteAssets.length) combined.push(filteredRemoteAssets[j++]);
         
         if (isMounted.current) {
             GalleryStore.setAssets(combined);
@@ -268,6 +277,7 @@ export default function HomeScreen({ navigation }) {
             // Always sync queue immediately so new photos start backing up on app launch
             const AutoBackupManager = require('../services/AutoBackupManager').default;
             AutoBackupManager.syncQueueWithGallery();
+            MetricsTracker.end('HomeScreen_mergeAndSetAssets', `(Assets: ${combined.length}, finalize: ${finalize})`);
         }
     }, []);
 
@@ -309,24 +319,30 @@ export default function HomeScreen({ navigation }) {
             }
         };
 
+        const now = new Date();
+        const nowD = now.getDate(), nowM = now.getMonth(), nowY = now.getFullYear();
+        const yd = new Date(now); yd.setDate(nowD - 1);
+        const ydD = yd.getDate(), ydM = yd.getMonth(), ydY = yd.getFullYear();
+        const headerKeyCache = new Map();
+
         assets.forEach((asset, globalIndex) => {
             // Priority: 1. CreationTime (EXIF), 2. ModificationTime (File Metadata), 3. 0 fallback
             const time = asset.creationTime || asset.modificationTime || 0;
-            const d = new Date(time);
-            
-            // Fast integer-based key for grouping (YYYYMMDD for Today/Yesterday, otherwise YYYYMM)
-            const now = new Date();
-            const isToday = d.getDate() === now.getDate() && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-            const yesterday = new Date(now);
-            yesterday.setDate(now.getDate() - 1);
-            const isYesterday = d.getDate() === yesterday.getDate() && d.getMonth() === yesterday.getMonth() && d.getFullYear() === yesterday.getFullYear();
-            
-            let headerKey;
-            if (isToday) headerKey = 'today';
-            else if (isYesterday) headerKey = 'yesterday';
-            else {
-                // Monthly grouping for everything else to eliminate gaps
-                headerKey = d.getFullYear() * 100 + (d.getMonth() + 1);
+            const dayInt = Math.floor(time / 86400000); // Fast integer math for caching
+
+            let headerKey = headerKeyCache.get(dayInt);
+            if (headerKey === undefined) {
+                const d = new Date(time);
+                const isToday = d.getDate() === nowD && d.getMonth() === nowM && d.getFullYear() === nowY;
+                const isYesterday = !isToday && d.getDate() === ydD && d.getMonth() === ydM && d.getFullYear() === ydY;
+                
+                if (isToday) headerKey = 'today';
+                else if (isYesterday) headerKey = 'yesterday';
+                else {
+                    // Monthly grouping for everything else to eliminate gaps
+                    headerKey = d.getFullYear() * 100 + (d.getMonth() + 1);
+                }
+                headerKeyCache.set(dayInt, headerKey);
             }
 
             if (headerKey !== currentHeaderKey) {
@@ -803,7 +819,7 @@ export default function HomeScreen({ navigation }) {
         return true;
     });
 
-    const renderItem = useCallback(({ item }) => {
+    const renderItem = useCallback(({ item, extraData }) => {
         if (item.type === 'header') {
             return (
                 <View style={styles.dateHeaderContainer}>
@@ -815,14 +831,14 @@ export default function HomeScreen({ navigation }) {
             <TimelineRow 
                 item={item}
                 navigation={navigation}
-                debugMode={debugMode}
-                currentAssetId={backupStateRef.current.currentAssetId}
-                activeAssetIds={backupStateRef.current.activeAssetIds}
-                isScrubbing={isScrubbing}
+                debugMode={extraData?.debugMode || false}
+                currentAssetId={extraData?.currentAssetId || null}
+                activeAssetIds={extraData?.activeAssetIds || []}
+                isScrubbing={extraData?.isScrubbing || false}
                 activeLoadCountRef={globalActiveLoadCount}
             />
         );
-    }, [navigation, debugMode, isScrubbing]);
+    }, [navigation]);
 
     const smoothOverallProgress = useMemo(() => {
         if (!backupState || backupState.totalCount === 0) return 1;

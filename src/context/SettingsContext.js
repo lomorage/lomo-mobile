@@ -10,7 +10,7 @@ export function SettingsProvider({ children }) {
     const [chargingOnlyBackup, setChargingOnlyBackup] = useState(false);
     const [nightBackupOnly, setNightBackupOnly] = useState(false);
     const [adaptiveConcurrencyEnabled, setAdaptiveConcurrencyEnabled] = useState(true);
-    const [hashConcurrency, setHashConcurrency] = useState(5);
+    const [hashConcurrency, setHashConcurrency] = useState(2);
     const [uploadConcurrency, setUploadConcurrency] = useState(3);
     const [isLoading, setIsLoading] = useState(true);
 

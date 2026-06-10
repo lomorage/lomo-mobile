@@ -1,4 +1,5 @@
 import * as SQLite from 'expo-sqlite';
+import MetricsTracker from '../utils/MetricsTracker';
 
 class AssetDBService {
   constructor() {
@@ -58,39 +59,47 @@ class AssetDBService {
   async insertLocalAssets(assets) {
     if (!this.db || !assets || assets.length === 0) return;
 
-    try {
-      // Using a transaction for batch insert
-      await this.db.withExclusiveTransactionAsync(async () => {
-        const statement = await this.db.prepareAsync(`
-          INSERT OR REPLACE INTO MediaAsset 
-          (id, isLocal, hasGeo, latitude, longitude, createTime, mediaType) 
-          VALUES (?, 1, ?, ?, ?, ?, ?)
-        `);
-        
-        try {
-          for (const asset of assets) {
-            // If the asset has location data, we mark hasGeo = 1
-            const hasGeo = (asset.location && asset.location.latitude) ? 1 : 0;
-            const lat = asset.location?.latitude || 0.0;
-            const lon = asset.location?.longitude || 0.0;
-            
-            await statement.executeAsync(
-              asset.id,
-              hasGeo,
-              lat,
-              lon,
-              asset.creationTime || 0,
-              asset.mediaType || 'photo'
-            );
+    return await MetricsTracker.measure('AssetDBService_insertLocalAssets', async () => {
+      try {
+        // Using a transaction for batch insert
+        await this.db.withExclusiveTransactionAsync(async () => {
+          const statement = await this.db.prepareAsync(`
+            INSERT OR REPLACE INTO MediaAsset 
+            (id, isLocal, hasGeo, latitude, longitude, createTime, mediaType) 
+            VALUES (?, 1, ?, ?, ?, ?, ?)
+          `);
+          
+          try {
+            let counter = 0;
+            for (const asset of assets) {
+              // If the asset has location data, we mark hasGeo = 1
+              const hasGeo = (asset.location && asset.location.latitude) ? 1 : 0;
+              const lat = asset.location?.latitude || 0.0;
+              const lon = asset.location?.longitude || 0.0;
+              
+              statement.executeSync(
+                asset.id,
+                hasGeo,
+                lat,
+                lon,
+                asset.creationTime || 0,
+                asset.mediaType || 'photo'
+              );
+
+              if (++counter % 500 === 0) {
+                  await new Promise(resolve => setTimeout(resolve, 5));
+              }
+            }
+          } finally {
+            await statement.finalizeAsync();
           }
-        } finally {
-          await statement.finalizeAsync();
-        }
-      });
-      console.log(`[AssetDBService] Inserted ${assets.length} local assets.`);
-    } catch (error) {
-      console.error('[AssetDBService] Failed to insert local assets:', error);
-    }
+        });
+        console.log(`[AssetDBService] Inserted ${assets.length} local assets.`);
+      } catch (error) {
+        console.error('[AssetDBService] Failed to insert local assets:', error);
+        throw error;
+      }
+    }, `(Assets: ${assets.length})`);
   }
 
   // Insert remote assets discovered via SyncService
@@ -103,54 +112,62 @@ class AssetDBService {
       return ['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext);
     };
 
-    try {
-      // 1. Get all existing IDs in SQLite database to filter out duplicates before inserting
-      const existingRows = await this.db.getAllAsync('SELECT id FROM MediaAsset');
-      const existingIds = new Set(existingRows.map(r => r.id));
+    return await MetricsTracker.measure('AssetDBService_insertRemoteAssets', async () => {
+      try {
+        // 1. Get all existing IDs in SQLite database to filter out duplicates before inserting
+        const existingRows = await this.db.getAllAsync('SELECT id FROM MediaAsset');
+        const existingIds = new Set(existingRows.map(r => r.id));
 
-      // 2. Filter out already present assets to avoid expensive no-op statement executions
-      const newAssets = assets.filter(asset => !existingIds.has(asset.hash));
-      if (newAssets.length === 0) {
-        console.log('[AssetDBService] No new remote assets to insert.');
-        return;
-      }
-
-      console.log(`[AssetDBService] Inserting ${newAssets.length} new remote assets out of ${assets.length}...`);
-
-      await this.db.withExclusiveTransactionAsync(async () => {
-        const statement = await this.db.prepareAsync(`
-          INSERT OR IGNORE INTO MediaAsset 
-          (id, hash, isLocal, hasGeo, latitude, longitude, createTime, mediaType, filename) 
-          VALUES (?, ?, 0, 0, 0.0, 0.0, ?, ?, ?)
-        `);
-        
-        try {
-          for (const asset of newAssets) {
-            // remote asset uses hash as ID
-            const id = asset.hash;
-            // createTime might be string or timestamp, best effort parse
-            let createTime = 0;
-            if (asset.date) {
-              createTime = new Date(asset.date).getTime();
-            }
-            const filename = asset.tag || asset.filename || '';
-            const mType = isVideoExtension(filename) ? 'video' : 'photo';
-            await statement.executeAsync(
-              id,
-              asset.hash,
-              createTime,
-              mType,
-              filename
-            );
-          }
-        } finally {
-          await statement.finalizeAsync();
+        // 2. Filter out already present assets to avoid expensive no-op statement executions
+        const newAssets = assets.filter(asset => !existingIds.has(asset.hash));
+        if (newAssets.length === 0) {
+          console.log('[AssetDBService] No new remote assets to insert.');
+          return;
         }
-      });
-      console.log(`[AssetDBService] Inserted ${newAssets.length} remote assets.`);
-    } catch (error) {
-      console.error('[AssetDBService] Failed to insert remote assets:', error);
-    }
+
+        console.log(`[AssetDBService] Inserting ${newAssets.length} new remote assets out of ${assets.length}...`);
+
+        await this.db.withExclusiveTransactionAsync(async () => {
+          const statement = await this.db.prepareAsync(`
+            INSERT OR IGNORE INTO MediaAsset 
+            (id, hash, isLocal, hasGeo, latitude, longitude, createTime, mediaType, filename) 
+            VALUES (?, ?, 0, 0, 0.0, 0.0, ?, ?, ?)
+          `);
+          
+          try {
+            let counter = 0;
+            for (const asset of newAssets) {
+              // remote asset uses hash as ID
+              const id = asset.hash;
+              // createTime might be string or timestamp, best effort parse
+              let createTime = 0;
+              if (asset.date) {
+                createTime = new Date(asset.date).getTime();
+              }
+              const filename = asset.tag || asset.filename || '';
+              const mType = isVideoExtension(filename) ? 'video' : 'photo';
+              statement.executeSync(
+                id,
+                asset.hash,
+                createTime,
+                mType,
+                filename
+              );
+
+              if (++counter % 500 === 0) {
+                  await new Promise(resolve => setTimeout(resolve, 5));
+              }
+            }
+          } finally {
+            await statement.finalizeAsync();
+          }
+        });
+        console.log(`[AssetDBService] Inserted ${newAssets.length} remote assets.`);
+      } catch (error) {
+        console.error('[AssetDBService] Failed to insert remote assets:', error);
+        throw error;
+      }
+    }, `(Assets: ${assets.length})`);
   }
 
   // Get remote assets that need their GPS data fetched
@@ -252,7 +269,7 @@ class AssetDBService {
     if (!this.db) return [];
     try {
       const rows = await this.db.getAllAsync(
-        `SELECT hash, filename, createTime, mediaType FROM MediaAsset WHERE isLocal = 0`
+        `SELECT hash, filename, createTime, mediaType FROM MediaAsset WHERE isLocal = 0 ORDER BY createTime DESC`
       );
       return rows.map(r => ({
         id: `remote-${r.hash}`,
