@@ -991,7 +991,9 @@ export default function HomeScreen({ navigation }) {
                                 {backupState.isPaused 
                                     ? `Paused (${backupState.pendingCount} left)` 
                                     : backupState.pendingCount > 0 
-                                        ? `Backing up... ${Math.round(smoothOverallProgress * 100)}%`
+                                        ? (backupState.totalCount > 0
+                                            ? `Backing up... ${backupState.totalCount - backupState.pendingCount}/${backupState.totalCount} (${Math.round(smoothOverallProgress * 100)}%)`
+                                            : `Backing up... ${Math.round(smoothOverallProgress * 100)}%`)
                                         : 'Backup Complete!'}
                             </Text>
                             {backupState.pendingCount > 0 && (
