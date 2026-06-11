@@ -365,12 +365,6 @@ export default function PhotoMapScreen() {
   const openPhoto = useCallback((asset) => {
     setHdLoaded(false);
     setSelectedAsset(asset);
-    // Prefetch HD image in background, then swap
-    if (asset.fullUrl) {
-      Image.prefetch(asset.fullUrl)
-        .then(() => setHdLoaded(true))
-        .catch(() => {}); // keep showing thumbnail if HD fails
-    }
   }, []);
 
   const renderCluster = (cluster) => {
@@ -561,13 +555,23 @@ export default function PhotoMapScreen() {
 
           {selectedAsset && (
             <View style={styles.progressiveImageContainer}>
+              {/* Low-res thumbnail background (instantly visible) */}
               <Image 
-                source={{ uri: hdLoaded ? selectedAsset.fullUrl : selectedAsset.thumbUrl }} 
+                source={{ uri: selectedAsset.thumbUrl }} 
                 style={styles.fullScreenImage} 
                 contentFit="contain"
-                blurRadius={hdLoaded ? 0 : 15}
-                transition={300}
               />
+
+              {/* High-res HD image foreground (fades in on top once loaded) */}
+              {selectedAsset.fullUrl && (
+                <Image 
+                  source={{ uri: selectedAsset.fullUrl }} 
+                  style={styles.fullScreenImage} 
+                  contentFit="contain"
+                  transition={300}
+                  onLoad={() => setHdLoaded(true)}
+                />
+              )}
 
               {/* Loading pill while HD is loading */}
               {!hdLoaded && selectedAsset.fullUrl && (
@@ -697,11 +701,13 @@ const styles = StyleSheet.create({
     width: '100%',
     justifyContent: 'center',
     alignItems: 'center',
+    backgroundColor: '#000',
   },
   fullScreenImage: {
     position: 'absolute',
     width: '100%',
     height: '100%',
+    backgroundColor: 'transparent',
   },
   hdImageOverlay: {
     zIndex: 1,

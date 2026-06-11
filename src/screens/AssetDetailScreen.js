@@ -424,6 +424,10 @@ export default function AssetDetailScreen({ route, navigation }) {
             ? item.uri
             : ((item.mediaType === 'video' && isRemote) ? item.uri : uri);
 
+        const thumbUri = (item.status === 'remote' && item.hash)
+            ? `${baseUrl}/preview/${item.hash}?width=320&height=-1&token=${token}`
+            : MediaService.normalizeUri(item.uri);
+
         return (
             <View style={{ width, height: height * 0.7, justifyContent: 'center', alignItems: 'center', position: 'relative' }}>
                 <ZoomableMedia 
@@ -435,6 +439,8 @@ export default function AssetDetailScreen({ route, navigation }) {
                             {/* The instantly-loading thumbnail from disk cache */}
                             <Image
                                 source={{ uri: staticImageUri }}
+                                placeholder={{ uri: thumbUri }}
+                                placeholderContentFit="contain"
                                 style={[styles.image, { position: 'absolute' }]}
                                 contentFit="contain"
                                 cachePolicy="disk"
@@ -461,9 +467,11 @@ export default function AssetDetailScreen({ route, navigation }) {
                                 alignItems: 'center',
                                 transform: [{ scale: scaleAnim }]
                             }}>
-                                {/* Static Image is ALWAYS rendered as the base background layer */}
+                                {/* Static Image with native placeholder scaled to fit */}
                                 <Image
                                     source={{ uri: staticImageUri }}
+                                    placeholder={{ uri: thumbUri }}
+                                    placeholderContentFit="contain"
                                     style={styles.image}
                                     contentFit="contain"
                                     cachePolicy="disk"
@@ -620,6 +628,7 @@ const styles = StyleSheet.create({
     image: {
         width: width,
         height: height * 0.7,
+        backgroundColor: 'transparent',
     },
     footer: {
         padding: 20,

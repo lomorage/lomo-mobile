@@ -693,7 +693,7 @@ export default function HomeScreen({ navigation }) {
                     contentFit="cover"
                     cachePolicy="memory-disk"
                     transition={0}
-                    recyclingKey={asset.id} // Help expo-image recycle correctly in FlashList
+                    recyclingKey={asset.id ? String(asset.id) : null} // Help expo-image recycle correctly in FlashList
                     onLoadStart={() => {
                         if (asset.status === 'remote') {
                             loadStartTime.current = Date.now();
