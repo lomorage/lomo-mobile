@@ -63,6 +63,30 @@ const PhotoMarker = React.memo(({ coordinate, thumbUrl, onPress, isMapMoving }) 
   );
 });
 
+const ClusterMarker = React.memo(({ coordinate, pointCount, onPress, isMapMoving }) => {
+  const [tracksViewChanges, setTracksViewChanges] = useState(true);
+
+  useEffect(() => {
+    setTracksViewChanges(true);
+    const timer = setTimeout(() => {
+      setTracksViewChanges(false);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [pointCount]);
+
+  return (
+    <Marker
+      coordinate={coordinate}
+      tracksViewChanges={isMapMoving || tracksViewChanges}
+      onPress={onPress}
+    >
+      <View style={styles.clusterWrap}>
+        <Text style={styles.clusterText}>{pointCount}</Text>
+      </View>
+    </Marker>
+  );
+});
+
 const MAX_ZOOM = 16;
 
 export default function PhotoMapScreen() {
@@ -114,24 +138,96 @@ export default function PhotoMapScreen() {
 
   const [coordsToFit, setCoordsToFit] = useState([]);
   const [mapReady, setMapReady] = useState(false);
+  const [mapMeasured, setMapMeasured] = useState(false);
   const hasFitted = useRef(false);
 
-  useEffect(() => {
-    if (mapReady && coordsToFit.length > 0 && mapRef.current && !hasFitted.current) {
-      hasFitted.current = true;
-      setTimeout(() => {
-        mapRef.current?.fitToCoordinates(coordsToFit, {
-          edgePadding: { top: 100, right: 50, bottom: 50, left: 50 },
-          animated: true,
-        });
-      }, 500);
+  const fitMapToCoords = useCallback((coordinates) => {
+    if (!coordinates || coordinates.length === 0 || !mapRef.current) {
+      console.log(`[PhotoMapScreen] fitMapToCoords aborted: coordinates length = ${coordinates ? coordinates.length : 'null'}, mapRef = ${!!mapRef.current}`);
+      return;
     }
-  }, [mapReady, coordsToFit]);
+
+    console.log(`[PhotoMapScreen] fitMapToCoords: fitting ${coordinates.length} coordinates.`);
+
+    if (coordinates.length === 1) {
+      const singleCoord = coordinates[0];
+      console.log(`[PhotoMapScreen] fitMapToCoords: 1 coordinate found. Animating to:`, singleCoord);
+      mapRef.current.animateToRegion({
+        latitude: singleCoord.latitude,
+        longitude: singleCoord.longitude,
+        latitudeDelta: 0.05,
+        longitudeDelta: 0.05 * ASPECT_RATIO,
+      }, 500);
+      return;
+    }
+
+    let minLat = 90;
+    let maxLat = -90;
+    let minLon = 180;
+    let maxLon = -180;
+
+    for (const c of coordinates) {
+      if (c.latitude < minLat) minLat = c.latitude;
+      if (c.latitude > maxLat) maxLat = c.latitude;
+      if (c.longitude < minLon) minLon = c.longitude;
+      if (c.longitude > maxLon) maxLon = c.longitude;
+    }
+
+    const latDelta = maxLat - minLat;
+    const lonDelta = maxLon - minLon;
+
+    console.log(`[PhotoMapScreen] fitMapToCoords: calculated min/max lat: [${minLat}, ${maxLat}], lon: [${minLon}, ${maxLon}], delta lat: ${latDelta}, lon: ${lonDelta}`);
+
+    if (latDelta < 0.01 && lonDelta < 0.01) {
+      const targetLat = (minLat + maxLat) / 2;
+      const targetLon = (minLon + maxLon) / 2;
+      console.log(`[PhotoMapScreen] fitMapToCoords: coordinates are extremely close. Animating to centered region: [${targetLat}, ${targetLon}]`);
+      mapRef.current.animateToRegion({
+        latitude: targetLat,
+        longitude: targetLon,
+        latitudeDelta: 0.02,
+        longitudeDelta: 0.02 * ASPECT_RATIO,
+      }, 500);
+    } else {
+      console.log(`[PhotoMapScreen] fitMapToCoords: calling fitToCoordinates.`);
+      mapRef.current.fitToCoordinates(coordinates, {
+        edgePadding: { top: 100, right: 50, bottom: 50, left: 50 },
+        animated: true,
+      });
+    }
+  }, []);
 
   useEffect(() => {
+    console.log(`[PhotoMapScreen] camera fit useEffect hook: mapReady=${mapReady}, mapMeasured=${mapMeasured}, coordsCount=${coordsToFit.length}, hasFitted=${hasFitted.current}`);
+    if (mapReady && mapMeasured && coordsToFit.length > 0 && mapRef.current && !hasFitted.current) {
+      hasFitted.current = true;
+      console.log(`[PhotoMapScreen] camera fit conditions met! Scheduling fitMapToCoords in 500ms...`);
+      setTimeout(() => {
+        fitMapToCoords(coordsToFit);
+      }, 500);
+    }
+  }, [mapReady, mapMeasured, coordsToFit, fitMapToCoords]);
+
+  useEffect(() => {
+    console.log(`[PhotoMapScreen] focus useEffect hook: isFocused=${isFocused}`);
     if (isFocused) {
       loadAssets();
     }
+  }, [isFocused]);
+
+  useEffect(() => {
+    const { DeviceEventEmitter } = require('react-native');
+    console.log(`[PhotoMapScreen] remoteAssetsUpdated listener useEffect hook: isFocused=${isFocused}`);
+    const sub = DeviceEventEmitter.addListener('remoteAssetsUpdated', () => {
+      console.log(`[PhotoMapScreen] remoteAssetsUpdated event received, isFocused=${isFocused}`);
+      if (isFocused) {
+        loadAssets();
+      }
+    });
+    return () => {
+      console.log(`[PhotoMapScreen] remoteAssetsUpdated listener cleanup`);
+      sub.remove();
+    };
   }, [isFocused]);
 
   const loadAssets = async () => {
@@ -191,12 +287,16 @@ export default function PhotoMapScreen() {
       updateClusters(region);
 
       // Fit map to show all photos
+      console.log(`[PhotoMapScreen] loadAssets: validAssets count=${validAssets.length}`);
       if (validAssets.length > 0) {
         const coordinates = validAssets.map(a => ({
           latitude: a.latitude,
           longitude: a.longitude,
         }));
+        console.log(`[PhotoMapScreen] loadAssets: setting coordsToFit with ${coordinates.length} coordinates.`);
         setCoordsToFit(coordinates);
+      } else {
+        console.log(`[PhotoMapScreen] loadAssets: no valid assets with geo coordinates found.`);
       }
     } catch (e) {
       console.error('[PhotoMapScreen] Failed to load assets:', e);
@@ -279,10 +379,11 @@ export default function PhotoMapScreen() {
 
     if (isCluster) {
       return (
-        <Marker
+        <ClusterMarker
           key={`cluster-${cluster.id}`}
           coordinate={{ latitude, longitude }}
-          tracksViewChanges={isMapMoving}
+          pointCount={point_count}
+          isMapMoving={isMapMoving}
           onPress={(e) => {
             e.stopPropagation();
             try {
@@ -325,11 +426,7 @@ export default function PhotoMapScreen() {
               }
             }
           }}
-        >
-          <View style={styles.clusterWrap}>
-            <Text style={styles.clusterText}>{point_count}</Text>
-          </View>
-        </Marker>
+        />
       );
     }
 
@@ -360,7 +457,17 @@ export default function PhotoMapScreen() {
         initialRegion={region}
         onRegionChange={onRegionChange}
         onRegionChangeComplete={onRegionChangeComplete}
-        onMapReady={() => setMapReady(true)}
+        onLayout={(e) => {
+          const { width, height } = e.nativeEvent.layout;
+          console.log(`[PhotoMapScreen] MapView onLayout: width=${width}, height=${height}`);
+          if (width > 0 && height > 0) {
+            setMapMeasured(true);
+          }
+        }}
+        onMapReady={() => {
+          console.log(`[PhotoMapScreen] MapView onMapReady fired.`);
+          setMapReady(true);
+        }}
         clusteringEnabled={false} 
         pitchEnabled={true}
         rotateEnabled={false}

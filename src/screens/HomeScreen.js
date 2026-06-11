@@ -672,10 +672,11 @@ export default function HomeScreen({ navigation }) {
         }
     });
 
-    const RenderAsset = memo(({ asset, globalIndex, navigation, debugMode, currentAssetId, activeAssetIds, isScrubbing, activeLoadRef }) => {
+    const RenderAsset = memo(({ asset, globalIndex, navigation, debugMode, currentAssetId, activeAssetIds, activeLoadRef }) => {
         const loadStartTime = useRef(0);
-        // Scrub-Lock: Skip remote photo fetching while scrubbing to prevent network congestion.
-        const shouldLoad = !isScrubbing || asset.status === 'local';
+        // We do NOT use manual Scrub-Lock here because FlashList recycling and expo-image 
+        // handle network cancellation automatically when views go off-screen. 
+        // Conditionally unmounting <Image> breaks FlashList's native view recycling.
 
         const thumbnailUri = (asset.status === 'remote' && asset.hash)
             ? `${AuthService.getServerUrl()}/preview/${asset.hash}?width=320&height=-1&token=${AuthService.getToken()}`
@@ -683,42 +684,38 @@ export default function HomeScreen({ navigation }) {
 
         return (
             <TouchableOpacity
-                key={`asset-${asset.id}`}
                 style={styles.itemContainer}
                 onPress={() => navigation.navigate('AssetDetail', { initialIndex: globalIndex })}
             >
-                {shouldLoad ? (
-                    <Image
-                        source={{ uri: thumbnailUri }}
-                        style={styles.image}
-                        contentFit="cover"
-                        cachePolicy="memory-disk"
-                        transition={0}
-                        onLoadStart={() => {
-                            if (asset.status === 'remote') {
-                                loadStartTime.current = Date.now();
-                                activeLoadRef.current++;
+                <Image
+                    source={{ uri: thumbnailUri }}
+                    style={styles.image}
+                    contentFit="cover"
+                    cachePolicy="memory-disk"
+                    transition={0}
+                    recyclingKey={asset.id} // Help expo-image recycle correctly in FlashList
+                    onLoadStart={() => {
+                        if (asset.status === 'remote') {
+                            loadStartTime.current = Date.now();
+                            activeLoadRef.current++;
+                        }
+                    }}
+                    onLoad={() => {
+                        if (asset.status === 'remote' && loadStartTime.current > 0) {
+                            activeLoadRef.current--;
+                            const diff = Date.now() - loadStartTime.current;
+                            if (debugMode) console.log(`[Metrics] Remote asset ${asset.hash.substring(0, 8)} loaded in ${diff}ms (Concurrent: ${activeLoadRef.current})`);
+                            loadStartTime.current = 0;
+                        }
+                    }}
+                    onError={(e) => {
+                            if (asset.status === 'remote') activeLoadRef.current--;
+                            if (debugMode) {
+                                const diff = loadStartTime.current > 0 ? Date.now() - loadStartTime.current : 'N/A';
+                                console.log(`[Metrics] Remote asset ${asset.id} error after ${diff}ms (Concurrent: ${activeLoadRef.current}):`, e.error || e);
                             }
-                        }}
-                        onLoad={() => {
-                            if (asset.status === 'remote' && loadStartTime.current > 0) {
-                                activeLoadRef.current--;
-                                const diff = Date.now() - loadStartTime.current;
-                                if (debugMode) console.log(`[Metrics] Remote asset ${asset.hash.substring(0, 8)} loaded in ${diff}ms (Concurrent: ${activeLoadRef.current})`);
-                                loadStartTime.current = 0;
-                            }
-                        }}
-                        onError={(e) => {
-                             if (asset.status === 'remote') activeLoadRef.current--;
-                             if (debugMode) {
-                                 const diff = loadStartTime.current > 0 ? Date.now() - loadStartTime.current : 'N/A';
-                                 console.log(`[Metrics] Remote asset ${asset.id} error after ${diff}ms (Concurrent: ${activeLoadRef.current}):`, e.error || e);
-                             }
-                        }}
-                    />
-                ) : (
-                    <View style={[styles.image, { backgroundColor: '#f0f0f0' }]} />
-                )}
+                    }}
+                />
                 <StatusIcon item={asset} currentAssetId={currentAssetId} activeAssetIds={activeAssetIds} />
                 {isLivePhoto(asset) ? (
                     <View style={styles.livePhotoBadge}>
@@ -744,7 +741,6 @@ export default function HomeScreen({ navigation }) {
             </TouchableOpacity>
         );
     }, (prevProps, nextProps) => {
-        if (prevProps.isScrubbing !== nextProps.isScrubbing) return false;
         if (
             prevProps.asset.id !== nextProps.asset.id || 
             prevProps.asset.status !== nextProps.asset.status ||
@@ -763,18 +759,17 @@ export default function HomeScreen({ navigation }) {
         return true;
     });
 
-    const TimelineRow = memo(({ item, navigation, debugMode, currentAssetId, activeAssetIds, isScrubbing, activeLoadCountRef }) => (
+    const TimelineRow = memo(({ item, navigation, debugMode, currentAssetId, activeAssetIds, activeLoadCountRef }) => (
         <View style={styles.row}>
-            {item.items.map((asset) => (
+            {item.items.map((asset, index) => (
                 <RenderAsset 
-                    key={asset.id}
+                    key={`col-${index}`}
                     asset={asset} 
                     globalIndex={asset.globalIndex} 
                     navigation={navigation}
                     debugMode={debugMode}
                     currentAssetId={currentAssetId}
                     activeAssetIds={activeAssetIds}
-                    isScrubbing={isScrubbing}
                     activeLoadRef={activeLoadCountRef}
                 />
             ))}
@@ -783,7 +778,6 @@ export default function HomeScreen({ navigation }) {
             ))}
         </View>
     ), (prevProps, nextProps) => {
-        if (prevProps.isScrubbing !== nextProps.isScrubbing) return false;
         if (prevProps.debugMode !== nextProps.debugMode) return false;
 
         const prevItems = prevProps.item.items;

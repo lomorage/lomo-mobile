@@ -987,15 +987,23 @@ class SyncService {
 
   async syncRemoteGPS() {
     return await MetricsTracker.measure('SyncService_syncRemoteGPS', async () => {
-      if (this._isSyncingGPS) return;
+      if (this._isSyncingGPS) {
+        console.log('[SyncService] syncRemoteGPS: already running, skipping.');
+        return;
+      }
       this._isSyncingGPS = true;
+      console.log('[SyncService] syncRemoteGPS started.');
       try {
         const url = AuthService.getServerUrl();
         const token = AuthService.getToken();
-        if (!url || !token) return;
+        if (!url || !token) {
+          console.log('[SyncService] syncRemoteGPS aborted: server url or token is missing.');
+          return;
+        }
 
         while (true) {
           const pending = await AssetDBService.getRemoteAssetsWithoutGeo(50);
+          console.log(`[SyncService] syncRemoteGPS: retrieved ${pending ? pending.length : 0} pending assets without geo.`);
           if (!pending || pending.length === 0) break;
 
           const updates = [];
@@ -1020,9 +1028,6 @@ class SyncService {
                 noGeoIds.push(asset.id);
               }
             } catch (e) {
-              // If it's a 404 client error, it means the server has no metadata for this hash,
-              // so we mark it as processed (noGeoIds) to avoid querying again.
-              // For other network/server errors, we do NOT add it to noGeoIds so it is retried later.
               if (e.response && e.response.status === 404) {
                 noGeoIds.push(asset.id);
               } else {
@@ -1033,8 +1038,12 @@ class SyncService {
 
           await Promise.all(promises);
 
+          console.log(`[SyncService] syncRemoteGPS batch done: updates count = ${updates.length}, noGeo count = ${noGeoIds.length}`);
+
           if (updates.length > 0) {
             await AssetDBService.updateAssetsGeo(updates);
+            const { DeviceEventEmitter } = require('react-native');
+            DeviceEventEmitter.emit('remoteAssetsUpdated');
           }
           if (noGeoIds.length > 0) {
             await AssetDBService.markAssetsGeoProcessed(noGeoIds);
@@ -1042,17 +1051,23 @@ class SyncService {
         }
       } finally {
         this._isSyncingGPS = false;
+        console.log('[SyncService] syncRemoteGPS finished.');
       }
     });
   }
 
   async syncLocalGPS() {
     return await MetricsTracker.measure('SyncService_syncLocalGPS', async () => {
-      if (this._isSyncingLocalGPS) return;
+      if (this._isSyncingLocalGPS) {
+        console.log('[SyncService] syncLocalGPS: already running, skipping.');
+        return;
+      }
       this._isSyncingLocalGPS = true;
+      console.log('[SyncService] syncLocalGPS started.');
       try {
         while (true) {
           const pending = await AssetDBService.getLocalAssetsWithoutGeo(50);
+          console.log(`[SyncService] syncLocalGPS: retrieved ${pending ? pending.length : 0} pending assets without geo.`);
           if (!pending || pending.length === 0) break;
 
           const updates = [];
@@ -1079,8 +1094,12 @@ class SyncService {
 
           await Promise.all(promises);
 
+          console.log(`[SyncService] syncLocalGPS batch done: updates count = ${updates.length}, noGeo count = ${noGeoIds.length}`);
+
           if (updates.length > 0) {
             await AssetDBService.updateAssetsGeo(updates);
+            const { DeviceEventEmitter } = require('react-native');
+            DeviceEventEmitter.emit('remoteAssetsUpdated');
           }
           if (noGeoIds.length > 0) {
             await AssetDBService.markAssetsGeoProcessed(noGeoIds);
@@ -1091,6 +1110,7 @@ class SyncService {
         }
       } finally {
         this._isSyncingLocalGPS = false;
+        console.log('[SyncService] syncLocalGPS finished.');
       }
     });
   }
