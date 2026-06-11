@@ -262,6 +262,67 @@ public class ExpoLomoHasherModule: Module {
         }
       }
     }
+
+    AsyncFunction("sliceFileAsync") { (sourceUri: String, destUri: String, offset: Int64, promise: Promise) in
+      DispatchQueue.global(qos: .userInitiated).async {
+        do {
+          let sourceUrl: URL
+          if sourceUri.hasPrefix("file://") {
+            guard let url = URL(string: sourceUri) else {
+              promise.reject("INVALID_URI", "Invalid source URI: \(sourceUri)")
+              return
+            }
+            sourceUrl = url
+          } else {
+            sourceUrl = URL(fileURLWithPath: sourceUri)
+          }
+
+          let destUrl: URL
+          if destUri.hasPrefix("file://") {
+            guard let url = URL(string: destUri) else {
+              promise.reject("INVALID_URI", "Invalid destination URI: \(destUri)")
+              return
+            }
+            destUrl = url
+          } else {
+            destUrl = URL(fileURLWithPath: destUri)
+          }
+
+          guard FileManager.default.isReadableFile(atPath: sourceUrl.path) else {
+            promise.reject("ERR_FILE_NOT_READABLE", "Source file not readable: \(sourceUrl.path)")
+            return
+          }
+
+          let destDir = destUrl.deletingLastPathComponent()
+          try FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true, attributes: nil)
+
+          try? FileManager.default.removeItem(at: destUrl)
+          FileManager.default.createFile(atPath: destUrl.path, contents: nil, attributes: nil)
+
+          let sourceHandle = try FileHandle(forReadingFrom: sourceUrl)
+          defer { try? sourceHandle.close() }
+
+          let destHandle = try FileHandle(forWritingTo: destUrl)
+          defer { try? destHandle.close() }
+
+          try sourceHandle.seek(toOffset: UInt64(offset))
+
+          let bufferSize = 1024 * 1024 // 1MB chunks
+          while autoreleasepool(invoking: {
+            let data = sourceHandle.readData(ofLength: bufferSize)
+            if !data.isEmpty {
+              destHandle.write(data)
+              return true
+            }
+            return false
+          }) {}
+
+          promise.resolve(true)
+        } catch {
+          promise.reject("SLICE_ERROR", "Failed to slice file: \(error.localizedDescription)")
+        }
+      }
+    }
   }
 
   /// Extracts the local identifier and fetches a PHAsset.

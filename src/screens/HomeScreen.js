@@ -80,6 +80,7 @@ export default function HomeScreen({ navigation }) {
     const [backupState, setBackupState] = useState({ isBackingUp: false, pendingCount: 0, totalCount: 0, currentAssetId: null });
     const [backupProgress, setBackupProgress] = useState(0);
     const [activeUploads, setActiveUploads] = useState({});
+    const [uploadStats, setUploadStats] = useState({});
     const [isBottomSheetVisible, setBottomSheetVisible] = useState(false);
     const [error, setError] = useState(null);
     const [permissionStatus, setPermissionStatus] = useState('granted');
@@ -140,6 +141,20 @@ export default function HomeScreen({ navigation }) {
         const segments = path.split('/').map(segment => encodeURIComponent(segment));
         return 'file://' + segments.join('/');
     }, []);
+
+const formatBytes = (bytes) => {
+    if (!bytes || bytes <= 0) return '';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+const formatSpeed = (bytesPerSec) => {
+    if (!bytesPerSec || bytesPerSec <= 0) return '';
+    if (bytesPerSec < 1024) return `${bytesPerSec.toFixed(0)} B/s`;
+    if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
+    return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`;
+};
 
     const mergeAndSetAssets = useCallback((currentLocalAssets, finalize = false) => {
         const isVideoExtension = (filename) => {
@@ -513,19 +528,19 @@ export default function HomeScreen({ navigation }) {
         const subBackupState = DeviceEventEmitter.addListener('backupState', (state) => {
             setBackupState(state);
             if (state.activeUploads) {
-                // Throttle React state updates slightly to avoid dropping frames if events fire extremely fast
-                setActiveUploads(prev => {
-                    // Only update if it's actually different to avoid unnecessary re-renders
-                    return { ...prev, ...state.activeUploads };
-                });
+                setActiveUploads(prev => ({ ...prev, ...state.activeUploads }));
+            }
+            if (state.uploadStats) {
+                setUploadStats(prev => ({ ...prev, ...state.uploadStats }));
             }
         });
         const subBackupProgress = DeviceEventEmitter.addListener('backupProgress', (data) => {
             setBackupProgress(data.progress || 0);
             if (data.activeUploads) {
-                setActiveUploads(prev => {
-                    return { ...prev, ...data.activeUploads };
-                });
+                setActiveUploads(prev => ({ ...prev, ...data.activeUploads }));
+            }
+            if (data.uploadStats) {
+                setUploadStats(prev => ({ ...prev, ...data.uploadStats }));
             }
         });
 
@@ -1014,11 +1029,18 @@ export default function HomeScreen({ navigation }) {
                                 const asset = assets.find(a => a.id === assetId);
                                 if (!asset) return null;
                                 const prog = activeUploads[assetId] || 0;
+                                const stats = uploadStats[assetId];
+                                const sizeStr = stats && stats.totalBytes ? formatBytes(stats.totalBytes) : '';
+                                const speedStr = stats && stats.speed ? formatSpeed(stats.speed) : '';
+                                const statsText = [sizeStr, speedStr].filter(Boolean).join(' • ');
                                 return (
                                     <View key={asset.id} style={styles.activeUploadRow}>
                                         <Image source={{ uri: safeUri(asset.uri) }} style={styles.activeUploadThumb} cachePolicy="disk" />
                                         <View style={{ flex: 1, marginLeft: 12 }}>
                                             <Text style={styles.activeUploadName} numberOfLines={1}>{asset.filename || asset.id}</Text>
+                                            {statsText ? (
+                                                <Text style={styles.activeUploadStatsText} numberOfLines={1}>{statsText}</Text>
+                                            ) : null}
                                             <View style={styles.progressBarBgSmall}>
                                                 <View style={[styles.progressBarFillSmall, { width: `${prog * 100}%` }]} />
                                             </View>
@@ -1286,8 +1308,13 @@ const styles = StyleSheet.create({
     activeUploadName: {
         fontSize: 14,
         color: '#1c1c1e',
-        marginBottom: 6,
+        marginBottom: 2,
         fontWeight: '500',
+    },
+    activeUploadStatsText: {
+        fontSize: 11,
+        color: '#8e8e93',
+        marginBottom: 6,
     },
     progressBarBgSmall: {
         height: 6,

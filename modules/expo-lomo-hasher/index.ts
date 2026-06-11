@@ -14,6 +14,7 @@ type ExpoLomoHasherModuleType = {
   prepareLivePhotoBackupAsync(uri: string): Promise<LivePhotoBackupResult | null>;
   extractVideoFromZipAsync(zipUri: string): Promise<string>;
   getLocalLivePhotoVideoUriAsync(uri: string): Promise<string>;
+  sliceFileAsync(sourceUri: string, destUri: string, offset: number): Promise<boolean>;
 };
 
 const ExpoLomoHasher = requireNativeModule<ExpoLomoHasherModuleType>('ExpoLomoHasher');
@@ -37,3 +38,8 @@ export async function extractVideoFromZipAsync(zipUri: string): Promise<string> 
 export async function getLocalLivePhotoVideoUriAsync(uri: string): Promise<string> {
   return await ExpoLomoHasher.getLocalLivePhotoVideoUriAsync(uri);
 }
+
+export async function sliceFileAsync(sourceUri: string, destUri: string, offset: number): Promise<boolean> {
+  return await ExpoLomoHasher.sliceFileAsync(sourceUri, destUri, offset);
+}
+

@@ -3,6 +3,7 @@ import { Platform } from 'react-native';
 import MediaService from './MediaService';
 import AuthService from './AuthService';
 import axios from 'axios';
+import { sliceFileAsync } from '../../modules/expo-lomo-hasher';
 
 class UploadService {
     constructor() {
@@ -88,84 +89,71 @@ class UploadService {
 
     /**
      * Attempt a resumable (partial) upload.
-     * Uses native FileSystem chunking to avoid JS Blob OOM crashes on large files.
+     * Slices the remaining part of the file natively and uploads it in a single PATCH request.
      */
     async _resumeUpload({ assetId, uri, hash, uploadUrl, token, receivedBytes, ifMatch, fileSize, onProgress }) {
-        const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB chunks (Speeds up upload 5x while still avoiding RN bridge ANR)
-        let position = receivedBytes;
-        let currentIfMatch = ifMatch;
         this.cancelledTasks.delete(assetId);
-        
+
         const tempChunkDir = FileSystem.cacheDirectory + 'lomorage_chunks/';
         await FileSystem.makeDirectoryAsync(tempChunkDir, { intermediates: true }).catch(()=>{});
-        const tempChunkUri = tempChunkDir + `chunk_${assetId}_${hash}.tmp`;
+        const tempSliceUri = tempChunkDir + `slice_${assetId}_${hash}.tmp`;
 
         try {
-            console.log(`[UploadService] Resuming upload via native slices from byte ${position}...`);
+            console.log(`[UploadService] Slicing remaining bytes natively starting from ${receivedBytes}...`);
+            await sliceFileAsync(uri, tempSliceUri, receivedBytes);
 
-            while (position < fileSize) {
-                if (this.cancelledTasks.has(assetId)) {
-                    console.log(`[UploadService] Resumable upload cancelled by user at byte ${position}`);
-                    throw new Error('Upload cancelled by user');
-                }
+            console.log(`[UploadService] Initiating native PATCH upload of the remaining slice...`);
+            
+            const serverUrl = AuthService.getServerUrl();
+            const isHttps = serverUrl.toLowerCase().startsWith('https://');
+            const sessionType = Platform.OS === 'ios'
+                ? (isHttps ? (FileSystem.FileSystemSessionType?.BACKGROUND ?? 0) : (FileSystem.FileSystemSessionType?.FOREGROUND ?? 1))
+                : (FileSystem.FileSystemSessionType?.BACKGROUND ?? FileSystem.FileSystemUploadSessionType?.BACKGROUND ?? 0);
 
-                const endPosition = Math.min(position + CHUNK_SIZE, fileSize);
-                const length = endPosition - position;
-
-                // Native slice: read slice to base64, then write back to a temp binary file.
-                // Using 1MB chunks ensures we don't block the JS thread with massive strings.
-                const chunkBase64 = await FileSystem.readAsStringAsync(uri, {
-                    encoding: FileSystem.EncodingType.Base64,
-                    position: position,
-                    length: length
-                });
-
-                await FileSystem.writeAsStringAsync(tempChunkUri, chunkBase64, {
-                    encoding: FileSystem.EncodingType.Base64
-                });
-
-                const uploadResult = await FileSystem.uploadAsync(uploadUrl, tempChunkUri, {
+            const task = FileSystem.createUploadTask(
+                uploadUrl,
+                tempSliceUri,
+                {
                     httpMethod: 'PATCH',
                     headers: {
                         'Authorization': `token=${token}`,
                         'Content-Type': 'application/octet-stream',
-                        'If-Match': currentIfMatch
+                        'If-Match': ifMatch
+                    },
+                    sessionType,
+                },
+                (progress) => {
+                    if (onProgress && fileSize > 0) {
+                        const totalSent = receivedBytes + progress.totalBytesSent;
+                        onProgress({
+                            fraction: Math.min(1, totalSent / fileSize),
+                            loaded: totalSent,
+                            total: fileSize
+                        });
                     }
-                });
-                
-                if (uploadResult.status === 200 || uploadResult.status === 201 || uploadResult.status === 409) {
-                    // Upload complete! (Final chunk uploaded and overall file hash matched)
-                    if (onProgress) onProgress(1);
-                    return { success: true, hash };
-                } else if (uploadResult.status === 400 || uploadResult.status === 500) {
-                    // Lomorage backend returns 400/500 (ErrAssetDiffHash) if the chunk appended successfully 
-                    // but the accumulated file's SHA1 doesn't match the final file's SHA1 yet (because it's not the last chunk).
-                    // We verify if it actually appended by calling HEAD again to get the new If-Match header!
-                    const status = await this.checkUploadStatus(hash);
-                    if (status.resumable && status.receivedBytes === endPosition) {
-                        // Success! The chunk appended perfectly.
-                        currentIfMatch = status.ifMatch;
-                        position = endPosition;
-                        if (onProgress) onProgress(position / fileSize);
-                    } else {
-                        // Real failure
-                        console.warn(`[UploadService] Chunk rejected. Server size is ${status.receivedBytes}, expected ${endPosition}.`);
-                        throw new Error(`Chunk rejected by server. Status: ${uploadResult.status}`);
-                    }
-                } else {
-                    throw new Error(`Chunk upload failed with status ${uploadResult.status}`);
                 }
-                
-                // Yield to UI thread for 50ms to allow Garbage Collector to clear the 1.3MB Base64 strings
-                // This completely eliminates the "App isn't responding" ANR!
-                await new Promise(r => setTimeout(r, 50)); 
+            );
+
+            this.activeTasks.set(assetId, task);
+
+            if (this.cancelledTasks.has(assetId)) {
+                task.cancelAsync().catch(()=>{});
+                throw new Error('Upload cancelled by user');
             }
-            
-            console.log(`[UploadService] Resumed upload completed for ${hash}`);
-            return { success: true, hash, resumed: true };
+
+            const response = await task.uploadAsync();
+            this.activeTasks.delete(assetId);
+
+            if (response.status === 200 || response.status === 201 || response.status === 409) {
+                if (onProgress) onProgress({ fraction: 1, loaded: fileSize, total: fileSize });
+                console.log(`[UploadService] Resumed upload completed for ${hash}`);
+                return { success: true, hash, resumed: true };
+            } else {
+                throw new Error(`Server returned ${response.status} on partial upload patch.`);
+            }
 
         } finally {
-            await FileSystem.deleteAsync(tempChunkUri, { idempotent: true }).catch(()=>{});
+            await FileSystem.deleteAsync(tempSliceUri, { idempotent: true }).catch(()=>{});
         }
     }
 
@@ -338,8 +326,12 @@ class UploadService {
                     sessionType,
                 },
                 (progress) => {
-                    if (onProgress && fileSizeBytes > 0) {
-                        onProgress(progress.totalBytesSent / fileSizeBytes);
+                    if (onProgress) {
+                        onProgress({
+                            fraction: fileSizeBytes > 0 ? progress.totalBytesSent / fileSizeBytes : 0,
+                            loaded: progress.totalBytesSent,
+                            total: fileSizeBytes > 0 ? fileSizeBytes : progress.totalBytesExpectedToSend
+                        });
                     }
                 }
             );

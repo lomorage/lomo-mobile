@@ -102,5 +102,63 @@ class ExpoLomoHasherModule : Module() {
         logToFile("RESULT for $uriString: $result")
         result
     }
+
+    AsyncFunction("sliceFileAsync") { sourceUriString: String, destUriString: String, offset: Long ->
+        val sourceUri = Uri.parse(sourceUriString)
+        val context = appContext.reactContext ?: throw Exception("React context not available")
+
+        val inputStream: InputStream = if (sourceUri.scheme == "content") {
+            context.contentResolver.openInputStream(sourceUri)
+                ?: throw Exception("Could not open content URI: $sourceUriString")
+        } else {
+            var path = sourceUriString
+            if (path.startsWith("file://")) {
+                path = path.substring(7)
+            }
+            val file = File(path)
+            if (!file.exists()) {
+                throw Exception("Source file not found at $path")
+            }
+            FileInputStream(file)
+        }
+
+        var destPath = destUriString
+        if (destPath.startsWith("file://")) {
+            destPath = destPath.substring(7)
+        }
+        val destFile = File(destPath)
+        destFile.parentFile?.mkdirs()
+        val outputStream = FileOutputStream(destFile)
+
+        try {
+            var skipped = 0L
+            while (skipped < offset) {
+                val skipAttempt = inputStream.skip(offset - skipped)
+                if (skipAttempt <= 0) {
+                    val tempBuffer = ByteArray(Math.min(8192L, offset - skipped).toInt())
+                    val read = inputStream.read(tempBuffer)
+                    if (read == -1) break
+                    skipped += read
+                } else {
+                    skipped += skipAttempt
+                }
+            }
+
+            val buffer = ByteArray(1024 * 1024)
+            while (true) {
+                val read = inputStream.read(buffer)
+                if (read == -1) break
+                outputStream.write(buffer, 0, read)
+            }
+            true
+        } finally {
+            try {
+                inputStream.close()
+            } catch (e: Exception) {}
+            try {
+                outputStream.close()
+            } catch (e: Exception) {}
+        }
+    }
   }
 }

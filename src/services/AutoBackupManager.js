@@ -27,6 +27,7 @@ class AutoBackupManager {
         this._retryTimer = null;   // pending backoff timer
         this.activeAssetIds = new Set();
         this.activeUploads = {}; // Map of assetId -> progress (0.0 to 1.0)
+        this.uploadStats = {}; // Map of assetId -> { startTime, totalBytes, speed }
         this.completedSessionCount = 0;
         this.completedCount = 0;
 
@@ -380,15 +381,27 @@ class AutoBackupManager {
 
             this.activeAssetIds.add(asset.id);
             this.activeUploads[asset.id] = 0;
+            this.uploadStats[asset.id] = { startTime: Date.now(), totalBytes: 0, speed: 0 };
             this.emitState();
 
             // Call UploadService and pass a progress callback
-            const result = await UploadService.uploadAsset(asset, (progress) => {
-                this.activeUploads[asset.id] = progress;
+            const result = await UploadService.uploadAsset(asset, (progressData) => {
+                const fraction = typeof progressData === 'object' ? progressData.fraction : progressData;
+                this.activeUploads[asset.id] = fraction;
+                
+                const stats = this.uploadStats[asset.id];
+                if (stats && typeof progressData === 'object') {
+                    stats.totalBytes = progressData.total;
+                    const elapsedSec = (Date.now() - stats.startTime) / 1000;
+                    if (elapsedSec > 0.5) { // Calculate speed after 0.5 seconds for a stable estimate
+                        stats.speed = progressData.loaded / elapsedSec;
+                    }
+                }
                 
                 DeviceEventEmitter.emit('backupProgress', {
-                    progress: progress,
-                    activeUploads: { ...this.activeUploads }
+                    progress: fraction,
+                    activeUploads: { ...this.activeUploads },
+                    uploadStats: { ...this.uploadStats }
                 });
             });
 
@@ -462,11 +475,13 @@ class AutoBackupManager {
             if (this.activeAssetIds.has(asset.id)) {
                 this.activeAssetIds.delete(asset.id);
                 delete this.activeUploads[asset.id];
+                delete this.uploadStats[asset.id];
                 this.emitState();
                 
                 DeviceEventEmitter.emit('backupProgress', {
                     progress: 1,
-                    activeUploads: { ...this.activeUploads }
+                    activeUploads: { ...this.activeUploads },
+                    uploadStats: { ...this.uploadStats }
                 });
             }
             this.emitState();
@@ -517,8 +532,9 @@ class AutoBackupManager {
             retryMessage: this.retryMessage,
             activeAssetIds: Array.from(this.activeAssetIds),
             activeUploads: { ...this.activeUploads },
-            pendingCount: Math.max(0, this.queue.length - this.currentIndex),
-            completedCount: this.completedSessionCount,
+            uploadStats: { ...this.uploadStats },
+            pendingCount: Math.max(0, (this.queue.length - this.currentIndex) + this.activeAssetIds.size),
+            completedCount: Math.max(0, this.currentIndex - this.activeAssetIds.size),
             totalCount: this.queue.length,
             currentAssetId: this.currentAssetId
         });

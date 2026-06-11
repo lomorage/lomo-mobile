@@ -2,7 +2,7 @@
   "expo": {
     "name": "lomo-mobile",
     "slug": "lomo-mobile",
-    "version": "1.0.102",
+    "version": "1.0.114",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",

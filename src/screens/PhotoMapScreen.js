@@ -3,6 +3,7 @@ import { View, StyleSheet, TouchableOpacity, Text, Dimensions, ActivityIndicator
 import { Image } from 'expo-image';
 import MapView, { Marker } from 'react-native-maps';
 import Supercluster from 'supercluster';
+import * as Location from 'expo-location';
 
 import { useNavigation, useIsFocused } from '@react-navigation/native';
 import { ChevronLeft, X } from 'lucide-react-native';
@@ -17,7 +18,7 @@ const LONGITUDE_DELTA = LATITUDE_DELTA * ASPECT_RATIO;
 // Separate component so each marker manages its own tracksViewChanges lifecycle.
 // tracksViewChanges=true while image is loading, then false after onLoad fires,
 // so Android re-captures the marker bitmap exactly once after the image appears.
-const PhotoMarker = React.memo(({ coordinate, thumbUrl, onPress, isMapMoving }) => {
+const PhotoMarker = React.memo(({ coordinate, thumbUrl, onPress }) => {
   const [tracksViewChanges, setTracksViewChanges] = useState(true);
 
   const stopTracking = useCallback(() => {
@@ -43,7 +44,7 @@ const PhotoMarker = React.memo(({ coordinate, thumbUrl, onPress, isMapMoving }) 
   return (
     <Marker
       coordinate={coordinate}
-      tracksViewChanges={isMapMoving || tracksViewChanges}
+      tracksViewChanges={tracksViewChanges}
       onPress={onPress}
     >
       <Image
@@ -63,7 +64,7 @@ const PhotoMarker = React.memo(({ coordinate, thumbUrl, onPress, isMapMoving }) 
   );
 });
 
-const ClusterMarker = React.memo(({ coordinate, pointCount, onPress, isMapMoving }) => {
+const ClusterMarker = React.memo(({ coordinate, pointCount, onPress }) => {
   const [tracksViewChanges, setTracksViewChanges] = useState(true);
 
   useEffect(() => {
@@ -77,7 +78,7 @@ const ClusterMarker = React.memo(({ coordinate, pointCount, onPress, isMapMoving
   return (
     <Marker
       coordinate={coordinate}
-      tracksViewChanges={isMapMoving || tracksViewChanges}
+      tracksViewChanges={tracksViewChanges}
       onPress={onPress}
     >
       <View style={styles.clusterWrap}>
@@ -105,13 +106,20 @@ export default function PhotoMapScreen() {
   const [selectedAsset, setSelectedAsset] = useState(null);
   const [hdLoaded, setHdLoaded] = useState(false);
   const [selectedClusterAssets, setSelectedClusterAssets] = useState(null);
-  const [isMapMoving, setIsMapMoving] = useState(false);
+  const [locationPermission, setLocationPermission] = useState(false);
 
   const dataLoaded = useRef(false);
 
+  const fitTimers = useRef([]);
+
+  const cancelFitTimers = useCallback(() => {
+    fitTimers.current.forEach(clearTimeout);
+    fitTimers.current = [];
+  }, []);
+
   const getThumbnailUrl = useCallback((hash) => {
     if (!hash) return null;
-    return `${AuthService.getServerUrl()}/preview/${hash}?width=75&height=-1&token=${AuthService.getToken()}`;
+    return `${AuthService.getServerUrl()}/preview/${hash}?width=320&height=-1&token=${AuthService.getToken()}`;
   }, []);
 
   const getFullImageUrl = useCallback((hash) => {
@@ -140,6 +148,15 @@ export default function PhotoMapScreen() {
   const [mapReady, setMapReady] = useState(false);
   const [mapMeasured, setMapMeasured] = useState(false);
   const hasFitted = useRef(false);
+
+  // Add detailed logs for debugging
+  useEffect(() => {
+    console.log(`[PhotoMapScreen Debug] mapMeasured state changed to: ${mapMeasured}`);
+  }, [mapMeasured]);
+
+  useEffect(() => {
+    console.log(`[PhotoMapScreen Debug] coordsToFit updated. Length: ${coordsToFit.length}`);
+  }, [coordsToFit]);
 
   const fitMapToCoords = useCallback((coordinates) => {
     if (!coordinates || coordinates.length === 0 || !mapRef.current) {
@@ -176,35 +193,85 @@ export default function PhotoMapScreen() {
     const latDelta = maxLat - minLat;
     const lonDelta = maxLon - minLon;
 
-    console.log(`[PhotoMapScreen] fitMapToCoords: calculated min/max lat: [${minLat}, ${maxLat}], lon: [${minLon}, ${maxLon}], delta lat: ${latDelta}, lon: ${lonDelta}`);
-
-    if (latDelta < 0.01 && lonDelta < 0.01) {
-      const targetLat = (minLat + maxLat) / 2;
-      const targetLon = (minLon + maxLon) / 2;
-      console.log(`[PhotoMapScreen] fitMapToCoords: coordinates are extremely close. Animating to centered region: [${targetLat}, ${targetLon}]`);
-      mapRef.current.animateToRegion({
-        latitude: targetLat,
-        longitude: targetLon,
-        latitudeDelta: 0.02,
-        longitudeDelta: 0.02 * ASPECT_RATIO,
-      }, 500);
+    // If photos are within a 40-degree region (e.g. within a continent), 
+    // a standard bounding box frames them nicely.
+    if (latDelta < 40 && lonDelta < 40) {
+      const boundingBox = [
+        { latitude: minLat, longitude: minLon },
+        { latitude: maxLat, longitude: maxLon }
+      ];
+      console.log(`[PhotoMapScreen Debug] Bounding box is compact (${latDelta.toFixed(2)}x${lonDelta.toFixed(2)}). Calling fitToCoordinates.`);
+      try {
+        mapRef.current.fitToCoordinates(boundingBox, {
+          edgePadding: { top: 100, right: 50, bottom: 50, left: 50 },
+          animated: true,
+        });
+      } catch (e) {
+        console.error(`[PhotoMapScreen Debug] Error calling fitToCoordinates:`, e);
+      }
     } else {
-      console.log(`[PhotoMapScreen] fitMapToCoords: calling fitToCoordinates.`);
-      mapRef.current.fitToCoordinates(coordinates, {
-        edgePadding: { top: 100, right: 50, bottom: 50, left: 50 },
-        animated: true,
-      });
+      // Photos span across continents or oceans! A simple bounding box would center on the empty ocean between them.
+      // Instead, we find the densest cluster of photos and zoom there.
+      try {
+        // Zoom level 2 clusters the world into large regions
+        const worldClusters = supercluster.getClusters([-180, -90, 180, 90], 2);
+        let maxCount = 0;
+        let targetLat = 20;
+        let targetLon = 0;
+
+        for (const c of worldClusters) {
+          const count = c.properties.point_count || 1;
+          if (count > maxCount) {
+            maxCount = count;
+            targetLat = c.geometry.coordinates[1];
+            targetLon = c.geometry.coordinates[0];
+          }
+        }
+
+        console.log(`[PhotoMapScreen Debug] Bounding box too large (${latDelta.toFixed(2)}x${lonDelta.toFixed(2)}). Centering on densest cluster at [${targetLat}, ${targetLon}] with ${maxCount} photos.`);
+        
+        mapRef.current.animateToRegion({
+          latitude: targetLat,
+          longitude: targetLon,
+          latitudeDelta: 20, // Country level view
+          longitudeDelta: 20 * ASPECT_RATIO,
+        }, 1000);
+      } catch (e) {
+        console.error(`[PhotoMapScreen Debug] Error finding densest cluster:`, e);
+      }
     }
   }, []);
 
   useEffect(() => {
-    console.log(`[PhotoMapScreen] camera fit useEffect hook: mapReady=${mapReady}, mapMeasured=${mapMeasured}, coordsCount=${coordsToFit.length}, hasFitted=${hasFitted.current}`);
-    if (mapReady && mapMeasured && coordsToFit.length > 0 && mapRef.current && !hasFitted.current) {
+    (async () => {
+      let { status } = await Location.requestForegroundPermissionsAsync();
+      if (status === 'granted') {
+        setLocationPermission(true);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    return () => cancelFitTimers();
+  }, [cancelFitTimers]);
+
+  useEffect(() => {
+    console.log(`[PhotoMapScreen Debug] camera fit hook evaluated: mapMeasured=${mapMeasured}, coordsCount=${coordsToFit.length}, hasFitted=${hasFitted.current}, mapRef=${!!mapRef.current}`);
+    if (mapMeasured && coordsToFit.length > 0 && mapRef.current && !hasFitted.current) {
       hasFitted.current = true;
-      console.log(`[PhotoMapScreen] camera fit conditions met! Scheduling fitMapToCoords in 500ms...`);
-      setTimeout(() => {
-        fitMapToCoords(coordsToFit);
-      }, 500);
+      console.log(`[PhotoMapScreen Debug] camera fit conditions met! Executing staggered retries.`);
+      
+      const doFit = (attempt) => {
+        console.log(`[PhotoMapScreen Debug] doFit executing attempt: ${attempt}`);
+        if (mapRef.current) fitMapToCoords(coordsToFit);
+      };
+
+      // Try fitting immediately and at different intervals 
+      // to handle varying native map initialization speeds on Android
+      doFit('0ms');
+      fitTimers.current.push(setTimeout(() => doFit('500ms'), 500));
+      fitTimers.current.push(setTimeout(() => doFit('1500ms'), 1500));
+      fitTimers.current.push(setTimeout(() => doFit('3000ms'), 3000));
     }
   }, [mapReady, mapMeasured, coordsToFit, fitMapToCoords]);
 
@@ -296,7 +363,26 @@ export default function PhotoMapScreen() {
         console.log(`[PhotoMapScreen] loadAssets: setting coordsToFit with ${coordinates.length} coordinates.`);
         setCoordsToFit(coordinates);
       } else {
-        console.log(`[PhotoMapScreen] loadAssets: no valid assets with geo coordinates found.`);
+        console.log(`[PhotoMapScreen] loadAssets: no valid assets with geo coordinates found. Fallback to user location.`);
+        try {
+          const { status } = await Location.getForegroundPermissionsAsync();
+          if (status === 'granted') {
+            let loc = await Location.getLastKnownPositionAsync({});
+            if (!loc) {
+              loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Lowest });
+            }
+            if (loc && mapRef.current) {
+              mapRef.current.animateToRegion({
+                latitude: loc.coords.latitude,
+                longitude: loc.coords.longitude,
+                latitudeDelta: 0.1,
+                longitudeDelta: 0.1 * ASPECT_RATIO,
+              }, 1000);
+            }
+          }
+        } catch (err) {
+          console.log('[PhotoMapScreen] Failed to fallback to user location', err);
+        }
       }
     } catch (e) {
       console.error('[PhotoMapScreen] Failed to load assets:', e);
@@ -348,15 +434,12 @@ export default function PhotoMapScreen() {
     }
   };
 
-  const onRegionChange = useCallback(() => {
-    if (!isMapMoving) {
-      setIsMapMoving(true);
-    }
-  }, [isMapMoving]);
+  const onRegionChange = useCallback((newRegion, details) => {
+    // Map is moving
+  }, []);
 
-  const onRegionChangeComplete = (newRegion) => {
+  const onRegionChangeComplete = (newRegion, details) => {
     setRegion(newRegion);
-    setIsMapMoving(false);
     updateClusters(newRegion);
   };
 
@@ -377,7 +460,6 @@ export default function PhotoMapScreen() {
           key={`cluster-${cluster.id}`}
           coordinate={{ latitude, longitude }}
           pointCount={point_count}
-          isMapMoving={isMapMoving}
           onPress={(e) => {
             e.stopPropagation();
             try {
@@ -434,7 +516,6 @@ export default function PhotoMapScreen() {
         key={`asset-${assetId}`}
         coordinate={{ latitude, longitude }}
         thumbUrl={thumbUrl}
-        isMapMoving={isMapMoving}
         onPress={(e) => {
           e.stopPropagation();
           openPhoto({ thumbUrl, fullUrl, hash, isLocal });
@@ -449,6 +530,8 @@ export default function PhotoMapScreen() {
         ref={mapRef}
         style={styles.map}
         initialRegion={region}
+        showsUserLocation={locationPermission}
+        showsMyLocationButton={locationPermission}
         onRegionChange={onRegionChange}
         onRegionChangeComplete={onRegionChangeComplete}
         onLayout={(e) => {

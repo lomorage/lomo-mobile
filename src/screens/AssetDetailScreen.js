@@ -231,8 +231,9 @@ export default function AssetDetailScreen({ route, navigation }) {
         setIsUploading(true);
         setUploadProgress(0);
         try {
-            const result = await UploadService.uploadAsset(currentAsset, (progress) => {
-                setUploadProgress(progress);
+            const result = await UploadService.uploadAsset(currentAsset, (progressData) => {
+                const fraction = typeof progressData === 'object' ? progressData.fraction : progressData;
+                setUploadProgress(fraction);
             });
             if (result.success) {
                 // Update local state and store
