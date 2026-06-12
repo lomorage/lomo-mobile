@@ -6,7 +6,8 @@ import Supercluster from 'supercluster';
 import * as Location from 'expo-location';
 
 import { useNavigation, useIsFocused } from '@react-navigation/native';
-import { ChevronLeft, X } from 'lucide-react-native';
+import { ChevronLeft, X, PlayCircle } from 'lucide-react-native';
+import { useVideoPlayer, VideoView } from 'expo-video';
 import AssetDBService from '../services/AssetDBService';
 import AuthService from '../services/AuthService';
 
@@ -14,6 +15,29 @@ const { width, height } = Dimensions.get('window');
 const ASPECT_RATIO = width / height;
 const LATITUDE_DELTA = 90;
 const LONGITUDE_DELTA = LATITUDE_DELTA * ASPECT_RATIO;
+
+function AssetVideoPlayer({ uri, style, shouldPlay, nativeControls = false }) {
+    const player = useVideoPlayer(uri, player => {
+        player.loop = !nativeControls;
+    });
+
+    useEffect(() => {
+        if (shouldPlay) {
+            player.play();
+        } else {
+            player.pause();
+        }
+    }, [shouldPlay, player]);
+
+    return (
+        <VideoView 
+            style={style} 
+            player={player}
+            allowsPictureInPicture 
+            nativeControls={nativeControls}
+        />
+    );
+}
 
 // Separate component so each marker manages its own tracksViewChanges lifecycle.
 // tracksViewChanges=true while image is loading, then false after onLoad fires,
@@ -125,6 +149,11 @@ export default function PhotoMapScreen() {
   const getFullImageUrl = useCallback((hash) => {
     if (!hash) return null;
     return `${AuthService.getServerUrl()}/preview/${hash}?width=1200&height=-1&token=${AuthService.getToken()}`;
+  }, []);
+
+  const getFullVideoUrl = useCallback((hash) => {
+    if (!hash) return null;
+    return `${AuthService.getServerUrl()}/asset/${hash}?ext=mp4&token=${AuthService.getToken()}`;
   }, []);
 
   const getLocalUri = useCallback((id, mediaType) => {
@@ -471,7 +500,7 @@ export default function PhotoMapScreen() {
                 const clusterAssets = leaves.map(leaf => {
                   const { assetId, hash, isLocal, mediaType } = leaf.properties;
                   const thumbUrl = isLocal ? getLocalUri(assetId, mediaType) : (hash ? getThumbnailUrl(hash) : null);
-                  const fullUrl = isLocal ? getLocalUri(assetId, mediaType) : (hash ? getFullImageUrl(hash) : null);
+                  const fullUrl = isLocal ? getLocalUri(assetId, mediaType) : (hash ? (mediaType === 'video' ? getFullVideoUrl(hash) : getFullImageUrl(hash)) : null);
                   return { id: assetId, hash, isLocal, mediaType, thumbUrl, fullUrl };
                 });
                 setSelectedClusterAssets(clusterAssets);
@@ -493,7 +522,7 @@ export default function PhotoMapScreen() {
                 const clusterAssets = leaves.map(leaf => {
                   const { assetId, hash, isLocal, mediaType } = leaf.properties;
                   const thumbUrl = isLocal ? getLocalUri(assetId, mediaType) : (hash ? getThumbnailUrl(hash) : null);
-                  const fullUrl = isLocal ? getLocalUri(assetId, mediaType) : (hash ? getFullImageUrl(hash) : null);
+                  const fullUrl = isLocal ? getLocalUri(assetId, mediaType) : (hash ? (mediaType === 'video' ? getFullVideoUrl(hash) : getFullImageUrl(hash)) : null);
                   return { id: assetId, hash, isLocal, mediaType, thumbUrl, fullUrl };
                 });
                 setSelectedClusterAssets(clusterAssets);
@@ -509,7 +538,7 @@ export default function PhotoMapScreen() {
     // Single point
     const { assetId, hash, isLocal, mediaType } = cluster.properties;
     const thumbUrl = isLocal ? getLocalUri(assetId, mediaType) : (hash ? getThumbnailUrl(hash) : null);
-    const fullUrl = isLocal ? getLocalUri(assetId, mediaType) : (hash ? getFullImageUrl(hash) : null);
+    const fullUrl = isLocal ? getLocalUri(assetId, mediaType) : (hash ? (mediaType === 'video' ? getFullVideoUrl(hash) : getFullImageUrl(hash)) : null);
     
     return (
       <PhotoMarker
@@ -612,6 +641,11 @@ export default function PhotoMapScreen() {
                       style={styles.gridImage}
                       contentFit="cover"
                     />
+                    {item.mediaType === 'video' && (
+                        <View style={[StyleSheet.absoluteFill, { justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: 8, margin: 2 }]}>
+                            <PlayCircle color="#fff" size={32} />
+                        </View>
+                    )}
                   </TouchableOpacity>
                 )}
                 contentContainerStyle={styles.gridContentContainer}
@@ -638,30 +672,41 @@ export default function PhotoMapScreen() {
 
           {selectedAsset && (
             <View style={styles.progressiveImageContainer}>
-              {/* Low-res thumbnail background (instantly visible) */}
-              <Image 
-                source={{ uri: selectedAsset.thumbUrl }} 
-                style={styles.fullScreenImage} 
-                contentFit="contain"
-              />
+              {selectedAsset.mediaType === 'video' && selectedAsset.fullUrl ? (
+                 <AssetVideoPlayer 
+                     uri={selectedAsset.fullUrl} 
+                     style={styles.fullScreenImage} 
+                     shouldPlay={true}
+                     nativeControls={true}
+                 />
+              ) : (
+                <>
+                  {/* Low-res thumbnail background (instantly visible) */}
+                  <Image 
+                    source={{ uri: selectedAsset.thumbUrl }} 
+                    style={styles.fullScreenImage} 
+                    contentFit="contain"
+                  />
 
-              {/* High-res HD image foreground (fades in on top once loaded) */}
-              {selectedAsset.fullUrl && (
-                <Image 
-                  source={{ uri: selectedAsset.fullUrl }} 
-                  style={styles.fullScreenImage} 
-                  contentFit="contain"
-                  transition={300}
-                  onLoad={() => setHdLoaded(true)}
-                />
-              )}
+                  {/* High-res HD image foreground (fades in on top once loaded) */}
+                  {selectedAsset.fullUrl && (
+                    <Image 
+                      source={{ uri: selectedAsset.fullUrl }} 
+                      style={styles.fullScreenImage} 
+                      contentFit="contain"
+                      transition={300}
+                      onLoad={() => setHdLoaded(true)}
+                    />
+                  )}
 
-              {/* Loading pill while HD is loading */}
-              {!hdLoaded && selectedAsset.fullUrl && (
-                <View style={styles.hdLoadingIndicator}>
-                  <ActivityIndicator size="small" color="#fff" />
-                  <Text style={styles.hdLoadingText}>Loading HD...</Text>
-                </View>
+                  {/* Loading pill while HD is loading */}
+                  {!hdLoaded && selectedAsset.fullUrl && (
+                    <View style={styles.hdLoadingIndicator}>
+                      <ActivityIndicator size="small" color="#fff" />
+                      <Text style={styles.hdLoadingText}>Loading HD...</Text>
+                    </View>
+                  )}
+                </>
               )}
             </View>
           )}
