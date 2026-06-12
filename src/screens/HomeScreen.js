@@ -1002,15 +1002,22 @@ const formatSpeed = (bytesPerSec) => {
                         </View>
                         
                         <View style={styles.bottomSheetSummary}>
-                            <Text style={styles.bottomSheetSummaryText}>
-                                {backupState.isPaused 
-                                    ? `Paused (${backupState.pendingCount} left)` 
-                                    : backupState.pendingCount > 0 
-                                        ? (backupState.totalCount > 0
-                                            ? `Backing up... ${backupState.totalCount - backupState.pendingCount}/${backupState.totalCount} (${Math.round(smoothOverallProgress * 100)}%)`
-                                            : `Backing up... ${Math.round(smoothOverallProgress * 100)}%`)
-                                        : 'Backup Complete!'}
-                            </Text>
+                            <View style={{ flex: 1 }}>
+                                <Text style={styles.bottomSheetSummaryText}>
+                                    {backupState.isPaused 
+                                        ? `Paused (${backupState.pendingCount} left)` 
+                                        : backupState.pendingCount > 0 
+                                            ? (backupState.totalCount > 0
+                                                ? `Backing up... ${backupState.totalCount - backupState.pendingCount}/${backupState.totalCount} (${Math.round(smoothOverallProgress * 100)}%)`
+                                                : `Backing up... ${Math.round(smoothOverallProgress * 100)}%`)
+                                            : 'Backup Complete!'}
+                                </Text>
+                                {backupState.isPaused && (backupState.retryMessage || backupState.pauseReason) && (
+                                    <Text style={{ fontSize: 13, color: '#FF3B30', marginTop: 4 }}>
+                                        {backupState.retryMessage || backupState.pauseReason}
+                                    </Text>
+                                )}
+                            </View>
                             {backupState.pendingCount > 0 && (
                                 backupState.isPaused ? (
                                     <TouchableOpacity onPress={() => AutoBackupManager.resume()} style={styles.playPauseBtn}>

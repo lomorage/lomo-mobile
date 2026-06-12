@@ -282,12 +282,12 @@ class UploadService {
             // 5. Construct Upload URL with metadata
             const ext = livePhotoBackup ? 'zip' : (info.filename || 'file.jpg').split('.').pop().toLowerCase();
             const creationTime = new Date(info.creationTime || Date.now()).toISOString();
-            const uploadUrl = `${serverUrl}/asset/${hash.toLowerCase()}?ext=${ext}&createtime=${creationTime}`;
+            const uploadUrl = `${serverUrl}/asset/${hash.toLowerCase()}?ext=${ext}&createtime=${encodeURIComponent(creationTime)}`;
 
             const isHttps = serverUrl.toLowerCase().startsWith('https://');
 
-            // 6. Attempt resumable upload if server has partial data
-            if (status.resumable && status.receivedBytes > 0 && status.ifMatch) {
+            // 6. Attempt resumable upload if server has partial data (skip for Live Photo zips since recreated zip bytes can differ)
+            if (status.resumable && status.receivedBytes > 0 && status.ifMatch && !livePhotoBackup) {
                 if (fileSizeBytes === 0) {
                     throw new Error('Cannot safely resume upload because exact local file size could not be determined. Aborting to prevent server data corruption.');
                 }

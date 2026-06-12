@@ -524,6 +524,8 @@ class AutoBackupManager {
     }
 
     emitState() {
+        const pending = Math.max(0, (this.queue.length - this.currentIndex) + this.activeAssetIds.size);
+        const completed = this.completedSessionCount;
         DeviceEventEmitter.emit('backupState', {
             isBackingUp: this.isBackingUp,
             isPaused: this.isPaused,
@@ -533,9 +535,9 @@ class AutoBackupManager {
             activeAssetIds: Array.from(this.activeAssetIds),
             activeUploads: { ...this.activeUploads },
             uploadStats: { ...this.uploadStats },
-            pendingCount: Math.max(0, (this.queue.length - this.currentIndex) + this.activeAssetIds.size),
-            completedCount: Math.max(0, this.currentIndex - this.activeAssetIds.size),
-            totalCount: this.queue.length,
+            pendingCount: pending,
+            completedCount: completed,
+            totalCount: completed + pending,
             currentAssetId: this.currentAssetId
         });
     }
