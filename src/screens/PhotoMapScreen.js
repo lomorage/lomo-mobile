@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { View, StyleSheet, TouchableOpacity, Text, Dimensions, ActivityIndicator, Modal, Platform, FlatList } from 'react-native';
+import { View, StyleSheet, TouchableOpacity, Text, Dimensions, ActivityIndicator, Modal, Platform, FlatList, Pressable } from 'react-native';
 import { Image } from 'expo-image';
 import MapView, { Marker } from 'react-native-maps';
 import Supercluster from 'supercluster';
@@ -17,25 +17,59 @@ const LATITUDE_DELTA = 90;
 const LONGITUDE_DELTA = LATITUDE_DELTA * ASPECT_RATIO;
 
 function AssetVideoPlayer({ uri, style, shouldPlay, nativeControls = false }) {
+    const [showControls, setShowControls] = useState(false);
     const player = useVideoPlayer(uri, player => {
         player.loop = !nativeControls;
     });
 
     useEffect(() => {
+        const sub = player.addListener('statusChange', ({ status }) => {
+            if (status === 'readyToPlay' && shouldPlay) {
+                try { player.play(); } catch(e) {}
+            }
+        });
+        
         if (shouldPlay) {
-            player.play();
+            try { player.play(); } catch(e) {}
+            setTimeout(() => {
+                if (shouldPlay) {
+                    try { player.play(); } catch(e) {}
+                }
+            }, 100);
         } else {
             player.pause();
+            setShowControls(false);
         }
+        
+        return () => sub.remove();
     }, [shouldPlay, player]);
 
+    if (!nativeControls) {
+        return (
+            <VideoView 
+                style={style} 
+                player={player}
+                allowsPictureInPicture 
+                nativeControls={false}
+            />
+        );
+    }
+
     return (
-        <VideoView 
-            style={style} 
-            player={player}
-            allowsPictureInPicture 
-            nativeControls={nativeControls}
-        />
+        <View style={style}>
+            <VideoView 
+                style={StyleSheet.absoluteFill} 
+                player={player}
+                allowsPictureInPicture 
+                nativeControls={showControls}
+            />
+            {!showControls && (
+                <Pressable
+                    style={StyleSheet.absoluteFill}
+                    onPress={() => setShowControls(true)}
+                />
+            )}
+        </View>
     );
 }
 
@@ -128,9 +162,18 @@ export default function PhotoMapScreen() {
   });
   const [loading, setLoading] = useState(true);
   const [selectedAsset, setSelectedAsset] = useState(null);
+  const [selectedAssetIndex, setSelectedAssetIndex] = useState(null);
+  const [swipeContextAssets, setSwipeContextAssets] = useState([]);
   const [hdLoaded, setHdLoaded] = useState(false);
   const [selectedClusterAssets, setSelectedClusterAssets] = useState(null);
   const [locationPermission, setLocationPermission] = useState(false);
+
+  const onViewableItemsChanged = useRef(({ viewableItems }) => {
+    if (viewableItems.length > 0) {
+      setSelectedAssetIndex(viewableItems[0].index);
+    }
+  }).current;
+  const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 50 }).current;
 
   const dataLoaded = useRef(false);
 
@@ -474,9 +517,10 @@ export default function PhotoMapScreen() {
 
 
 
-  const openPhoto = useCallback((asset) => {
+  const openPhoto = useCallback((asset, index = 0, contextAssets = null) => {
     setHdLoaded(false);
-    setSelectedAsset(asset);
+    setSelectedAssetIndex(index);
+    setSwipeContextAssets(contextAssets || [asset]);
   }, []);
 
   const renderCluster = (cluster) => {
@@ -631,10 +675,10 @@ export default function PhotoMapScreen() {
                 data={selectedClusterAssets}
                 keyExtractor={(item) => item.id}
                 numColumns={3}
-                renderItem={({ item }) => (
+                renderItem={({ item, index }) => (
                   <TouchableOpacity
                     style={styles.gridItem}
-                    onPress={() => openPhoto(item)}
+                    onPress={() => openPhoto(item, index, selectedClusterAssets)}
                   >
                     <Image
                       source={{ uri: item.thumbUrl || '' }}
@@ -657,60 +701,80 @@ export default function PhotoMapScreen() {
 
       {/* Fullscreen Photo Viewer with progressive loading */}
       <Modal
-        visible={!!selectedAsset}
+        visible={selectedAssetIndex !== null}
         transparent={true}
         animationType="fade"
-        onRequestClose={() => setSelectedAsset(null)}
+        onRequestClose={() => setSelectedAssetIndex(null)}
       >
-        <View style={styles.modalContainer}>
-          <TouchableOpacity 
-            style={styles.closeButton} 
-            onPress={() => setSelectedAsset(null)}
-          >
-            <X color="#fff" size={28} />
-          </TouchableOpacity>
+        {selectedAssetIndex !== null && (
+            <View style={styles.modalContainer}>
+            <TouchableOpacity 
+                style={[styles.closeButton, { padding: 15, borderRadius: 30, zIndex: 100 }]} 
+                onPress={() => setSelectedAssetIndex(null)}
+                hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
+            >
+                <X color="#fff" size={28} />
+            </TouchableOpacity>
 
-          {selectedAsset && (
-            <View style={styles.progressiveImageContainer}>
-              {selectedAsset.mediaType === 'video' && selectedAsset.fullUrl ? (
-                 <AssetVideoPlayer 
-                     uri={selectedAsset.fullUrl} 
-                     style={styles.fullScreenImage} 
-                     shouldPlay={true}
-                     nativeControls={true}
-                 />
-              ) : (
-                <>
-                  {/* Low-res thumbnail background (instantly visible) */}
-                  <Image 
-                    source={{ uri: selectedAsset.thumbUrl }} 
-                    style={styles.fullScreenImage} 
-                    contentFit="contain"
-                  />
+            <FlatList
+                data={swipeContextAssets}
+                horizontal
+                pagingEnabled
+                keyExtractor={(item, idx) => item.hash || item.id || idx.toString()}
+                initialScrollIndex={selectedAssetIndex}
+                onViewableItemsChanged={onViewableItemsChanged}
+                viewabilityConfig={viewabilityConfig}
+                getItemLayout={(data, index) => ({
+                    length: Dimensions.get('window').width,
+                    offset: Dimensions.get('window').width * index,
+                    index,
+                })}
+                renderItem={({ item: asset, index }) => (
+                <View style={{ width: Dimensions.get('window').width, height: Dimensions.get('window').height, justifyContent: 'center' }}>
+                    <View style={styles.progressiveImageContainer}>
+                    <>
+                        {/* Always mount the images so there's never a black screen flash when swapping states */}
+                        <Image 
+                            source={{ uri: asset.thumbUrl }} 
+                            style={styles.fullScreenImage} 
+                            contentFit="contain"
+                        />
 
-                  {/* High-res HD image foreground (fades in on top once loaded) */}
-                  {selectedAsset.fullUrl && (
-                    <Image 
-                      source={{ uri: selectedAsset.fullUrl }} 
-                      style={styles.fullScreenImage} 
-                      contentFit="contain"
-                      transition={300}
-                      onLoad={() => setHdLoaded(true)}
-                    />
-                  )}
+                        {/* High-res HD image foreground (fades in on top once loaded) */}
+                        {asset.fullUrl && (
+                            <Image 
+                            source={{ uri: asset.fullUrl }} 
+                            style={[styles.fullScreenImage, { position: 'absolute' }]} 
+                            contentFit="contain"
+                            transition={300}
+                            onLoad={() => setHdLoaded(true)}
+                            />
+                        )}
 
-                  {/* Loading pill while HD is loading */}
-                  {!hdLoaded && selectedAsset.fullUrl && (
-                    <View style={styles.hdLoadingIndicator}>
-                      <ActivityIndicator size="small" color="#fff" />
-                      <Text style={styles.hdLoadingText}>Loading HD...</Text>
+                        {/* Loading pill while HD is loading */}
+                        {!hdLoaded && asset.fullUrl && (
+                            <View style={styles.hdLoadingIndicator}>
+                            <ActivityIndicator size="small" color="#fff" />
+                            <Text style={styles.hdLoadingText}>Loading HD...</Text>
+                            </View>
+                        )}
+
+                        {/* Conditionally mount video player as an overlay on top */}
+                        {asset.mediaType === 'video' && asset.fullUrl && selectedAssetIndex === index && (
+                            <AssetVideoPlayer 
+                                uri={asset.fullUrl} 
+                                style={[styles.fullScreenImage, { position: 'absolute' }]} 
+                                shouldPlay={true}
+                                nativeControls={true}
+                            />
+                        )}
+                    </>
                     </View>
-                  )}
-                </>
-              )}
+                </View>
+                )}
+            />
             </View>
-          )}
-        </View>
+        )}
       </Modal>
     </View>
   );

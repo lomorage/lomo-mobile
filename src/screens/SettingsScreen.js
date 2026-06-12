@@ -1,5 +1,5 @@
 import React from 'react';
-import { StyleSheet, View, ScrollView, Text, Switch, TouchableOpacity, Alert, ActivityIndicator, Platform, Modal, TextInput, DeviceEventEmitter } from 'react-native';
+import { StyleSheet, View, ScrollView, Text, Switch, TouchableOpacity, Alert, ActivityIndicator, Platform, Modal, TextInput, DeviceEventEmitter, FlatList, Dimensions, Pressable } from 'react-native';
 import { ChevronLeft, Trash2, RefreshCcw, Server, ChevronRight, Globe } from 'lucide-react-native';
 import Constants from 'expo-constants';
 import { useSettings } from '../context/SettingsContext';
@@ -7,7 +7,51 @@ import { useAuth } from '../context/AuthContext';
 import SyncService from '../services/SyncService';
 import AuthService from '../services/AuthService';
 import Logger from '../utils/logger';
-import { Send } from 'lucide-react-native';
+import { Send, Folder, X, PlayCircle } from 'lucide-react-native';
+import * as MediaLibrary from 'expo-media-library';
+import { Image } from 'expo-image';
+import { useVideoPlayer, VideoView } from 'expo-video';
+
+const SimpleVideoPlayer = ({ uri, isActive }) => {
+    const [showControls, setShowControls] = React.useState(false);
+    const player = useVideoPlayer(uri, player => {
+        player.loop = true;
+    });
+
+    React.useEffect(() => {
+        const sub = player.addListener('statusChange', ({ status }) => {
+            if (status === 'readyToPlay' && isActive) {
+                try { player.play(); } catch(e) {}
+            }
+        });
+
+        if (isActive) {
+            try { player.play(); } catch(e) {}
+            setTimeout(() => {
+                if (isActive) {
+                    try { player.play(); } catch(e) {}
+                }
+            }, 100);
+        } else {
+            player.pause();
+            setShowControls(false);
+        }
+        
+        return () => sub.remove();
+    }, [isActive, player]);
+
+    return (
+        <View style={{ flex: 1 }}>
+            <VideoView style={StyleSheet.absoluteFillObject} player={player} allowsFullscreen allowsPictureInPicture nativeControls={showControls} />
+            {!showControls && (
+                <Pressable
+                    style={StyleSheet.absoluteFillObject}
+                    onPress={() => setShowControls(true)}
+                />
+            )}
+        </View>
+    );
+};
 
 export default function SettingsScreen({ navigation }) {
     const { 
@@ -26,7 +70,9 @@ export default function SettingsScreen({ navigation }) {
         hashConcurrency,
         updateHashConcurrency,
         uploadConcurrency,
-        updateUploadConcurrency
+        updateUploadConcurrency,
+        excludedAlbums,
+        toggleAlbumExclusion
     } = useSettings();
     const { logout } = useAuth();
     const [stats, setStats] = React.useState({ local: 0, remote: 0 });
@@ -43,6 +89,24 @@ export default function SettingsScreen({ navigation }) {
     const [tempRemoteUrl, setTempRemoteUrl] = React.useState('');
 
     const [isReachable, setIsReachable] = React.useState(null);
+    const [isAlbumModalVisible, setAlbumModalVisible] = React.useState(false);
+    const [albumsList, setAlbumsList] = React.useState([]);
+
+    const [isAlbumPreviewModalVisible, setAlbumPreviewModalVisible] = React.useState(false);
+    const [previewAlbum, setPreviewAlbum] = React.useState(null);
+    const [previewAssets, setPreviewAssets] = React.useState([]);
+    const [previewLoading, setPreviewLoading] = React.useState(false);
+    const [previewHasNextPage, setPreviewHasNextPage] = React.useState(false);
+    const [previewEndCursor, setPreviewEndCursor] = React.useState(null);
+    const [previewLoadingMore, setPreviewLoadingMore] = React.useState(false);
+    const [selectedAssetIndexToView, setSelectedAssetIndexToView] = React.useState(null);
+
+    const onViewableItemsChanged = React.useRef(({ viewableItems }) => {
+        if (viewableItems.length > 0) {
+            setSelectedAssetIndexToView(viewableItems[0].index);
+        }
+    }).current;
+    const viewabilityConfig = React.useRef({ itemVisiblePercentThreshold: 50 }).current;
 
     React.useEffect(() => {
         loadStats();
@@ -62,6 +126,67 @@ export default function SettingsScreen({ navigation }) {
     const fetchServerVersion = async () => {
         const ver = await AuthService.getServerVersion();
         setServerVersion(ver);
+    };
+
+    const loadAlbums = async () => {
+        try {
+            const { status } = await MediaLibrary.requestPermissionsAsync();
+            if (status === 'granted') {
+                const albums = await MediaLibrary.getAlbumsAsync({ includeSmartAlbums: true });
+                // Filter out albums with 0 assets if possible (getAlbumsAsync doesn't always populate assetCount exactly, but we can sort)
+                const sortedAlbums = albums.sort((a, b) => b.assetCount - a.assetCount);
+                setAlbumsList(sortedAlbums);
+            } else {
+                Alert.alert("Permission Required", "Please grant photo library access to use selective backup.");
+            }
+        } catch (error) {
+            console.error("Failed to load albums", error);
+        }
+    };
+
+    const handlePreviewAlbum = async (album) => {
+        setPreviewAlbum(album);
+        setAlbumPreviewModalVisible(true);
+        setPreviewLoading(true);
+        setPreviewAssets([]);
+        setPreviewHasNextPage(false);
+        setPreviewEndCursor(null);
+        try {
+            const result = await MediaLibrary.getAssetsAsync({ 
+                album: album.id, 
+                first: 100,
+                mediaType: [MediaLibrary.MediaType.photo, MediaLibrary.MediaType.video],
+                sortBy: [[MediaLibrary.SortBy.creationTime, false]]
+            });
+            setPreviewAssets(result.assets || []);
+            setPreviewHasNextPage(result.hasNextPage);
+            setPreviewEndCursor(result.endCursor);
+        } catch (e) {
+            console.error("Preview fail", e);
+        } finally {
+            setPreviewLoading(false);
+        }
+    };
+
+    const loadMorePreviewAssets = async () => {
+        if (!previewHasNextPage || previewLoadingMore || !previewAlbum) return;
+        setPreviewLoadingMore(true);
+        try {
+            const result = await MediaLibrary.getAssetsAsync({ 
+                album: previewAlbum.id, 
+                first: 100, 
+                after: previewEndCursor,
+                mediaType: [MediaLibrary.MediaType.photo, MediaLibrary.MediaType.video],
+                sortBy: [[MediaLibrary.SortBy.creationTime, false]]
+            });
+            setPreviewAssets(prev => [...prev, ...(result.assets || [])]);
+            setPreviewHasNextPage(result.hasNextPage);
+            setPreviewEndCursor(result.endCursor);
+        } catch (e) {
+            console.error("Load more preview fail", e);
+        } finally {
+            setPreviewLoadingMore(false);
+        }
     };
 
     const checkServerReachability = async (urlToCheck = serverUrl) => {
@@ -235,6 +360,25 @@ export default function SettingsScreen({ navigation }) {
                         thumbColor={'#fff'}
                     />
                 </View>
+
+                <TouchableOpacity 
+                    style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8 }]}
+                    onPress={() => {
+                        loadAlbums();
+                        setAlbumModalVisible(true);
+                    }}
+                >
+                    <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabel}>Selective Backup (Folders)</Text>
+                        <Text style={styles.settingDescription}>Choose which albums/folders to back up or ignore (e.g. skip Screenshots).</Text>
+                    </View>
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        {excludedAlbums?.length > 0 && (
+                            <Text style={{ color: '#888', marginRight: 8 }}>{excludedAlbums.length} Excluded</Text>
+                        )}
+                        <ChevronRight color="#888" size={20} />
+                    </View>
+                </TouchableOpacity>
 
                 {Platform.OS === 'android' && (
                     <TouchableOpacity 
@@ -563,6 +707,181 @@ export default function SettingsScreen({ navigation }) {
                     </View>
                 </View>
             </Modal>
+
+            {/* Album Selection Modal */}
+            <Modal
+                visible={isAlbumModalVisible}
+                animationType="slide"
+                presentationStyle="pageSheet"
+                onRequestClose={() => setAlbumModalVisible(false)}
+            >
+                <View style={styles.albumModalContainer}>
+                    <View style={styles.albumModalHeader}>
+                        <Text style={styles.albumModalTitle}>Selective Backup</Text>
+                        <TouchableOpacity onPress={() => setAlbumModalVisible(false)} style={styles.albumCloseButton}>
+                            <X color="#333" size={24} />
+                        </TouchableOpacity>
+                    </View>
+                    
+                    <View style={{ paddingHorizontal: 20, paddingBottom: 10 }}>
+                        <Text style={styles.settingDescription}>
+                            Turn off the switch to IGNORE an album. Only assets in ON albums will be backed up.
+                        </Text>
+                    </View>
+
+                    <FlatList
+                        data={albumsList}
+                        keyExtractor={(item) => item.id}
+                        contentContainerStyle={{ paddingBottom: 40 }}
+                        renderItem={({ item }) => {
+                            const isExcluded = excludedAlbums.includes(item.id);
+                            const isIncluded = !isExcluded;
+                            return (
+                                <TouchableOpacity 
+                                    style={styles.albumRow}
+                                    onPress={() => handlePreviewAlbum(item)}
+                                >
+                                    <View style={styles.albumInfo}>
+                                        <Folder color="#007AFF" size={24} style={{ marginRight: 12 }} />
+                                        <View>
+                                            <Text style={styles.albumTitle}>{item.title}</Text>
+                                            <Text style={styles.albumCount}>{item.assetCount} items</Text>
+                                        </View>
+                                    </View>
+                                    <Switch
+                                        value={isIncluded}
+                                        onValueChange={() => toggleAlbumExclusion(item.id)}
+                                        trackColor={{ false: '#d1d1d1', true: '#4CAF50' }}
+                                        thumbColor={'#fff'}
+                                    />
+                                </TouchableOpacity>
+                            );
+                        }}
+                        ListEmptyComponent={
+                            <View style={{ padding: 20, alignItems: 'center' }}>
+                                <Text style={{ color: '#888' }}>No albums found.</Text>
+                            </View>
+                        }
+                    />
+                </View>
+            </Modal>
+
+            {/* Album Preview Modal */}
+            <Modal
+                visible={isAlbumPreviewModalVisible}
+                animationType="slide"
+                presentationStyle="pageSheet"
+                onRequestClose={() => setAlbumPreviewModalVisible(false)}
+            >
+                <View style={styles.albumModalContainer}>
+                    <View style={styles.albumModalHeader}>
+                        <Text style={styles.albumModalTitle}>{previewAlbum?.title} (Preview)</Text>
+                        <TouchableOpacity onPress={() => setAlbumPreviewModalVisible(false)} style={styles.albumCloseButton}>
+                            <X color="#333" size={24} />
+                        </TouchableOpacity>
+                    </View>
+                    
+                    {previewLoading ? (
+                        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+                            <ActivityIndicator size="large" color="#007AFF" />
+                        </View>
+                    ) : (
+                        <FlatList
+                            data={previewAssets}
+                            keyExtractor={(item) => item.id}
+                            numColumns={3}
+                            onEndReached={loadMorePreviewAssets}
+                            onEndReachedThreshold={0.5}
+                            renderItem={({ item, index }) => {
+                                const size = Dimensions.get('window').width / 3;
+                                return (
+                                    <TouchableOpacity 
+                                        style={{ width: size, height: size, borderWidth: 1, borderColor: '#fff', position: 'relative' }}
+                                        onPress={() => setSelectedAssetIndexToView(index)}
+                                    >
+                                        <Image 
+                                            source={{ uri: item.uri }} 
+                                            style={{ flex: 1 }} 
+                                            cachePolicy="memory-disk"
+                                            contentFit="cover"
+                                        />
+                                        {item.mediaType === 'video' && (
+                                            <View style={{ ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.2)' }}>
+                                                <PlayCircle color="#fff" size={32} />
+                                            </View>
+                                        )}
+                                    </TouchableOpacity>
+                                );
+                            }}
+                            ListFooterComponent={
+                                previewLoadingMore ? (
+                                    <View style={{ padding: 20, alignItems: 'center' }}>
+                                        <ActivityIndicator size="small" color="#007AFF" />
+                                    </View>
+                                ) : null
+                            }
+                            ListEmptyComponent={
+                                <View style={{ padding: 20, alignItems: 'center' }}>
+                                    <Text style={{ color: '#888' }}>No photos found in this folder.</Text>
+                                </View>
+                            }
+                        />
+                    )}
+                </View>
+            </Modal>
+
+            {/* Full Screen Asset Viewer Modal */}
+            <Modal
+                visible={selectedAssetIndexToView !== null}
+                transparent={true}
+                animationType="fade"
+                onRequestClose={() => setSelectedAssetIndexToView(null)}
+            >
+                {selectedAssetIndexToView !== null && (
+                    <View style={{ flex: 1, backgroundColor: '#000' }}>
+                        <TouchableOpacity 
+                            style={{ position: 'absolute', top: Platform.OS === 'ios' ? 65 : 45, right: 20, zIndex: 10, padding: 15, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 30 }}
+                            onPress={() => setSelectedAssetIndexToView(null)}
+                            hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
+                        >
+                            <X color="#fff" size={28} />
+                        </TouchableOpacity>
+                        
+                        <FlatList
+                            data={previewAssets}
+                            horizontal
+                            pagingEnabled
+                            keyExtractor={(item) => item.id}
+                            initialScrollIndex={selectedAssetIndexToView}
+                            getItemLayout={(data, index) => ({
+                                length: Dimensions.get('window').width,
+                                offset: Dimensions.get('window').width * index,
+                                index,
+                            })}
+                            onViewableItemsChanged={onViewableItemsChanged}
+                            viewabilityConfig={viewabilityConfig}
+                            renderItem={({ item, index }) => (
+                                <View style={{ width: Dimensions.get('window').width, flex: 1 }}>
+                                    {/* Always mount the image so there is no flash when switching to/from video player */}
+                                    <Image 
+                                        source={{ uri: item.uri }} 
+                                        style={{ flex: 1 }} 
+                                        contentFit="contain"
+                                    />
+                                    {/* Conditionally overlay the video player when active */}
+                                    {item.mediaType === 'video' && selectedAssetIndexToView === index && (
+                                        <View style={StyleSheet.absoluteFillObject}>
+                                            <SimpleVideoPlayer uri={item.uri} isActive={true} />
+                                        </View>
+                                    )}
+                                </View>
+                            )}
+                            onEndReached={loadMorePreviewAssets}
+                            onEndReachedThreshold={0.5}
+                        />
+                    </View>
+                )}
+            </Modal>
         </View>
     );
 }
@@ -724,10 +1043,62 @@ const styles = StyleSheet.create({
         fontSize: 15,
         fontWeight: '600',
     },
+    urlButtonText: {
+        color: '#fff',
+        fontSize: 16,
+        fontWeight: '600'
+    },
+    albumRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        paddingVertical: 16,
+        paddingHorizontal: 20,
+        borderBottomWidth: 1,
+        borderBottomColor: '#f0f0f0'
+    },
+    albumInfo: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        flex: 1,
+    },
+    albumTitle: {
+        fontSize: 16,
+        color: '#333',
+        fontWeight: '500'
+    },
+    albumCount: {
+        fontSize: 13,
+        color: '#888',
+        marginTop: 2
+    },
     modalButtonTextSave: {
         color: '#FFF',
         fontSize: 15,
-        fontWeight: '600',
+        fontWeight: 'bold',
+    },
+    albumModalContainer: {
+        flex: 1,
+        backgroundColor: '#f8f9fa',
+        paddingTop: Platform.OS === 'ios' ? 10 : 40, // iOS pageSheet already handles safe area mostly, but Android needs it
+    },
+    albumModalHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        paddingHorizontal: 20,
+        paddingVertical: 15,
+        backgroundColor: '#f8f9fa',
+        borderBottomWidth: 1,
+        borderBottomColor: '#ebebeb',
+    },
+    albumModalTitle: {
+        fontSize: 20,
+        fontWeight: 'bold',
+        color: '#1c1c1e',
+    },
+    albumCloseButton: {
+        padding: 5,
     },
     stepperButton: {
         borderWidth: 1,

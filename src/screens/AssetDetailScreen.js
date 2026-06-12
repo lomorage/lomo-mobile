@@ -76,25 +76,60 @@ const LivePhotoIcon = ({ color = '#fff', size = 14 }) => {
 };
 
 function AssetVideoPlayer({ uri, style, shouldPlay, nativeControls = false }) {
+    const [showControls, setShowControls] = React.useState(false);
     const player = useVideoPlayer(uri, player => {
-        player.loop = !nativeControls; // Loop if no controls (Live Photos), otherwise standard playback
+        player.loop = !nativeControls;
     });
 
-    useEffect(() => {
+    React.useEffect(() => {
+        const sub = player.addListener('statusChange', ({ status }) => {
+            if (status === 'readyToPlay' && shouldPlay) {
+                try { player.play(); } catch(e) {}
+            }
+        });
+        
         if (shouldPlay) {
-            player.play();
+            try { player.play(); } catch(e) {}
+            // Backup timeout in case statusChange doesn't fire
+            setTimeout(() => {
+                if (shouldPlay) {
+                    try { player.play(); } catch(e) {}
+                }
+            }, 100);
         } else {
             player.pause();
+            setShowControls(false);
         }
+        
+        return () => sub.remove();
     }, [shouldPlay, player]);
 
+    if (!nativeControls) {
+        return (
+            <VideoView 
+                style={style} 
+                player={player}
+                allowsPictureInPicture 
+                nativeControls={false}
+            />
+        );
+    }
+
     return (
-        <VideoView 
-            style={style} 
-            player={player}
-            allowsPictureInPicture 
-            nativeControls={nativeControls}
-        />
+        <View style={style}>
+            <VideoView 
+                style={StyleSheet.absoluteFillObject} 
+                player={player}
+                allowsPictureInPicture 
+                nativeControls={showControls}
+            />
+            {!showControls && (
+                <Pressable
+                    style={StyleSheet.absoluteFillObject}
+                    onPress={() => setShowControls(true)}
+                />
+            )}
+        </View>
     );
 }
 
@@ -331,10 +366,13 @@ export default function AssetDetailScreen({ route, navigation }) {
     const onViewableItemsChanged = useRef(({ viewableItems }) => {
         if (viewableItems.length > 0) {
             const newIndex = viewableItems[0].index;
-            if (newIndex !== currentIndex) {
-                setCurrentIndex(newIndex);
-                setUseOriginalVideo(false);
-            }
+            setCurrentIndex(prevIndex => {
+                if (prevIndex !== newIndex) {
+                    setUseOriginalVideo(false);
+                    return newIndex;
+                }
+                return prevIndex;
+            });
         }
     }).current;
 
@@ -414,7 +452,7 @@ export default function AssetDetailScreen({ route, navigation }) {
 
         const isVisible = index === currentIndex;
 
-        // Prevent Android OutOfMemoryError (MediaCodec): Unmount ExoPlayer for off-screen videos
+        // Unmount video players when not visible to guarantee playback stops.
         const shouldMountVideo = item.mediaType === 'video' && isVisible;
         const isLive = isLivePhoto(item);
         const cacheKey = getCacheKey(item);
@@ -435,9 +473,9 @@ export default function AssetDetailScreen({ route, navigation }) {
                     onZoomStateChange={(isZoomed) => setFlatListScrollEnabled(!isZoomed)}
                     style={{ width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center' }}
                 >
-                    {shouldMountVideo && !isLive ? (
+                    {item.mediaType === 'video' && !isLive ? (
                         <View style={{ width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center', position: 'relative' }}>
-                            {/* The instantly-loading thumbnail from disk cache */}
+                            {/* The instantly-loading thumbnail from disk cache ALWAYS mounted to prevent flash */}
                             <Image
                                 source={{ uri: staticImageUri }}
                                 placeholder={{ uri: thumbUri }}
@@ -445,15 +483,16 @@ export default function AssetDetailScreen({ route, navigation }) {
                                 style={[styles.image, { position: 'absolute' }]}
                                 contentFit="contain"
                                 cachePolicy="disk"
-                                transition={150}
                             />
-                            {/* The streaming video player layered on top */}
-                            <AssetVideoPlayer 
-                                uri={uri} 
-                                style={[styles.image, { position: 'absolute' }]} 
-                                shouldPlay={isVisible}
-                                nativeControls={true}
-                            />
+                            {/* The streaming video player layered on top, only mounted when visible */}
+                            {shouldMountVideo && (
+                                <AssetVideoPlayer 
+                                    uri={uri} 
+                                    style={[styles.image, { position: 'absolute' }]} 
+                                    shouldPlay={isVisible}
+                                    nativeControls={true}
+                                />
+                            )}
                         </View>
                     ) : (
                         <Pressable
@@ -485,7 +524,7 @@ export default function AssetDetailScreen({ route, navigation }) {
                                         <AssetVideoPlayer 
                                             uri={liveVideoUri} 
                                             style={styles.image} 
-                                            shouldPlay={true} 
+                                            shouldPlay={true}
                                             nativeControls={false}
                                         />
                                     </Animated.View>
