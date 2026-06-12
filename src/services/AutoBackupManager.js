@@ -434,6 +434,8 @@ class AutoBackupManager {
                 const SyncService = require('./SyncService').default;
                 delete SyncService.localHashCache[asset.id];
                 delete asset.hash;
+                const AssetDBService = require('./AssetDBService').default;
+                await AssetDBService.updateAssetHash(asset.id, null, null);
                 
                 // Push back to end of queue to retry later without blocking
                 this.queue.push(asset);
@@ -564,10 +566,8 @@ TaskManager.defineTask(BACKGROUND_BACKUP_TASK, async () => {
             return BackgroundTask.BackgroundTaskResult.Success;
         }
 
-        // Hydrate SyncService to check what's already on the server!
-        // This prevents redundant hashing/processing of items we already know are synced.
-        const SyncService = require('./SyncService').default;
-        await SyncService.loadRemoteTree();
+        // The Merkle tree is no longer needed for background backup discovery!
+        // We solely rely on the local DB 'uploaded' status cached in localHashCache.
 
         const MediaService = require('./MediaService').default;
         let pending = [];
@@ -576,9 +576,9 @@ TaskManager.defineTask(BACKGROUND_BACKUP_TASK, async () => {
         let pagesScanned = 0;
         const MAX_PAGES = 5; // Scan up to 500 recent items
         
-        console.log('[BackgroundTask] Starting deep scan...');
-        // P0 Fix: load localHashCache so we can look up correct hashes
-        // (MediaLibrary assets do NOT have a .hash field — that's computed by SyncService)
+        console.log('[BackgroundTask] Starting deep scan using DB cache...');
+        const SyncService = require('./SyncService').default;
+        // Load localHashCache so we can look up DB uploaded status instantly
         await SyncService.loadLocalHashCache();
 
         while (hasNextPage && pagesScanned < MAX_PAGES) {
@@ -586,10 +586,9 @@ TaskManager.defineTask(BACKGROUND_BACKUP_TASK, async () => {
             const assets = result.assets || [];
             
             for (const asset of assets) {
-                // Look up the cached hash we computed during foreground sync
                 const cached = SyncService.localHashCache[asset.id];
-                const hash = cached?.hash;
-                const isSynced = hash && SyncService.remoteTree?.getNodeByHash(hash);
+                // Using the DB-derived 'uploaded' flag directly!
+                const isSynced = cached?.uploaded === true;
                 if (!isSynced) {
                     pending.push(asset);
                 }
@@ -597,8 +596,7 @@ TaskManager.defineTask(BACKGROUND_BACKUP_TASK, async () => {
             
             // Heuristic: If an entire page of assets are all in the cache and synced, stop scanning
             const allSynced = assets.length > 0 && assets.every(a => {
-                const h = SyncService.localHashCache[a.id]?.hash;
-                return h && SyncService.remoteTree?.getNodeByHash(h);
+                return SyncService.localHashCache[a.id]?.uploaded === true;
             });
             if (allSynced) {
                 console.log('[BackgroundTask] Found fully-synced boundary, stopping scan.');

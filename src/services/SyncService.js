@@ -348,12 +348,28 @@ class SyncService {
       const info = await FileSystem.getInfoAsync(path);
       if (info.exists) {
         await FileSystem.deleteAsync(path);
-        console.log('[SyncService] Local hash cache cleared');
+        console.log('[SyncService] Legacy local hash cache JSON cleared');
+      }
+      
+      // Also clear DB hashes for local assets
+      await AssetDBService.init();
+      if (AssetDBService.db) {
+        await AssetDBService.db.runAsync('UPDATE MediaAsset SET hash = NULL, hashModificationTime = NULL WHERE isLocal = 1');
+        console.log('[SyncService] SQLite local hash cache cleared');
       }
       this.localHashCache = {};
     } catch (e) {
       console.error('[SyncService] Failed to clear local hash cache', e);
     }
+  }
+
+  async loadLocalHashCache() {
+    await AssetDBService.init();
+    this.localHashCache = await AssetDBService.getLocalHashesMap();
+  }
+
+  async saveLocalHashCache() {
+    // Deprecated: No-op. Persisting is now done incrementally via AssetDBService.updateAssetHash
   }
 
   async clearRemoteTreeCache() {
@@ -412,49 +428,16 @@ class SyncService {
     return docDir + (docDir.endsWith('/') ? '' : '/') + 'merkle/';
   }
 
-  async loadLocalHashCache() {
-    const cacheDir = this.getCacheDir();
-    if (!cacheDir) return;
-    try {
-      const path = `${cacheDir}local_hash_cache_v2.json`;
-      const info = await FileSystem.getInfoAsync(path);
-      if (info.exists) {
-        const data = await FileSystem.readAsStringAsync(path);
-        this.localHashCache = JSON.parse(data);
-      } else {
-        this.localHashCache = {};
-      }
-    } catch (e) {
-      console.warn('Failed to load local hash cache', e);
-      this.localHashCache = {};
-    }
-  }
-
-  async saveLocalHashCache() {
-    const cacheDir = this.getCacheDir();
-    if (!cacheDir) return;
-
-    if (!(await this.ensureCacheDir())) return;
-
-    // Await to avoid concurrent writes to the same JSON file
-    // which can corrupt the file in Expo FileSystem
-    try {
-      const path = `${cacheDir}local_hash_cache_v2.json`;
-      await FileSystem.writeAsStringAsync(path, JSON.stringify(this.localHashCache));
-    } catch (e) {
-      console.warn('Failed to save local hash cache', e);
-    }
-  }
 
   async precalculateHashes(assets, onProgress) {
     return await MetricsTracker.measure('SyncService_precalculateHashes', async () => {
       console.log(`Pre-calculating hashes for ${assets.length} assets...`);
       await this.loadLocalHashCache();
+      const localHashMap = this.localHashCache;
       let hashedCount = 0;
       let completedCount = 0;
       let lastUiUpdateTime = Date.now();
       let lastActualUiUpdateTime = Date.now();
-      this._lastCacheSaveTime = Date.now();
       
       // Reduce default concurrency to 2 to prevent starving the UI thread and JS thread.
       // 5 concurrent heavy native threads doing SHA1 + I/O causes severe UI scrolling stutter.
@@ -486,7 +469,7 @@ class SyncService {
           
           let hash = asset.hash;
           if (!hash) {
-            const cached = this.localHashCache[asset.id];
+            const cached = localHashMap[asset.id];
             if (cached && cached.modificationTime === asset.modificationTime) {
               hash = cached.hash;
             } else {
@@ -510,19 +493,13 @@ class SyncService {
               if (hash) {
                 const filename = asset.filename || 'unknown';
                 const size = asset.mediaSubtypes?.[0] || asset.mediaType;
-                this.localHashCache[asset.id] = {
+                localHashMap[asset.id] = {
                   hash,
-                  modificationTime: asset.modificationTime,
-                  filename: filename,
-                  size: size
+                  modificationTime: asset.modificationTime
                 };
                 
-                const now = Date.now();
-                if (now - this._lastCacheSaveTime > 5000) {
-                   this._lastCacheSaveTime = now;
-                   // Don't await so we don't block hashing, save asynchronously
-                   this.saveLocalHashCache().catch(()=>{});
-                }
+                // Update DB incrementally
+                await AssetDBService.updateAssetHash(asset.id, hash, asset.modificationTime);
               }
             }
           }
@@ -544,7 +521,7 @@ class SyncService {
               onProgress({ 
                 current: completedCount, 
                 total: assets.length, 
-                message: `Analyzing new media...`,
+                message: `Organizing new photos...`,
                 triggerUiUpdate: shouldTriggerUi
               });
             }
@@ -558,8 +535,10 @@ class SyncService {
       }
       await Promise.all(workers);
       
-      // Always save at the end of the batch
-      await this.saveLocalHashCache();
+      // Sync the uploaded status now that local hashes are assigned
+      await AssetDBService.syncUploadedStatus();
+      // Reload cache to give fast UI access to the new 'uploaded' flags
+      await this.loadLocalHashCache();
       
       console.log(`[SyncService] Pre-calculated hashes for ${hashedCount}/${assets.length} assets`);
     });
@@ -571,6 +550,7 @@ class SyncService {
       const root = new AssetMerkleRoot();
       
       await this.loadLocalHashCache();
+      const localHashMap = this.localHashCache;
       let hashedCount = 0;
       
       for (let i = 0; i < assets.length; i++) {
@@ -582,7 +562,7 @@ class SyncService {
         let hash = asset.hash;
         
         if (!hash) {
-          const cached = this.localHashCache[asset.id];
+          const cached = localHashMap[asset.id];
           if (cached && cached.modificationTime === asset.modificationTime) {
             hash = cached.hash;
           }
@@ -672,7 +652,7 @@ class SyncService {
     // Case 1: JSON to SQLite migration
     if (sqlCount === 0 && treeAssets.length > 0) {
       console.log('[SyncService] Migrating remote assets from JSON cache to SQLite...');
-      await AssetDBService.insertRemoteAssets(treeAssets);
+      await AssetDBService.syncRemoteAssets(treeAssets);
       console.log('[SyncService] JSON to SQLite migration completed.');
       
       const { DeviceEventEmitter } = require('react-native');
@@ -926,7 +906,10 @@ class SyncService {
         // Insert into local SQLite cache for Photo Map and Gallery Grid
         await AssetDBService.init();
         const remoteAssets = Array.from(newRoot.assetsMap.values());
-        await AssetDBService.insertRemoteAssets(remoteAssets);
+        await AssetDBService.syncRemoteAssets(remoteAssets);
+        // Sync the DB uploaded status
+        await AssetDBService.syncUploadedStatus();
+        await this.loadLocalHashCache();
 
         // Emit event so the HomeScreen updates the gallery grid
         const { DeviceEventEmitter } = require('react-native');

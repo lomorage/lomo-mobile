@@ -245,9 +245,12 @@ class UploadService {
                 SyncService.localHashCache[asset.id] = {
                     hash,
                     modificationTime: asset.modificationTime,
-                    filename: info.filename || 'unknown'
+                    filename: info.filename || 'unknown',
+                    uploaded: true
                 };
-                await SyncService.saveLocalHashCache();
+                const AssetDBService = require('./AssetDBService').default;
+                await AssetDBService.updateAssetHash(asset.id, hash, asset.modificationTime);
+                await AssetDBService.markAssetUploaded(asset.id);
             } catch (cacheErr) {
                 console.warn('[UploadService] Failed to save hash to cache:', cacheErr.message);
             }

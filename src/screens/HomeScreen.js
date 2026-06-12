@@ -116,7 +116,6 @@ export default function HomeScreen({ navigation }) {
 
     const localAssetsRef = useRef([]);
     const remoteAssetsListRef = useRef([]);
-    const remoteHashesSetRef = useRef(new Set());
 
     const safeUri = useCallback((uri) => {
         if (!uri) return null;
@@ -169,8 +168,8 @@ const formatSpeed = (bytesPerSec) => {
         const initialAssets = currentLocalAssets.map(a => {
             const cached = SyncService.localHashCache[a.id];
             const hash = a.hash || cached?.hash;
-            // Check synced status using our fast remoteHashesSetRef lookup
-            const isSynced = hash && remoteHashesSetRef.current.has(hash.toLowerCase());
+            // Use DB-synced uploaded flag instead of in-memory hash set lookup
+            const isSynced = cached?.uploaded === true;
             return {
                 ...a,
                 hash: hash || a.hash,
@@ -550,7 +549,6 @@ const formatSpeed = (bytesPerSec) => {
                 try {
                     const sqliteRemoteAssets = await AssetDBService.getRemoteAssets();
                     remoteAssetsListRef.current = sqliteRemoteAssets;
-                    remoteHashesSetRef.current = new Set(sqliteRemoteAssets.map(a => a.hash));
                     mergeAndSetAssets(localAssetsRef.current, false);
                 } catch (err) {
                     console.error('[HomeScreen] Failed to reload remote assets on event:', err);
@@ -603,7 +601,6 @@ const formatSpeed = (bytesPerSec) => {
             ]);
         localAssetsRef.current = cumulativeLocalAssets;
             remoteAssetsListRef.current = sqliteRemoteAssets;
-            remoteHashesSetRef.current = new Set(sqliteRemoteAssets.map(a => a.hash));
 
             // Insert local assets into DB so they have GPS coordinate caching for map markers
             AssetDBService.insertLocalAssets(cumulativeLocalAssets).then(() => {
@@ -621,7 +618,7 @@ const formatSpeed = (bytesPerSec) => {
             mergeAndSetAssets(cumulativeLocalAssets, false);
             setLoading(false);
             setSyncing(true);
-            setSyncProgress({ message: 'Syncing with server...' });
+            setSyncProgress({ message: 'Refreshing...' });
 
             // Fire off incremental remote tree update in background.
             // This only fetches CHANGED months (comparing cached hashes vs server).
@@ -637,7 +634,7 @@ const formatSpeed = (bytesPerSec) => {
 
             // 4. Perform Deep Hash Crypto-Sync
             try {
-                setSyncProgress({ message: 'Analyzing local media...' });
+                setSyncProgress({ message: 'Organizing photos...' });
                 const diff = await SyncService.sync(cumulativeLocalAssets, (progress) => {
                     if (!isMounted.current) return;
                     setSyncProgress(progress);
@@ -878,7 +875,7 @@ const formatSpeed = (bytesPerSec) => {
                 <View style={{ flex: 1 }}>
                     <Text style={styles.title}>Lomorage</Text>
                     <Text style={styles.subtitle}>
-                        {`${assets.length} items${syncing ? ` • ${syncProgress?.message || 'Checking local media...'}` : error ? ' • Offline' : ''}`}
+                        {`${assets.length} items${syncing ? ` • ${syncProgress?.message || 'Loading...'}` : error ? ' • Offline' : ''}`}
                     </Text>
                     {syncing && syncProgress?.total > 0 && syncProgress?.current !== undefined ? (
                         <Text style={styles.progressText}>

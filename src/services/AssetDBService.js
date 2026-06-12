@@ -1,4 +1,5 @@
 import * as SQLite from 'expo-sqlite';
+import * as FileSystem from 'expo-file-system/legacy';
 import MetricsTracker from '../utils/MetricsTracker';
 
 class AssetDBService {
@@ -12,9 +13,8 @@ class AssetDBService {
     
     try {
       this.db = await SQLite.openDatabaseAsync(this.dbName);
-      // Create the MediaAsset table
-      // isLocal: 1 for local, 0 for remote
-      // hasGeo: 1 if we have queried/confirmed its GPS (even if 0,0), 0 if unknown
+
+      // Create base table if not exists (Version 1)
       await this.db.execAsync(`
         CREATE TABLE IF NOT EXISTS MediaAsset (
           id TEXT PRIMARY KEY,
@@ -31,31 +31,148 @@ class AssetDBService {
         CREATE INDEX IF NOT EXISTS idx_hasGeo ON MediaAsset(hasGeo);
       `);
 
-      // Migration for legacy databases: Add filename column if it does not exist
-      try {
-        await this.db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN filename TEXT;`);
-        console.log('[AssetDBService] Migration: Added filename column to MediaAsset.');
-      } catch (migrationError) {
-        // Safe to ignore if column already exists
+      // Handle versioned migrations
+      const { user_version } = await this.db.getFirstAsync('PRAGMA user_version');
+      let currentVersion = user_version;
+
+      if (currentVersion < 1) {
+        // Fallback for legacy databases that were created before versioning
+        try { await this.db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN filename TEXT;`); } catch (e) {}
+        try { await this.db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN mediaType TEXT;`); } catch (e) {}
+        await this.db.execAsync('PRAGMA user_version = 1');
+        currentVersion = 1;
       }
 
-      // Migration for legacy databases: Add mediaType column if it does not exist
-      try {
-        await this.db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN mediaType TEXT;`);
-        console.log('[AssetDBService] Migration: Added mediaType column to MediaAsset.');
-      } catch (migrationError) {
-        // Safe to ignore if column already exists
+      if (currentVersion < 2) {
+        // Version 2: Add hashModificationTime, uploaded, and AI metadata columns
+        try { await this.db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN hashModificationTime INTEGER;`); } catch (e) {}
+        try { await this.db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN uploaded INTEGER DEFAULT 0;`); } catch (e) {}
+        try { await this.db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN metadata TEXT DEFAULT '';`); } catch (e) {}
+        try { await this.db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN classifyVersion INTEGER;`); } catch (e) {}
+        try { await this.db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN textVersion INTEGER;`); } catch (e) {}
+        try { await this.db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN faceRecVersion INTEGER;`); } catch (e) {}
+        
+        await this.db.execAsync('PRAGMA user_version = 2');
+        currentVersion = 2;
+        console.log('[AssetDBService] Database migrated to version 2.');
       }
 
-      console.log('[AssetDBService] Database initialized successfully.');
+      // Smooth migration: if local_hash_cache_v2.json exists, migrate it to SQLite
+      await this.migrateLocalHashCache();
+
+      console.log(`[AssetDBService] Database initialized successfully (v${currentVersion}).`);
     } catch (error) {
       console.error('[AssetDBService] Failed to initialize DB:', error);
       throw error;
     }
   }
 
+  async migrateLocalHashCache() {
+    try {
+      const docDir = FileSystem.documentDirectory;
+      if (!docDir) return;
+      const path = docDir + (docDir.endsWith('/') ? '' : '/') + 'merkle/local_hash_cache_v2.json';
+      const info = await FileSystem.getInfoAsync(path);
+      
+      if (info.exists) {
+        console.log('[AssetDBService] Found legacy local_hash_cache_v2.json, migrating to SQLite...');
+        const data = await FileSystem.readAsStringAsync(path);
+        const cache = JSON.parse(data);
+        const entries = Object.entries(cache);
+        
+        if (entries.length > 0) {
+          await this.db.withExclusiveTransactionAsync(async () => {
+            const statement = await this.db.prepareAsync(`
+              UPDATE MediaAsset 
+              SET hash = ?, hashModificationTime = ? 
+              WHERE id = ? AND isLocal = 1
+            `);
+            try {
+              let count = 0;
+              for (const [id, value] of entries) {
+                if (value && value.hash && value.modificationTime) {
+                  statement.executeSync(value.hash, value.modificationTime, id);
+                  count++;
+                  if (count % 500 === 0) await new Promise(resolve => setTimeout(resolve, 5));
+                }
+              }
+            } finally {
+              await statement.finalizeAsync();
+            }
+          });
+          console.log(`[AssetDBService] Successfully migrated ${entries.length} hashes to DB.`);
+        }
+        
+        // Delete the file after migration
+        await FileSystem.deleteAsync(path);
+        console.log('[AssetDBService] Deleted legacy local_hash_cache_v2.json');
+      }
+    } catch (e) {
+      console.warn('[AssetDBService] Failed to migrate local hash cache:', e);
+    }
+  }
+
+  async getLocalHashesMap() {
+    if (!this.db) return {};
+    const rows = await this.db.getAllAsync('SELECT id, hash, hashModificationTime, uploaded FROM MediaAsset WHERE isLocal = 1 AND hash IS NOT NULL');
+    const map = {};
+    for (const row of rows) {
+      map[row.id] = { 
+        hash: row.hash, 
+        modificationTime: row.hashModificationTime,
+        uploaded: row.uploaded === 1
+      };
+    }
+    return map;
+  }
+
+  async updateAssetHash(id, hash, modificationTime) {
+    if (!this.db) return;
+    await this.db.runAsync(
+      'UPDATE MediaAsset SET hash = ?, hashModificationTime = ? WHERE id = ?',
+      [hash, modificationTime, id]
+    );
+  }
+
+  async markAssetUploaded(id) {
+    if (!this.db) return;
+    await this.db.runAsync(
+      'UPDATE MediaAsset SET uploaded = 1 WHERE id = ?',
+      [id]
+    );
+  }
+
+  async syncUploadedStatus() {
+    if (!this.db) return;
+    return await MetricsTracker.measure('AssetDBService_syncUploadedStatus', async () => {
+      try {
+        await this.db.withExclusiveTransactionAsync(async () => {
+          // 1. Mark as uploaded if the hash exists in the remote assets (isLocal = 0)
+          await this.db.execAsync(`
+            UPDATE MediaAsset 
+            SET uploaded = 1 
+            WHERE isLocal = 1 
+              AND hash IN (SELECT hash FROM MediaAsset WHERE isLocal = 0);
+          `);
+          
+          // 2. Mark as NOT uploaded if the hash does not exist in remote assets
+          await this.db.execAsync(`
+            UPDATE MediaAsset 
+            SET uploaded = 0 
+            WHERE isLocal = 1 
+              AND hash IS NOT NULL
+              AND hash NOT IN (SELECT hash FROM MediaAsset WHERE isLocal = 0);
+          `);
+        });
+        console.log('[AssetDBService] Successfully synced uploaded status within SQLite.');
+      } catch (error) {
+        console.error('[AssetDBService] Failed to sync uploaded status:', error);
+      }
+    });
+  }
+
   // Insert or update local assets.
-  // We use REPLACE so we don't duplicate. Local assets come from MediaLibrary.
+  // We use ON CONFLICT DO UPDATE so we don't duplicate or overwrite existing hashes/metadata.
   async insertLocalAssets(assets) {
     if (!this.db || !assets || assets.length === 0) return;
 
@@ -64,9 +181,15 @@ class AssetDBService {
         // Using a transaction for batch insert
         await this.db.withExclusiveTransactionAsync(async () => {
           const statement = await this.db.prepareAsync(`
-            INSERT OR REPLACE INTO MediaAsset 
+            INSERT INTO MediaAsset 
             (id, isLocal, hasGeo, latitude, longitude, createTime, mediaType) 
             VALUES (?, 1, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              hasGeo = excluded.hasGeo,
+              latitude = excluded.latitude,
+              longitude = excluded.longitude,
+              createTime = excluded.createTime,
+              mediaType = excluded.mediaType
           `);
           
           try {
@@ -102,9 +225,9 @@ class AssetDBService {
     }, `(Assets: ${assets.length})`);
   }
 
-  // Insert remote assets discovered via SyncService
-  async insertRemoteAssets(assets) {
-    if (!this.db || !assets || assets.length === 0) return;
+  // Sync remote assets discovered via SyncService
+  async syncRemoteAssets(assets) {
+    if (!this.db || !assets) return;
 
     const isVideoExtension = (filename) => {
       if (!filename) return false;
@@ -112,59 +235,76 @@ class AssetDBService {
       return ['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext);
     };
 
-    return await MetricsTracker.measure('AssetDBService_insertRemoteAssets', async () => {
+    return await MetricsTracker.measure('AssetDBService_syncRemoteAssets', async () => {
       try {
-        // 1. Get all existing IDs in SQLite database to filter out duplicates before inserting
-        const existingRows = await this.db.getAllAsync('SELECT id FROM MediaAsset');
+        // 1. Get all existing IDs in SQLite database
+        const existingRows = await this.db.getAllAsync('SELECT id FROM MediaAsset WHERE isLocal = 0');
         const existingIds = new Set(existingRows.map(r => r.id));
+        
+        // The new remote hashes from the server
+        const incomingHashes = new Set(assets.map(a => a.hash));
 
-        // 2. Filter out already present assets to avoid expensive no-op statement executions
+        // 2. Find assets to delete (exist in DB but not in incoming)
+        const idsToDelete = [...existingIds].filter(id => !incomingHashes.has(id));
+
+        // 3. Find assets to insert (in incoming but not in DB)
         const newAssets = assets.filter(asset => !existingIds.has(asset.hash));
-        if (newAssets.length === 0) {
-          console.log('[AssetDBService] No new remote assets to insert.');
-          return;
+
+        if (idsToDelete.length > 0) {
+          console.log(`[AssetDBService] Deleting ${idsToDelete.length} stale remote assets...`);
+          await this.db.withExclusiveTransactionAsync(async () => {
+            const statement = await this.db.prepareAsync('DELETE FROM MediaAsset WHERE id = ? AND isLocal = 0');
+            try {
+              let counter = 0;
+              for (const id of idsToDelete) {
+                statement.executeSync(id);
+                if (++counter % 500 === 0) await new Promise(resolve => setTimeout(resolve, 5));
+              }
+            } finally {
+              await statement.finalizeAsync();
+            }
+          });
         }
 
-        console.log(`[AssetDBService] Inserting ${newAssets.length} new remote assets out of ${assets.length}...`);
+        if (newAssets.length > 0) {
+          console.log(`[AssetDBService] Inserting ${newAssets.length} new remote assets out of ${assets.length}...`);
+          await this.db.withExclusiveTransactionAsync(async () => {
+            const statement = await this.db.prepareAsync(`
+              INSERT OR IGNORE INTO MediaAsset 
+              (id, hash, isLocal, hasGeo, latitude, longitude, createTime, mediaType, filename) 
+              VALUES (?, ?, 0, 0, 0.0, 0.0, ?, ?, ?)
+            `);
+            
+            try {
+              let counter = 0;
+              for (const asset of newAssets) {
+                const id = asset.hash;
+                let createTime = 0;
+                if (asset.date) {
+                  createTime = new Date(asset.date).getTime();
+                }
+                const filename = asset.tag || asset.filename || '';
+                const mType = isVideoExtension(filename) ? 'video' : 'photo';
+                statement.executeSync(
+                  id,
+                  asset.hash,
+                  createTime,
+                  mType,
+                  filename
+                );
 
-        await this.db.withExclusiveTransactionAsync(async () => {
-          const statement = await this.db.prepareAsync(`
-            INSERT OR IGNORE INTO MediaAsset 
-            (id, hash, isLocal, hasGeo, latitude, longitude, createTime, mediaType, filename) 
-            VALUES (?, ?, 0, 0, 0.0, 0.0, ?, ?, ?)
-          `);
-          
-          try {
-            let counter = 0;
-            for (const asset of newAssets) {
-              // remote asset uses hash as ID
-              const id = asset.hash;
-              // createTime might be string or timestamp, best effort parse
-              let createTime = 0;
-              if (asset.date) {
-                createTime = new Date(asset.date).getTime();
+                if (++counter % 500 === 0) {
+                    await new Promise(resolve => setTimeout(resolve, 5));
+                }
               }
-              const filename = asset.tag || asset.filename || '';
-              const mType = isVideoExtension(filename) ? 'video' : 'photo';
-              statement.executeSync(
-                id,
-                asset.hash,
-                createTime,
-                mType,
-                filename
-              );
-
-              if (++counter % 500 === 0) {
-                  await new Promise(resolve => setTimeout(resolve, 5));
-              }
+            } finally {
+              await statement.finalizeAsync();
             }
-          } finally {
-            await statement.finalizeAsync();
-          }
-        });
-        console.log(`[AssetDBService] Inserted ${newAssets.length} remote assets.`);
+          });
+          console.log(`[AssetDBService] Inserted ${newAssets.length} remote assets.`);
+        }
       } catch (error) {
-        console.error('[AssetDBService] Failed to insert remote assets:', error);
+        console.error('[AssetDBService] Failed to sync remote assets:', error);
         throw error;
       }
     }, `(Assets: ${assets.length})`);
