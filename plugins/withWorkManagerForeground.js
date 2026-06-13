@@ -31,6 +31,9 @@ function addPermissions(androidManifest) {
 function addServiceType(androidManifest) {
   const mainApplication = androidManifest.manifest.application[0];
   
+  // Force allow cleartext traffic for HTTP LAN connections on Android 9+ Release builds
+  mainApplication.$['android:usesCleartextTraffic'] = 'true';
+  
   if (!mainApplication.service) {
     mainApplication.service = [];
   }
@@ -44,8 +47,6 @@ function addServiceType(androidManifest) {
     targetService = {
       $: {
         'android:name': targetServiceName,
-        'android:enabled': 'true',
-        'android:exported': 'false',
         'android:foregroundServiceType': 'dataSync',
         'tools:node': 'merge',
       },
@@ -54,6 +55,8 @@ function addServiceType(androidManifest) {
   } else {
     targetService.$['android:foregroundServiceType'] = 'dataSync';
     targetService.$['tools:node'] = 'merge';
+    delete targetService.$['android:enabled'];
+    delete targetService.$['android:exported'];
   }
   
   if (!androidManifest.manifest.$['xmlns:tools']) {

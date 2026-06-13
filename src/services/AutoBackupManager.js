@@ -423,9 +423,16 @@ class AutoBackupManager {
         if (this.chargingOnlyBackup) {
             const charging = await this.isDeviceCharging();
             if (!charging) {
-                console.log('[AutoBackupManager] Charging-only mode enabled and not charging. Pausing backup.');
-                this.pause('Device is not charging');
-                return false;
+                // iOS Optimization: If we are in the background (e.g., triggered by geofence), 
+                // bypass the charging requirement. iOS background networking handles power efficiently,
+                // and there is no reliable "plugged-in" trigger to wake the app later.
+                if (Platform.OS === 'ios' && AppState.currentState !== 'active') {
+                    console.log('[AutoBackupManager] iOS Optimization: Bypassing charging constraint to guarantee background backup.');
+                } else {
+                    console.log('[AutoBackupManager] Charging-only mode enabled and not charging. Pausing backup.');
+                    this.pause('Device is not charging');
+                    return false;
+                }
             }
         }
 
@@ -759,7 +766,13 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
         }
         if (manager.chargingOnlyBackup) {
             const charging = await manager.isDeviceCharging();
-            if (!charging) return;
+            if (!charging) {
+                if (Platform.OS === 'ios') {
+                    console.log('[LocationTask] iOS Optimization: Proceeding despite not charging to guarantee background backup.');
+                } else {
+                    return;
+                }
+            }
         }
         if (manager.nightBackupOnly && !manager.isNightTime()) {
             return;
@@ -815,7 +828,7 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
                 await manager.startBackup();
                 console.log('[LocationTask] Background upload finished.');
             } else {
-                console.log('[LocationTask] No new assets to upload.');
+                console.log('[LocationTask] Woke up successfully via geofencing, but no new assets found to upload.');
             }
         } catch (err) {
             console.error('[LocationTask] Failed during background sync:', err);
