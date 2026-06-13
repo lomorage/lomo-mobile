@@ -2,12 +2,6 @@
 
 echo "Starting Android Release Build..."
 
-echo "Bumping version..."
-node bump-version.js
-if [ $? -ne 0 ]; then
-  echo "Failed to bump version"
-  exit 1
-fi
 
 # Navigate to android directory
 echo "Syncing native configurations (Prebuild)..."

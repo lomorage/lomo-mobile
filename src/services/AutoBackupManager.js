@@ -5,6 +5,7 @@ import * as TaskManager from 'expo-task-manager';
 import * as BackgroundTask from 'expo-background-task';
 import * as Network from 'expo-network';
 import * as Battery from 'expo-battery';
+import * as Location from 'expo-location';
 import UploadService from './UploadService';
 import GalleryStore from '../store/GalleryStore';
 
@@ -34,14 +35,18 @@ class AutoBackupManager {
         this.initSettings();
         
         DeviceEventEmitter.addListener('settingsChanged', (settings) => {
+            let reRegisterNeeded = false;
             if (settings.autoBackupEnabled !== undefined) {
                 this.autoBackupEnabled = settings.autoBackupEnabled;
+                reRegisterNeeded = true;
             }
             if (settings.wifiOnlyBackup !== undefined) {
                 this.wifiOnlyBackup = settings.wifiOnlyBackup;
+                reRegisterNeeded = true;
             }
             if (settings.chargingOnlyBackup !== undefined) {
                 this.chargingOnlyBackup = settings.chargingOnlyBackup;
+                reRegisterNeeded = true;
             }
             if (settings.nightBackupOnly !== undefined) {
                 this.nightBackupOnly = settings.nightBackupOnly;
@@ -50,8 +55,14 @@ class AutoBackupManager {
                 this.pause();
                 this.queue = [];
                 this.emitState();
-            } else if (!this.isBackingUp && !this.isPaused) {
-                this.syncQueueWithGallery();
+                this.unregisterBackgroundTask().catch(()=>{});
+            } else {
+                if (reRegisterNeeded) {
+                    this.registerBackgroundTask().catch(()=>{});
+                }
+                if (!this.isBackingUp && !this.isPaused) {
+                    this.syncQueueWithGallery();
+                }
             }
             this.updateNotification();
         });
@@ -143,20 +154,74 @@ class AutoBackupManager {
     }
 
     async registerBackgroundTask() {
+        if (!this.autoBackupEnabled) return;
         try {
-            const isRegistered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_BACKUP_TASK);
-            if (!isRegistered) {
-                await BackgroundTask.registerTaskAsync(BACKGROUND_BACKUP_TASK, {
-                    minimumInterval: 15 * 60, // 15 minutes
-                    stopOnTerminate: false,
-                    startOnBoot: true,
-                });
-                console.log('[AutoBackupManager] Background task registered.');
-            } else {
-                console.log('[AutoBackupManager] Background task already registered.');
+            console.log(`[AutoBackupManager] Registering background task. wifiOnly=${this.wifiOnlyBackup}, chargingOnly=${this.chargingOnlyBackup}`);
+            await BackgroundTask.unregisterTaskAsync(BACKGROUND_BACKUP_TASK).catch(() => {});
+            
+            await BackgroundTask.registerTaskAsync(BACKGROUND_BACKUP_TASK, {
+                minimumInterval: 15 * 60, // 15 minutes
+                stopOnTerminate: false,
+                startOnBoot: true,
+                wifiOnly: this.wifiOnlyBackup,
+                chargingOnly: this.chargingOnlyBackup,
+                useForegroundService: true,
+            });
+            console.log('[AutoBackupManager] Background task registered.');
+            if (Platform.OS === 'ios') {
+                await this.startLocationTracking();
             }
         } catch (e) {
             console.error('[AutoBackupManager] Failed to register background task:', e);
+        }
+    }
+
+    async unregisterBackgroundTask() {
+        try {
+            await BackgroundTask.unregisterTaskAsync(BACKGROUND_BACKUP_TASK);
+            console.log('[AutoBackupManager] Background task unregistered.');
+            if (Platform.OS === 'ios') {
+                await this.stopLocationTracking();
+            }
+        } catch (e) {
+            console.error('[AutoBackupManager] Failed to unregister background task:', e);
+        }
+    }
+
+    async startLocationTracking() {
+        if (Platform.OS !== 'ios') return;
+        if (!this.autoBackupEnabled) return;
+        
+        try {
+            const isRegistered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_LOCATION_TASK);
+            if (!isRegistered) {
+                const { status } = await Location.getBackgroundPermissionsAsync();
+                if (status === 'granted') {
+                    await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
+                        accuracy: Location.Accuracy.Balanced,
+                        distanceInterval: 200,
+                        deferredUpdatesInterval: 5 * 60 * 1000,
+                    });
+                    console.log('[AutoBackupManager] Background location tracking started.');
+                } else {
+                    console.log('[AutoBackupManager] Background location permission not granted, skipping geofencing.');
+                }
+            }
+        } catch (e) {
+            console.error('[AutoBackupManager] Failed to start background location tracking:', e);
+        }
+    }
+
+    async stopLocationTracking() {
+        if (Platform.OS !== 'ios') return;
+        try {
+            const isRegistered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_LOCATION_TASK);
+            if (isRegistered) {
+                await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
+                console.log('[AutoBackupManager] Background location tracking stopped.');
+            }
+        } catch (e) {
+            console.error('[AutoBackupManager] Failed to stop background location tracking:', e);
         }
     }
 
@@ -174,7 +239,14 @@ class AutoBackupManager {
             const savedNightBackup = await SecureStore.getItemAsync('lomorage_night_backup');
             if (savedNightBackup !== null) this.nightBackupOnly = savedNightBackup === 'true';
 
-        } catch(e) {}
+            if (this.autoBackupEnabled) {
+                await this.registerBackgroundTask();
+            } else {
+                await this.unregisterBackgroundTask();
+            }
+        } catch(e) {
+            console.error('[AutoBackupManager] initSettings failed:', e);
+        }
     }
 
     // Called whenever the gallery is updated
@@ -581,11 +653,24 @@ TaskManager.defineTask(BACKGROUND_BACKUP_TASK, async () => {
         // Load localHashCache so we can look up DB uploaded status instantly
         await SyncService.loadLocalHashCache();
 
+        // Read excluded albums
+        let excludedAlbums = [];
+        try {
+            const SecureStore = require('expo-secure-store');
+            const savedExcluded = await SecureStore.getItemAsync('lomorage_excluded_albums');
+            if (savedExcluded) excludedAlbums = JSON.parse(savedExcluded);
+        } catch (e) {}
+        
+        const excludedSet = await MediaService.getExcludedAssetIds(excludedAlbums);
+
         while (hasNextPage && pagesScanned < MAX_PAGES) {
             const result = await MediaService.getAssets(100, after);
             const assets = result.assets || [];
             
             for (const asset of assets) {
+                if (excludedSet.has(asset.id)) {
+                    continue; // Skip excluded albums
+                }
                 const cached = SyncService.localHashCache[asset.id];
                 // Using the DB-derived 'uploaded' flag directly!
                 const isSynced = cached?.uploaded === true;
@@ -651,6 +736,90 @@ TaskManager.defineTask(BACKGROUND_BACKUP_TASK, async () => {
     } catch (error) {
         console.error('[BackgroundTask] Failed:', error);
         return BackgroundTask.BackgroundTaskResult.Failed;
+    }
+});
+
+export const BACKGROUND_LOCATION_TASK = 'LOMO_LOCATION_TASK';
+
+TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
+    if (error) {
+        console.error('[LocationTask] Background location error:', error);
+        return;
+    }
+    if (data) {
+        console.log('[LocationTask] Background location wake-up triggered.');
+        const manager = require('./AutoBackupManager').default;
+        if (!manager || !manager.autoBackupEnabled || manager.isPaused) {
+            return;
+        }
+
+        if (manager.wifiOnlyBackup) {
+            const onWifi = await manager.isWifiConnected();
+            if (!onWifi) return;
+        }
+        if (manager.chargingOnlyBackup) {
+            const charging = await manager.isDeviceCharging();
+            if (!charging) return;
+        }
+        if (manager.nightBackupOnly && !manager.isNightTime()) {
+            return;
+        }
+
+        console.log('[LocationTask] Constraints met, starting background backup...');
+        
+        try {
+            const MediaService = require('./MediaService').default;
+            const SyncService = require('./SyncService').default;
+            await SyncService.loadLocalHashCache();
+
+            let pending = [];
+            let hasNextPage = true;
+            let after = null;
+            let pagesScanned = 0;
+            const MAX_PAGES = 5;
+
+            let excludedAlbums = [];
+            try {
+                const SecureStore = require('expo-secure-store');
+                const savedExcluded = await SecureStore.getItemAsync('lomorage_excluded_albums');
+                if (savedExcluded) excludedAlbums = JSON.parse(savedExcluded);
+            } catch (e) {}
+
+            const excludedSet = await MediaService.getExcludedAssetIds(excludedAlbums);
+
+            while (hasNextPage && pagesScanned < MAX_PAGES) {
+                const result = await MediaService.getAssets(100, after);
+                const assets = result.assets || [];
+                
+                for (const asset of assets) {
+                    if (excludedSet.has(asset.id)) continue;
+                    const cached = SyncService.localHashCache[asset.id];
+                    if (cached?.uploaded !== true) {
+                        pending.push(asset);
+                    }
+                }
+                
+                const allSynced = assets.length > 0 && assets.every(a => {
+                    return SyncService.localHashCache[a.id]?.uploaded === true;
+                });
+                if (allSynced) break;
+                
+                after = result.endCursor;
+                hasNextPage = result.hasNextPage;
+                pagesScanned++;
+            }
+
+            if (pending.length > 0) {
+                console.log(`[LocationTask] Found ${pending.length} pending assets. Starting background uploads...`);
+                manager.queue = pending;
+                await manager.startBackup();
+                console.log('[LocationTask] Background upload finished.');
+            } else {
+                console.log('[LocationTask] No new assets to upload.');
+            }
+        } catch (err) {
+            console.error('[LocationTask] Failed during background sync:', err);
+        }
     }
 });
 

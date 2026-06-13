@@ -521,7 +521,6 @@ class SyncService {
               onProgress({ 
                 current: completedCount, 
                 total: assets.length, 
-                message: `Organizing new photos...`,
                 triggerUiUpdate: shouldTriggerUi
               });
             }
@@ -1145,22 +1144,19 @@ class SyncService {
     this.isSyncing = true;
     
     try {
-      if (onProgress) onProgress({ message: 'Analyzing new media...', current: 0, total: localAssets.length });
+      if (onProgress) onProgress({ current: 0, total: localAssets.length });
       await this.precalculateHashes(localAssets, onProgress);
 
-      if (onProgress) onProgress({ message: 'Building local integrity map...' });
       await this.buildLocalTree(localAssets, onProgress);
       
-      if (onProgress) onProgress({ message: 'Fetching remote asset layout...' });
       const remoteOverview = await this.fetchRemoteOverview();
 
-      if (onProgress) onProgress({ message: 'Comparing local and remote assets...' });
       const uploadAssets = [];
       const downloadAssets = [];
 
       await this.findDiffWithDrillDown(this.localTree, this.remoteTree, uploadAssets, downloadAssets, 'year');
       
-      if (onProgress) onProgress({ current: localAssets.length, total: localAssets.length, message: 'Sync complete' });
+      if (onProgress) onProgress({ current: localAssets.length, total: localAssets.length });
       return { uploadAssets, downloadAssets };
     } finally {
       this.isSyncing = false;

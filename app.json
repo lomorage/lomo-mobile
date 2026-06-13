@@ -2,7 +2,7 @@
   "expo": {
     "name": "lomo-mobile",
     "slug": "lomo-mobile",
-    "version": "1.0.121",
+    "version": "1.0.129",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -21,7 +21,8 @@
           "fetch"
         ],
         "NSAppTransportSecurity": {
-          "NSAllowsArbitraryLoads": true
+          "NSAllowsArbitraryLoads": true,
+          "NSAllowsLocalNetworking": true
         },
         "NSLocalNetworkUsageDescription": "Lomorage requires local network access to discover your server.",
         "NSBonjourServices": [
@@ -79,7 +80,8 @@
       "expo-secure-store",
       "expo-task-manager",
       "expo-background-task",
-      "expo-sqlite"
+      "expo-sqlite",
+      "./plugins/withWorkManagerForeground"
     ],
     "web": {
       "favicon": "./assets/favicon.png"

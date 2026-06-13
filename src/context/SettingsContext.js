@@ -12,6 +12,7 @@ export function SettingsProvider({ children }) {
     const [adaptiveConcurrencyEnabled, setAdaptiveConcurrencyEnabled] = useState(true);
     const [hashConcurrency, setHashConcurrency] = useState(2);
     const [uploadConcurrency, setUploadConcurrency] = useState(3);
+    const [excludedAlbums, setExcludedAlbums] = useState([]);
     const [isLoading, setIsLoading] = useState(true);
 
     useEffect(() => {
@@ -51,6 +52,14 @@ export function SettingsProvider({ children }) {
             const savedUploadConcurrency = await SecureStore.getItemAsync('lomorage_upload_concurrency');
             if (savedUploadConcurrency !== null) {
                 setUploadConcurrency(parseInt(savedUploadConcurrency, 10));
+            }
+            const savedExcludedAlbums = await SecureStore.getItemAsync('lomorage_excluded_albums');
+            if (savedExcludedAlbums !== null) {
+                try {
+                    setExcludedAlbums(JSON.parse(savedExcludedAlbums));
+                } catch (e) {
+                    console.error('Failed to parse excluded albums:', e);
+                }
             }
         } catch (error) {
             console.error('Failed to load settings', error);
@@ -161,24 +170,33 @@ export function SettingsProvider({ children }) {
         } catch (error) {}
     };
 
-    const updateUploadConcurrency = async (val) => {
-        try {
-            await SecureStore.setItemAsync('lomorage_upload_concurrency', val.toString());
-            setUploadConcurrency(val);
-        } catch (error) {}
+    const updateUploadConcurrency = async (value) => {
+        setUploadConcurrency(value);
+        await SecureStore.setItemAsync('lomorage_upload_concurrency', value.toString());
+    };
+
+    const toggleAlbumExclusion = async (albumId) => {
+        let newList;
+        if (excludedAlbums.includes(albumId)) {
+            newList = excludedAlbums.filter(id => id !== albumId);
+        } else {
+            newList = [...excludedAlbums, albumId];
+        }
+        setExcludedAlbums(newList);
+        await SecureStore.setItemAsync('lomorage_excluded_albums', JSON.stringify(newList));
     };
 
     return (
-        <SettingsContext.Provider value={{ 
-            debugMode, 
-            toggleDebugMode, 
-            autoBackupEnabled, 
-            toggleAutoBackup, 
-            wifiOnlyBackup, 
-            toggleWifiOnly, 
-            chargingOnlyBackup, 
-            toggleChargingOnly, 
-            nightBackupOnly, 
+        <SettingsContext.Provider value={{
+            debugMode,
+            toggleDebugMode,
+            autoBackupEnabled,
+            toggleAutoBackup,
+            wifiOnlyBackup,
+            toggleWifiOnly,
+            chargingOnlyBackup,
+            toggleChargingOnly,
+            nightBackupOnly,
             toggleNightBackup,
             toggleNightBackupOnly,
             adaptiveConcurrencyEnabled,
@@ -187,7 +205,9 @@ export function SettingsProvider({ children }) {
             updateHashConcurrency,
             uploadConcurrency,
             updateUploadConcurrency,
-            isLoading 
+            excludedAlbums,
+            toggleAlbumExclusion,
+            isLoading
         }}>
             {children}
         </SettingsContext.Provider>

@@ -111,20 +111,67 @@ class MediaService {
   }
 
   /**
+   * Helper function to fetch all asset IDs belonging to excluded albums.
+   * This is necessary because iOS assets don't reliably expose 'albumId' in the global list.
+   */
+  async getExcludedAssetIds(excludedAlbumIds) {
+    const excludedIds = new Set();
+    if (!excludedAlbumIds || excludedAlbumIds.length === 0) return excludedIds;
+
+    for (const albumId of excludedAlbumIds) {
+      try {
+        let hasNextPage = true;
+        let after = null;
+        while (hasNextPage) {
+          const result = await MediaLibrary.getAssetsAsync({
+            album: albumId,
+            first: 1000,
+            after: after
+          });
+          if (result && result.assets) {
+            for (const asset of result.assets) {
+              excludedIds.add(asset.id);
+            }
+          }
+          after = result.endCursor;
+          hasNextPage = result.hasNextPage && result.assets && result.assets.length > 0;
+        }
+      } catch (e) {
+        console.warn(`[MediaService] Failed to fetch assets for excluded album ${albumId}:`, e.message);
+      }
+    }
+    console.log(`[MediaService] Found ${excludedIds.size} total excluded assets from ${excludedAlbumIds.length} albums.`);
+    return excludedIds;
+  }
+
+  /**
    * P0 Fix: Fetch ALL assets from the library via pagination.
    * Replaces the previous hardcoded getAssets(5000) which silently dropped photos beyond 5000.
    * Calls onPage(assets, pageNum) for each page so callers can process incrementally.
    */
-  async getAllAssets(onPage = null, pageSize = 500) {
+  async getAllAssets(onPage = null, pageSize = 500, excludedAlbumIds = []) {
     let allAssets = [];
     let after = null;
     let hasNextPage = true;
     let pageNum = 0;
 
+    // Fetch the Set of excluded asset IDs upfront
+    const excludedSet = await this.getExcludedAssetIds(excludedAlbumIds);
+
     while (hasNextPage) {
       pageNum++;
       const result = await this.getAssets(pageSize, after);
-      const assets = result.assets || [];
+      let assets = result.assets || [];
+
+      // Filter out assets that belong to excluded albums
+      if (excludedSet.size > 0) {
+        const originalCount = assets.length;
+        assets = assets.filter(a => !excludedSet.has(a.id));
+        if (assets.length < originalCount) {
+          console.log(`[MediaService] Filtered out ${originalCount - assets.length} excluded assets on page ${pageNum}`);
+        }
+      }
+
       allAssets = allAssets.concat(assets);
 
       if (onPage) {

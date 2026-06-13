@@ -86,7 +86,7 @@ export default function HomeScreen({ navigation }) {
     const [permissionStatus, setPermissionStatus] = useState('granted');
     const [loading, setLoading] = useState(true);
     
-    const { debugMode } = useSettings();
+    const { debugMode, excludedAlbums } = useSettings();
 
     const isMounted = useRef(true);
     const appState = useRef(AppState.currentState);
@@ -596,7 +596,7 @@ const formatSpeed = (bytesPerSec) => {
             // Load local assets and remote assets concurrently.
             // Reading local metadata is very fast, and querying SQLite for remote assets is extremely fast (<50ms).
             const [cumulativeLocalAssets, sqliteRemoteAssets] = await Promise.all([
-                MediaService.getAllAssets(),
+                MediaService.getAllAssets(null, 500, excludedAlbums),
                 AssetDBService.getRemoteAssets()
             ]);
         localAssetsRef.current = cumulativeLocalAssets;

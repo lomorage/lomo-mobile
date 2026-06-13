@@ -106,9 +106,7 @@ class UploadService {
             
             const serverUrl = AuthService.getServerUrl();
             const isHttps = serverUrl.toLowerCase().startsWith('https://');
-            const sessionType = Platform.OS === 'ios'
-                ? (isHttps ? (FileSystem.FileSystemSessionType?.BACKGROUND ?? 0) : (FileSystem.FileSystemSessionType?.FOREGROUND ?? 1))
-                : (FileSystem.FileSystemSessionType?.BACKGROUND ?? FileSystem.FileSystemUploadSessionType?.BACKGROUND ?? 0);
+            const sessionType = FileSystem.FileSystemSessionType?.BACKGROUND ?? FileSystem.FileSystemUploadSessionType?.BACKGROUND ?? 0;
 
             const task = FileSystem.createUploadTask(
                 uploadUrl,
@@ -312,9 +310,7 @@ class UploadService {
             // 7. Full binary Upload using native session
             // iOS background URL sessions require HTTPS — plain HTTP (LAN server) silently
             // fails with NSURLErrorUnknown (-1). Use a foreground session on iOS instead for plain HTTP.
-            const sessionType = Platform.OS === 'ios'
-                ? (isHttps ? (FileSystem.FileSystemSessionType?.BACKGROUND ?? 0) : (FileSystem.FileSystemSessionType?.FOREGROUND ?? 1))
-                : (FileSystem.FileSystemSessionType?.BACKGROUND ?? FileSystem.FileSystemUploadSessionType?.BACKGROUND ?? 0);
+            const sessionType = FileSystem.FileSystemSessionType?.BACKGROUND ?? FileSystem.FileSystemUploadSessionType?.BACKGROUND ?? 0;
 
             this.cancelledTasks.delete(asset.id);
             const task = FileSystem.createUploadTask(
