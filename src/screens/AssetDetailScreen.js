@@ -100,7 +100,7 @@ function AssetVideoPlayer({ uri, style, shouldPlay, nativeControls = false }) {
             loadingTimerRef.current = setTimeout(() => {
                 console.log(`[AssetVideoPlayer] Loader show timer fired, setting isLoading=true`);
                 setIsLoading(true);
-            }, 300); // Only show spinner if load takes >300ms
+            }, 800); // Only show spinner if load takes >800ms (prevent flashing for cached/local videos)
         };
 
         const hideLoader = () => {
