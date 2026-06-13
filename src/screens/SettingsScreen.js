@@ -775,7 +775,7 @@ export default function SettingsScreen({ navigation }) {
             >
                 <View style={styles.albumModalContainer}>
                     <View style={styles.albumModalHeader}>
-                        <Text style={styles.albumModalTitle}>{previewAlbum?.title} (Preview)</Text>
+                        <Text style={styles.albumModalTitle}>{previewAlbum?.title}</Text>
                         <TouchableOpacity onPress={() => setAlbumPreviewModalVisible(false)} style={styles.albumCloseButton}>
                             <X color="#333" size={24} />
                         </TouchableOpacity>

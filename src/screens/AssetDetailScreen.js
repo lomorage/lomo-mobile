@@ -3,8 +3,9 @@ import { StyleSheet, View, Dimensions, TouchableOpacity, Text, FlatList, Alert, 
 import { Image } from 'expo-image';
 import { ChevronLeft, CloudUpload, Trash2, Share } from 'lucide-react-native';
 import * as Sharing from 'expo-sharing';
-import * as FileSystem from 'expo-file-system/legacy';
+import { Ionicons } from '@expo/vector-icons';
 import { useVideoPlayer, VideoView } from 'expo-video';
+import convertToProxyURL from 'react-native-video-cache';
 import AuthService from '../services/AuthService';
 import MediaService from '../services/MediaService';
 import SyncService from '../services/SyncService';
@@ -76,58 +77,103 @@ const LivePhotoIcon = ({ color = '#fff', size = 14 }) => {
 };
 
 function AssetVideoPlayer({ uri, style, shouldPlay, nativeControls = false }) {
-    const [showControls, setShowControls] = React.useState(false);
+    const [isLoading, setIsLoading] = React.useState(false);
+    const loadingTimerRef = React.useRef(null);
+
+    console.log(`[AssetVideoPlayer] Rendered with uri=${uri}, shouldPlay=${shouldPlay}`);
+
     const player = useVideoPlayer(uri, player => {
         player.loop = !nativeControls;
+        console.log(`[AssetVideoPlayer] Player initialized, loop=${player.loop}`);
+        if (shouldPlay) {
+            console.log(`[AssetVideoPlayer] Starting playback synchronously in player initializer`);
+            player.play();
+        }
     });
 
     React.useEffect(() => {
-        const sub = player.addListener('statusChange', ({ status }) => {
-            if (status === 'readyToPlay' && shouldPlay) {
-                try { player.play(); } catch(e) {}
+        console.log(`[AssetVideoPlayer] useEffect mount, player.status=${player.status}, uri=${uri}`);
+        
+        const showLoaderDelayed = () => {
+            console.log(`[AssetVideoPlayer] Scheduling loader show...`);
+            if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
+            loadingTimerRef.current = setTimeout(() => {
+                console.log(`[AssetVideoPlayer] Loader show timer fired, setting isLoading=true`);
+                setIsLoading(true);
+            }, 300); // Only show spinner if load takes >300ms
+        };
+
+        const hideLoader = () => {
+            console.log(`[AssetVideoPlayer] Hiding loader...`);
+            if (loadingTimerRef.current) {
+                clearTimeout(loadingTimerRef.current);
+                loadingTimerRef.current = null;
             }
+            setIsLoading(false);
+        };
+
+        if (player.status === 'loading') {
+            showLoaderDelayed();
+        } else {
+            hideLoader();
+        }
+        
+        const sub = player.addListener('statusChange', ({ status }) => {
+            console.log(`[AssetVideoPlayer] statusChange event received: status=${status}`);
+            if (status === 'loading') {
+                showLoaderDelayed();
+            } else if (status === 'readyToPlay') {
+                hideLoader();
+                if (shouldPlay) {
+                    console.log(`[AssetVideoPlayer] statusChange readyToPlay -> calling player.play()`);
+                    try { player.play(); } catch(e) { console.error('[AssetVideoPlayer] play error:', e); }
+                }
+            } else {
+                hideLoader();
+            }
+        });
+
+        const timeSub = player.addListener('timeUpdate', ({ currentTime }) => {
+            // Once playback progress is updating, the video is definitely rendering frames
+            hideLoader();
         });
         
         if (shouldPlay) {
-            try { player.play(); } catch(e) {}
+            console.log(`[AssetVideoPlayer] shouldPlay is true -> calling player.play()`);
+            try { player.play(); } catch(e) { console.error('[AssetVideoPlayer] play error in mount:', e); }
             // Backup timeout in case statusChange doesn't fire
             setTimeout(() => {
                 if (shouldPlay) {
+                    console.log(`[AssetVideoPlayer] backup timeout -> calling player.play()`);
                     try { player.play(); } catch(e) {}
                 }
             }, 100);
         } else {
+            console.log(`[AssetVideoPlayer] shouldPlay is false -> calling player.pause()`);
             player.pause();
-            setShowControls(false);
         }
         
-        return () => sub.remove();
+        return () => {
+            console.log(`[AssetVideoPlayer] useEffect unmount for player, cleaning listeners`);
+            sub.remove();
+            timeSub.remove();
+            if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
+        };
     }, [shouldPlay, player]);
 
-    if (!nativeControls) {
-        return (
-            <VideoView 
-                style={style} 
-                player={player}
-                allowsPictureInPicture 
-                nativeControls={false}
-            />
-        );
-    }
-
     return (
-        <View style={style}>
+        <View style={[style, { backgroundColor: 'transparent' }]}>
             <VideoView 
                 style={StyleSheet.absoluteFillObject} 
                 player={player}
                 allowsPictureInPicture 
-                nativeControls={showControls}
+                nativeControls={nativeControls}
             />
-            {!showControls && (
-                <Pressable
-                    style={StyleSheet.absoluteFillObject}
-                    onPress={() => setShowControls(true)}
-                />
+            
+            {isLoading && (
+                <View style={[StyleSheet.absoluteFillObject, { justifyContent: 'center', alignItems: 'center', backgroundColor: 'transparent' }]}>
+                    <ActivityIndicator size="large" color="#007AFF" />
+                </View>
             )}
         </View>
     );
@@ -222,6 +268,8 @@ export default function AssetDetailScreen({ route, navigation }) {
             fadeAnim.setValue(0);
         };
     }, [currentIndex, assets]);
+
+
     
     const currentAsset = assets[currentIndex] || {};
 
@@ -445,6 +493,7 @@ export default function AssetDetailScreen({ route, navigation }) {
                 if (useOriginalVideo && index === currentIndex) {
                     uri += '&orig=1';
                 }
+                // (Proxy conversion is now handled asynchronously inside AssetVideoPlayer)
             }
         } else {
             uri = MediaService.normalizeUri(item.uri);
@@ -459,16 +508,30 @@ export default function AssetDetailScreen({ route, navigation }) {
         const liveVideoUri = extractedVideoUris[cacheKey];
         const shouldPlayLive = isLive && isLivePlaying && isVisible && liveVideoUri;
 
-        const staticImageUri = (isRemote && isLive)
-            ? item.uri
-            : ((item.mediaType === 'video' && isRemote) ? item.uri : uri);
+        // Remote videos are converted to proxy URLs synchronously to prevent mount/frame flash
+        let resolvedVideoUri = uri;
+        if (item.status === 'remote' && item.mediaType === 'video' && !isLive) {
+            try {
+                resolvedVideoUri = convertToProxyURL(uri);
+            } catch (e) {
+                console.warn(`[AssetDetail] Failed to resolve proxy synchronously for index ${index}:`, e);
+            }
+        }
+
+        if (item.mediaType === 'video') {
+            console.log(`[AssetDetail] renderItem index=${index}: isVisible=${isVisible}, shouldMountVideo=${shouldMountVideo}, resolvedVideoUri=${resolvedVideoUri}`);
+        }
 
         const thumbUri = (item.status === 'remote' && item.hash)
             ? `${baseUrl}/preview/${item.hash}?width=320&height=-1&token=${token}`
-            : MediaService.normalizeUri(item.uri);
+            : null;
+
+        const staticImageUri = (isRemote && isLive)
+            ? item.uri
+            : ((item.mediaType === 'video' && isRemote) ? thumbUri : uri);
 
         return (
-            <View style={{ width, height: height * 0.7, justifyContent: 'center', alignItems: 'center', position: 'relative' }}>
+            <View style={{ width, height: height * 0.7, justifyContent: 'center', alignItems: 'center', position: 'relative', backgroundColor: '#fff' }}>
                 <ZoomableMedia 
                     onZoomStateChange={(isZoomed) => setFlatListScrollEnabled(!isZoomed)}
                     style={{ width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center' }}
@@ -478,16 +541,18 @@ export default function AssetDetailScreen({ route, navigation }) {
                             {/* The instantly-loading thumbnail from disk cache ALWAYS mounted to prevent flash */}
                             <Image
                                 source={{ uri: staticImageUri }}
-                                placeholder={{ uri: thumbUri }}
+                                placeholder={thumbUri ? { uri: thumbUri } : null}
                                 placeholderContentFit="contain"
                                 style={[styles.image, { position: 'absolute' }]}
                                 contentFit="contain"
-                                cachePolicy="disk"
+                                cachePolicy="memory-disk"
+                                transition={0}
                             />
-                            {/* The streaming video player layered on top, only mounted when visible */}
-                            {shouldMountVideo && (
+                            {/* The streaming video player layered on top, only mounted when visible and proxy url resolved */}
+                            {shouldMountVideo && resolvedVideoUri && (
                                 <AssetVideoPlayer 
-                                    uri={uri} 
+                                    key={resolvedVideoUri}
+                                    uri={resolvedVideoUri} 
                                     style={[styles.image, { position: 'absolute' }]} 
                                     shouldPlay={isVisible}
                                     nativeControls={true}
@@ -510,18 +575,19 @@ export default function AssetDetailScreen({ route, navigation }) {
                                 {/* Static Image with native placeholder scaled to fit */}
                                 <Image
                                     source={{ uri: staticImageUri }}
-                                    placeholder={{ uri: thumbUri }}
+                                    placeholder={thumbUri ? { uri: thumbUri } : null}
                                     placeholderContentFit="contain"
                                     style={styles.image}
                                     contentFit="contain"
-                                    cachePolicy="disk"
-                                    transition={150}
+                                    cachePolicy="memory-disk"
+                                    transition={0}
                                 />
 
                                 {/* Looping Video Player is absolute positioned on top of the Image when playing */}
                                 {shouldPlayLive ? (
                                     <Animated.View style={[StyleSheet.absoluteFill, { opacity: fadeAnim }]}>
                                         <AssetVideoPlayer 
+                                            key={liveVideoUri}
                                             uri={liveVideoUri} 
                                             style={styles.image} 
                                             shouldPlay={true}
@@ -609,6 +675,7 @@ export default function AssetDetailScreen({ route, navigation }) {
                         renderItem={renderItem}
                         windowSize={5}
                         extraData={{ useOriginalVideo, currentIndex, isLivePlaying, isPreparingLive, extractedVideoUris }}
+                        style={{ backgroundColor: '#fff' }}
                     />
                 ) : null}
             </View>
@@ -664,11 +731,12 @@ const styles = StyleSheet.create({
         flex: 1,
         justifyContent: 'center',
         alignItems: 'center',
+        backgroundColor: '#fff',
     },
     image: {
         width: width,
         height: height * 0.7,
-        backgroundColor: 'transparent',
+        backgroundColor: '#fff',
     },
     footer: {
         padding: 20,

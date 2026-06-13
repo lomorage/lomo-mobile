@@ -82,7 +82,8 @@
       "expo-task-manager",
       "expo-background-task",
       "expo-sqlite",
-      "./plugins/withWorkManagerForeground"
+      "./plugins/withWorkManagerForeground",
+      "./plugins/withVideoCacheGradle"
     ],
     "web": {
       "favicon": "./assets/favicon.png"

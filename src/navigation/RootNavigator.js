@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
-import { createStackNavigator } from '@react-navigation/stack';
+import { createStackNavigator, CardStyleInterpolators } from '@react-navigation/stack';
 import { View, ActivityIndicator, StatusBar, Platform } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { AuthProvider, useAuth } from '../context/AuthContext';
@@ -41,6 +41,7 @@ function Navigation() {
                         fontWeight: '700',
                     },
                     headerTitleAlign: 'center',
+                    cardStyle: { backgroundColor: '#fff' },
                 }}
             >
                 {!isAuthenticated ? (
@@ -66,7 +67,10 @@ function Navigation() {
                         <Stack.Screen
                             name="AssetDetail"
                             component={AssetDetailScreen}
-                            options={{ headerShown: false }}
+                            options={{ 
+                                headerShown: false,
+                                cardStyleInterpolator: CardStyleInterpolators.forHorizontalIOS
+                            }}
                         />
                         <Stack.Screen 
                             name="Settings" 

@@ -17,7 +17,6 @@ const LATITUDE_DELTA = 90;
 const LONGITUDE_DELTA = LATITUDE_DELTA * ASPECT_RATIO;
 
 function AssetVideoPlayer({ uri, style, shouldPlay, nativeControls = false }) {
-    const [showControls, setShowControls] = useState(false);
     const player = useVideoPlayer(uri, player => {
         player.loop = !nativeControls;
     });
@@ -38,38 +37,18 @@ function AssetVideoPlayer({ uri, style, shouldPlay, nativeControls = false }) {
             }, 100);
         } else {
             player.pause();
-            setShowControls(false);
         }
         
         return () => sub.remove();
     }, [shouldPlay, player]);
 
-    if (!nativeControls) {
-        return (
-            <VideoView 
-                style={style} 
-                player={player}
-                allowsPictureInPicture 
-                nativeControls={false}
-            />
-        );
-    }
-
     return (
-        <View style={style}>
-            <VideoView 
-                style={StyleSheet.absoluteFill} 
-                player={player}
-                allowsPictureInPicture 
-                nativeControls={showControls}
-            />
-            {!showControls && (
-                <Pressable
-                    style={StyleSheet.absoluteFill}
-                    onPress={() => setShowControls(true)}
-                />
-            )}
-        </View>
+        <VideoView 
+            style={style} 
+            player={player}
+            allowsPictureInPicture 
+            nativeControls={nativeControls}
+        />
     );
 }
 
