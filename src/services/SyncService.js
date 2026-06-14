@@ -14,17 +14,17 @@ import * as SecureStore from 'expo-secure-store';
 const parseBackendDate = (dateStr) => {
   if (!dateStr) return null;
   if (dateStr instanceof Date) return dateStr;
-  
+
   let normalized = dateStr.trim();
   // Check if it already has UTC indicator (Z) or an offset (+HH:mm or -HH:mm at the end)
   // We avoid a simple .includes('-') because date separators use dashes.
   const hasTimeZone = /Z$|[+-]\d{2}(?::?\d{2})?$/.test(normalized);
-  
+
   if (!hasTimeZone) {
     // Replace space with T for valid ISO format if needed and force UTC
     normalized = normalized.replace(' ', 'T') + 'Z';
   }
-  
+
   const date = new Date(normalized);
   return isNaN(date.getTime()) ? null : date;
 };
@@ -95,7 +95,7 @@ class MerkleNode {
           concatHashStr += child.hash;
         }
       }
-      
+
       if (concatHashStr) {
         this.hash = await Crypto.digestStringAsync(
           Crypto.CryptoDigestAlgorithm.SHA1,
@@ -225,7 +225,7 @@ class AssetMerkleRoot extends MerkleNode {
     assetNode = new MerkleNode(day, normalizedHash);
     assetNode.setTag(assetId);
     assetNode.setDate(date);
-    
+
     // Keep children ordered by hash (Asset level)
     const index = dayNode.children.findIndex(c => c.hash > normalizedHash);
     if (index === -1) {
@@ -235,7 +235,7 @@ class AssetMerkleRoot extends MerkleNode {
     }
     assetNode.parentNode = dayNode;
     this.assetsMap.set(normalizedHash, assetNode);
-    
+
     return assetNode;
   }
 
@@ -297,13 +297,13 @@ class AssetMerkleRoot extends MerkleNode {
     const downloadAssets = [];
 
     const yearDiff = this.compareNodeList(this.children, otherTree.children, 'id');
-    
+
     yearDiff.upload.forEach(yearNode => this._collectAssets(yearNode, uploadAssets));
     yearDiff.download.forEach(yearNode => this._collectAssets(yearNode, downloadAssets));
 
     yearDiff.pending.forEach(({ local, remote }) => {
       const monthDiff = this.compareNodeList(local.children, remote.children, 'id');
-      
+
       monthDiff.upload.forEach(node => this._collectAssets(node, uploadAssets));
       monthDiff.download.forEach(node => this._collectAssets(node, downloadAssets));
 
@@ -356,7 +356,7 @@ class SyncService {
         await FileSystem.deleteAsync(path);
         console.log('[SyncService] Legacy local hash cache JSON cleared');
       }
-      
+
       // Also clear DB hashes for local assets
       await AssetDBService.init();
       if (AssetDBService.db) {
@@ -397,12 +397,12 @@ class SyncService {
   async getCacheStats() {
     const cacheDir = this.getCacheDir();
     if (!cacheDir) return { local: 0, remote: 0 };
-    
+
     const stats = { local: 0, remote: 0 };
     try {
       const localInfo = await FileSystem.getInfoAsync(`${cacheDir}local_hash_cache_v2.json`);
       if (localInfo.exists) stats.local = localInfo.size;
-      
+
       const remoteInfo = await FileSystem.getInfoAsync(`${cacheDir}remote_tree_v2.json`);
       if (remoteInfo.exists) stats.remote = remoteInfo.size;
     } catch (e) {
@@ -444,14 +444,14 @@ class SyncService {
       let completedCount = 0;
       let lastUiUpdateTime = Date.now();
       let lastActualUiUpdateTime = Date.now();
-      
+
       // Reduce default concurrency to 2 to prevent starving the UI thread and JS thread.
       // 5 concurrent heavy native threads doing SHA1 + I/O causes severe UI scrolling stutter.
       let hashConcurrency = 2;
       try {
         const savedConfig = await SecureStore.getItemAsync('lomorage_hash_concurrency');
         if (savedConfig) hashConcurrency = parseInt(savedConfig, 10);
-      } catch (e) {}
+      } catch (e) { }
 
       let currentIndex = 0;
 
@@ -461,7 +461,7 @@ class SyncService {
           loops++;
           // CRITICAL FIX: Yield to the JS event loop every 50 iterations to prevent ANR
           if (loops % 50 === 0) {
-              await new Promise(resolve => setTimeout(resolve, 5));
+            await new Promise(resolve => setTimeout(resolve, 5));
           }
 
           const asset = assets[currentIndex++];
@@ -472,7 +472,7 @@ class SyncService {
             completedCount++;
             continue;
           }
-          
+
           let hash = asset.hash;
           if (!hash) {
             const cached = localHashMap[asset.id];
@@ -482,7 +482,7 @@ class SyncService {
               try {
                 let uri = asset.uri || asset.localUri;
                 hash = await MediaService.calculateHash(uri, true); // silent log
-                
+
                 if (!hash) {
                   const info = await MediaService.getAssetInfo(asset.id);
                   if (info) {
@@ -503,13 +503,13 @@ class SyncService {
                   hash,
                   modificationTime: asset.modificationTime
                 };
-                
+
                 // Update DB incrementally
                 await AssetDBService.updateAssetHash(asset.id, hash, asset.modificationTime);
               }
             }
           }
-          
+
           if (hash) {
             hashedCount++;
             asset.hash = hash.toLowerCase(); // Persist back to asset
@@ -524,9 +524,9 @@ class SyncService {
               if (shouldTriggerUi) {
                 lastActualUiUpdateTime = now;
               }
-              onProgress({ 
-                current: completedCount, 
-                total: assets.length, 
+              onProgress({
+                current: completedCount,
+                total: assets.length,
                 triggerUiUpdate: shouldTriggerUi
               });
             }
@@ -539,12 +539,12 @@ class SyncService {
         workers.push(worker());
       }
       await Promise.all(workers);
-      
+
       // Sync the uploaded status now that local hashes are assigned
       await AssetDBService.syncUploadedStatus();
       // Reload cache to give fast UI access to the new 'uploaded' flags
       await this.loadLocalHashCache();
-      
+
       console.log(`[SyncService] Pre-calculated hashes for ${hashedCount}/${assets.length} assets`);
     });
   }
@@ -553,11 +553,11 @@ class SyncService {
     return await MetricsTracker.measure('SyncService_buildLocalTree', async () => {
       console.log(`Building local Merkle Tree for ${assets.length} assets...`);
       const root = new AssetMerkleRoot();
-      
+
       await this.loadLocalHashCache();
       const localHashMap = this.localHashCache;
       let hashedCount = 0;
-      
+
       for (let i = 0; i < assets.length; i++) {
         // Yield to the JS event loop every 500 iterations to prevent blocking during tree construction
         if (i % 500 === 0) {
@@ -565,7 +565,7 @@ class SyncService {
         }
         const asset = assets[i];
         let hash = asset.hash;
-        
+
         if (!hash) {
           const cached = localHashMap[asset.id];
           if (cached && cached.modificationTime === asset.modificationTime) {
@@ -577,17 +577,17 @@ class SyncService {
           hashedCount++;
           const lowerHash = hash.toLowerCase();
           asset.hash = lowerHash;
-          
+
           const time = asset.creationTime || asset.modificationTime || Date.now();
           const date = new Date(time);
           const year = date.getUTCFullYear();
           const month = date.getUTCMonth() + 1;
           const day = date.getUTCDate();
-          
+
           root.addAsset(year, month, day, lowerHash, asset.id, date);
         }
       }
-      
+
       console.log(`[SyncService] Built local tree with ${hashedCount}/${assets.length} hashed assets`);
       await root.updateHash();
       this.localTree = root;
@@ -640,14 +640,14 @@ class SyncService {
         return true;
       }
     } catch (e) {
-      console.error('Failed to load remote tree', e);
+      console.warn('Failed to load remote tree', e);
     }
     return false;
   }
 
   async _migrateAndHealRemoteAssets() {
     if (!this.remoteTree) return;
-    
+
     await AssetDBService.init();
     const sqlCount = await AssetDBService.getRemoteAssetsCount();
     const treeAssets = Array.from(this.remoteTree.assetsMap.values());
@@ -659,7 +659,7 @@ class SyncService {
       console.log('[SyncService] Migrating remote assets from JSON cache to SQLite...');
       await AssetDBService.syncRemoteAssets(treeAssets);
       console.log('[SyncService] JSON to SQLite migration completed.');
-      
+
       const { DeviceEventEmitter } = require('react-native');
       DeviceEventEmitter.emit('remoteAssetsUpdated');
       return;
@@ -669,16 +669,16 @@ class SyncService {
     if (sqlCount > 0 && treeAssets.length > 0) {
       const db = AssetDBService.db;
       if (!db) return;
-      
+
       try {
         const nullRows = await db.getAllAsync(
           `SELECT id, hash FROM MediaAsset WHERE isLocal = 0 AND filename IS NULL`
         );
-        
+
         if (nullRows && nullRows.length > 0) {
           console.log(`[SyncService] Found ${nullRows.length} legacy remote assets with NULL filenames in SQLite. Healing...`);
           const updates = [];
-          
+
           const isVideoExtension = (filename) => {
             if (!filename) return false;
             const ext = filename.split('.').pop().toLowerCase();
@@ -697,7 +697,7 @@ class SyncService {
               });
             }
           }
-          
+
           if (updates.length > 0) {
             await AssetDBService.updateRemoteAssetFilenames(updates);
             console.log(`[SyncService] Successfully healed ${updates.length} assets.`);
@@ -723,13 +723,13 @@ class SyncService {
 
     try {
       // Without ?all=1, the backend returns only year/month level with hashes (no day/asset details)
-        const response = await axios.get(`${url}/assets/merkletree`, {
-          headers: { Authorization: `token=${token}` },
-          timeout: 30000,
-          skipAutoProbe: true,
-          priority: 4,
-          groupId: 'SyncService'
-        });
+      const response = await axios.get(`${url}/assets/merkletree`, {
+        headers: { Authorization: `token=${token}` },
+        timeout: 30000,
+        skipAutoProbe: true,
+        priority: 4,
+        groupId: 'SyncService'
+      });
       return response.data;
     } catch (e) {
       console.error('[SyncService] Failed to fetch month-level tree', e);
@@ -750,23 +750,23 @@ class SyncService {
    */
   getSortedRemoteAssets() {
     if (this._sortedRemoteAssetsCache) return this._sortedRemoteAssetsCache;
-    
+
     const remoteAssets = Array.from(this.remoteTree?.assetsMap?.values() || []);
     const isVideoExtension = (filename) => {
-        if (!filename) return false;
-        const ext = filename.split('.').pop().toLowerCase();
-        return ['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext);
+      if (!filename) return false;
+      const ext = filename.split('.').pop().toLowerCase();
+      return ['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext);
     };
-    
+
     this._sortedRemoteAssetsCache = remoteAssets.map(remote => ({
-        id: remote.hash,
-        uri: remote.tag,
-        hash: remote.hash,
-        status: 'remote',
-        mediaType: isVideoExtension(remote.tag) ? 'video' : 'photo',
-        creationTime: remote.date ? remote.date.getTime() : 0,
+      id: remote.hash,
+      uri: remote.tag,
+      hash: remote.hash,
+      status: 'remote',
+      mediaType: isVideoExtension(remote.tag) ? 'video' : 'photo',
+      creationTime: remote.date ? remote.date.getTime() : 0,
     })).sort((a, b) => b.creationTime - a.creationTime);
-    
+
     return this._sortedRemoteAssetsCache;
   }
 
@@ -800,7 +800,7 @@ class SyncService {
 
         // Quick check: if root hash hasn't changed, skip everything
         if (this.remoteTree && this.remoteTree.hash &&
-            monthLevelData.Hash === this.remoteTree.hash) {
+          monthLevelData.Hash === this.remoteTree.hash) {
           console.log('[SyncService] Remote tree unchanged (root hash match), skipping update');
           return this.remoteTree;
         }
@@ -814,13 +814,13 @@ class SyncService {
         if (monthLevelData.Years) {
           for (const y of monthLevelData.Years) {
             const yearNode = newRoot.addChild(new MerkleNode(y.Year, y.Hash));
-            
+
             if (y.Months) {
               for (const m of y.Months) {
                 // Check if this month exists in cache with same hash
                 const cachedYear = cachedTree?.getChild(y.Year);
                 const cachedMonth = cachedYear?.getChild(m.Month);
-                
+
                 if (cachedMonth && cachedMonth.hash === m.Hash && cachedMonth.children.length > 0) {
                   // UNCHANGED: reuse entire cached subtree (days + assets)
                   const reusedMonth = new MerkleNode(m.Month, m.Hash);
@@ -860,7 +860,7 @@ class SyncService {
           });
           const batchResults = await Promise.all(fetchPromises);
           fetchedResults.push(...batchResults);
-          
+
           // Yield after each batch to keep UI smooth
           await new Promise(resolve => setTimeout(resolve, 5));
         }
@@ -972,7 +972,7 @@ class SyncService {
       });
       return response.data; // { Month: X, Hash: "...", Days: [...] }
     } catch (e) {
-      console.error(`Failed to fetch remote month ${year}/${month}`, e);
+      console.warn(`Failed to fetch remote month ${year}/${month}`, e);
       return null;
     }
   }
@@ -1123,7 +1123,7 @@ class SyncService {
       });
       return response.data; // { Day: X, Hash: "...", Assets: [...] }
     } catch (e) {
-      console.error(`Failed to fetch remote day ${year}/${month}/${day}`, e);
+      console.warn(`Failed to fetch remote day ${year}/${month}/${day}`, e);
       return null;
     }
   }
@@ -1156,20 +1156,20 @@ class SyncService {
   async sync(localAssets, onProgress) {
     if (this.isSyncing) return null;
     this.isSyncing = true;
-    
+
     try {
       if (onProgress) onProgress({ current: 0, total: localAssets.length });
       await this.precalculateHashes(localAssets, onProgress);
 
       await this.buildLocalTree(localAssets, onProgress);
-      
+
       const remoteOverview = await this.fetchRemoteOverview();
 
       const uploadAssets = [];
       const downloadAssets = [];
 
       await this.findDiffWithDrillDown(this.localTree, this.remoteTree, uploadAssets, downloadAssets, 'year');
-      
+
       if (onProgress) onProgress({ current: localAssets.length, total: localAssets.length });
       return { uploadAssets, downloadAssets };
     } finally {
@@ -1281,7 +1281,7 @@ class SyncService {
             }
           }
         }
-        
+
         const assetDiff = local.compareNodeList(local.children, remote.children, 'hash');
         assetDiff.upload.forEach(n => upload.push(n));
         assetDiff.download.forEach(n => download.push(n));

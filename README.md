@@ -324,6 +324,17 @@ You can use EAS CLI to run the build process locally on your Mac (requires Xcode
 eas build --platform ios --profile production --local
 ```
 
+#### Option D — Automated Local Build & Upload (Fastlane + altool)
+You can run a single unified script to build locally on your Mac and upload to App Store Connect:
+
+1. **Install Fastlane**: Run `brew install fastlane`.
+2. **Setup Credentials**: Create a `.env` file in your project root with your credentials:
+   ```env
+   APPLE_ID="your-apple-id@email.com"
+   APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx"
+   ```
+3. **Execute**: Run `./build_and_deploy_ios.sh` from the root directory. This compiles the `.ipa` using Fastlane and uploads it via `xcrun altool`.
+
 ### 2. Submit to App Store Connect
 
 If you used **Option A or C**, you can submit the built IPA directly from your terminal:
@@ -337,28 +348,30 @@ Alternatively, you can download the `.ipa` from the Expo dashboard and upload it
 > [!TIP]
 > **First-Time Submission Error**: If you see an error like `ENTITY_ERROR.ATTRIBUTE.REQUIRED` for `companyName`, it means Apple requires a "Company Name" for your account's first submission. I have added `"companyName": "Lomorage"` to `eas.json`. Ensure this matches your legal entity name in App Store Connect.
 
-### 3. Updating the App Version
+### 3. Updating the App Version & Build Numbers (Android & iOS)
 
-Before submitting a new version, you must increment the version numbers in `app.json`. Apple requires the `buildNumber` to be unique for every upload to App Store Connect.
+Before uploading any new release to the App Store or Google Play, you **must** increment your version and build number/version code. Apple and Google will reject duplicate builds.
 
-1. Open `app.json` and update:
-   - `expo.version`: The user-facing version string (e.g., `"1.0.1"`).
-   - `expo.ios.buildNumber`: A unique string or integer for this specific build (e.g., `"2"`).
+We provide a unified script that syncs version and increments build counts across **all** configuration files (including npm, Expo, native Android Gradle, and Xcode Project configurations):
 
-```json
-{
-  "expo": {
-    "version": "1.0.1",
-    "ios": {
-      "buildNumber": "2"
-    }
-  }
-}
-```
+1. **Auto-Increment Version (Patch Version)**:
+   Runs from the root directory to bump the patch version (e.g., `1.0.68` -> `1.0.69`) and auto-increment both Android `versionCode` and iOS `buildNumber`:
+   ```bash
+   node bump-version.js
+   ```
 
-> [!WARNING]
-> **Xcode Version Sync Issues**: If you build locally and Xcode does not reflect the updated `app.json` versions, it is because the version was previously manually edited in Xcode. This hardcodes `MARKETING_VERSION` in the `project.pbxproj` file, which permanently overrides Expo. 
-> To fix this and force Xcode to listen to `app.json` again, run `npx expo prebuild --clean --platform ios`. This recreates the `ios/` folder from scratch.
+2. **Explicit Version setting**:
+   If you want to set a specific version explicitly (e.g. `1.1.0` or `1.0.69`) and auto-increment build numbers:
+   ```bash
+   node bump-version.js 1.0.69
+   ```
+
+#### Files updated by the script:
+* `package.json` (npm version)
+* `app.json` (`expo.version` and `expo.ios.buildNumber`)
+* `android/app/build.gradle` (`versionCode` and `versionName`)
+* `ios/lomomobile/Info.plist` (`CFBundleShortVersionString` and `CFBundleVersion`)
+* `ios/lomomobile.xcodeproj/project.pbxproj` (`MARKETING_VERSION` and `CURRENT_PROJECT_VERSION`)
 
 ### 4. Review Privacy & Permissions
 
@@ -424,6 +437,18 @@ Ensure your App Store listing accurately describes the use of permissions declar
    # WorkManager (Android background task scheduler)
    adb logcat | grep "WorkManager"
    ```
+
+### Exporting App & Server Logs
+
+Lomorage includes a built-in logging system that records local operations (such as asset hashing, sync progress, network changes) and bundles them for easy exporting.
+
+1. **Navigate to Settings**: Tap the settings gear/navigation button to open the Settings screen.
+2. **Select "Send Logs"**: Scroll down to the **Developer** section and tap **Send Logs**.
+3. **Log Bundling Process**:
+   - The app flushes current buffered logs from memory to disk (`lomorage_app.log`).
+   - It downloads the server's logs (`lomod.tar.gz`) via the server API (if the server is connected).
+   - It packages both files into a compressed ZIP file (`lomolog.zip`) using the `jszip` dependency.
+4. **Share Sheet**: The app triggers the native OS Share Sheet, enabling you to send the log ZIP via AirDrop, Email, Messaging apps, or save it to local/cloud storage.
 
 ## Production & Stability Testing (18,000 Photo Sync)
 

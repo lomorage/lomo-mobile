@@ -45,6 +45,7 @@ jest_output*.txt
 
 # local env files
 .env*.local
+.env
 
 # macOS
 .DS_Store
