@@ -56,9 +56,12 @@ class ExpoLomoHasherModule : Module() {
                 throw Exception("File not found at $path")
             }
             FileInputStream(file)
+        var buffer: ByteArray
+        try {
+            buffer = ByteArray(1024 * 1024) // 1MB for max speed
+        } catch (e: OutOfMemoryError) {
+            buffer = ByteArray(128 * 1024) // 128KB fallback for fragmented heaps
         }
-
-        val buffer = ByteArray(1024 * 1024) // 1MB for speed
         var totalBytesRead = 0L
         
         // Debug file for the specific problematic size or URI
@@ -142,9 +145,12 @@ class ExpoLomoHasherModule : Module() {
                 } else {
                     skipped += skipAttempt
                 }
+            var buffer: ByteArray
+            try {
+                buffer = ByteArray(1024 * 1024)
+            } catch (e: OutOfMemoryError) {
+                buffer = ByteArray(128 * 1024)
             }
-
-            val buffer = ByteArray(1024 * 1024)
             while (true) {
                 val read = inputStream.read(buffer)
                 if (read == -1) break

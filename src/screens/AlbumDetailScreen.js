@@ -84,8 +84,14 @@ export default function AlbumDetailScreen() {
                 const serverUrl = AuthService.getServerUrl();
                 const token = AuthService.getToken();
                 
+                // Convert dbAssets to Map for O(1) lookup
+                const dbAssetsMap = new Map();
+                for (let i = 0; i < dbAssets.length; i++) {
+                    dbAssetsMap.set(dbAssets[i].hash, dbAssets[i]);
+                }
+                
                 const formattedAssets = hashes.map((hash, index) => {
-                    const localAsset = dbAssets.find(a => a.hash === hash);
+                    const localAsset = dbAssetsMap.get(hash);
                     return {
                         id: localAsset ? localAsset.id : hash, // Use hash as ID to prevent FlatList key collisions
                         hash: hash,
@@ -298,6 +304,7 @@ export default function AlbumDetailScreen() {
                 <FlashList
                     data={assets}
                     renderItem={renderItem}
+                    keyExtractor={(item, index) => `${item.id || item.hash}_${index}`}
                     estimatedItemSize={ITEM_SIZE}
                     numColumns={NUM_COLUMNS}
                     contentContainerStyle={{ padding: SPACING }}
