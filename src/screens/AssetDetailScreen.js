@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { StyleSheet, View, Dimensions, TouchableOpacity, Text, FlatList, Alert, DeviceEventEmitter, Pressable, ActivityIndicator, Animated, Vibration } from 'react-native';
+import { StyleSheet, View, Dimensions, TouchableOpacity, Text, FlatList, Alert, DeviceEventEmitter, Pressable, ActivityIndicator, Animated, Vibration, ScrollView, PanResponder } from 'react-native';
 import { Image } from 'expo-image';
-import { ChevronLeft, CloudUpload, Trash2, Share, Heart } from 'lucide-react-native';
+import { ChevronLeft, CloudUpload, Trash2, Share, Heart, FolderMinus } from 'lucide-react-native';
 import * as Sharing from 'expo-sharing';
 import { Ionicons } from '@expo/vector-icons';
 import { useVideoPlayer, VideoView } from 'expo-video';
@@ -9,8 +9,9 @@ import convertToProxyURL from 'react-native-video-cache';
 import AuthService from '../services/AuthService';
 import MediaService from '../services/MediaService';
 import SyncService from '../services/SyncService';
-import UploadService from '../services/UploadService';
 import { useSettings } from '../context/SettingsContext';
+import RemoteAlbumService from '../services/RemoteAlbumService';
+import UploadService from '../services/UploadService';
 import axios from 'axios';
 import NetworkQueue from '../services/NetworkQueue';
 import OfflineCacheService from '../services/OfflineCacheService';
@@ -184,6 +185,7 @@ function AssetVideoPlayer({ uri, style, shouldPlay, nativeControls = false }) {
 }
 
 export default function AssetDetailScreen({ route, navigation }) {
+    const flatListRef = useRef(null);
     const { initialIndex, source = 'gallery' } = route.params;
     const [assets, setAssets] = useState(GalleryStore.getAssets(source));
     
@@ -198,8 +200,61 @@ export default function AssetDetailScreen({ route, navigation }) {
     const [flatListScrollEnabled, setFlatListScrollEnabled] = useState(true);
     const [isSharing, setIsSharing] = useState(false);
     const [isFavorite, setIsFavorite] = useState(false);
+    const [userAlbums, setUserAlbums] = useState([]);
+    const [toastMessage, setToastMessage] = useState(null);
+    const [undoAction, setUndoAction] = useState(null);
     const scaleAnim = useRef(new Animated.Value(1)).current;
     const fadeAnim = useRef(new Animated.Value(0)).current;
+
+    const flatListScrollEnabledRef = useRef(flatListScrollEnabled);
+    useEffect(() => {
+        flatListScrollEnabledRef.current = flatListScrollEnabled;
+    }, [flatListScrollEnabled]);
+
+    const swipeActionRef = useRef();
+    
+    const panResponder = useRef(
+        PanResponder.create({
+            onMoveShouldSetPanResponderCapture: (evt, gestureState) => {
+                // Trigger if swipe is upward, mostly vertical, and image is not zoomed
+                const isVertical = Math.abs(gestureState.dy) > Math.abs(gestureState.dx) * 1.5;
+                const isUpward = gestureState.dy < -15 || gestureState.vy < -0.3;
+                return isVertical && isUpward && flatListScrollEnabledRef.current;
+            },
+            onPanResponderRelease: (evt, gestureState) => {
+                // Confirm if swiped up sufficiently far or with a fast flick
+                if (gestureState.dy < -50 || gestureState.vy < -0.5) {
+                    if (swipeActionRef.current) swipeActionRef.current();
+                }
+            }
+        })
+    ).current;
+
+    useEffect(() => {
+        const fetchAlbums = async () => {
+            try {
+                // Fetch flat list of albums for Slidebox
+                const rootCollection = await RemoteAlbumService.getAlbumsHierarchy({ priority: 1, groupId: 'Albums' });
+                const items = rootCollection.getItems();
+                // Filter out folders and system albums
+                const albums = items.filter(i => i.type === 'album' && !i.data.name.startsWith('/'));
+                setUserAlbums(albums);
+            } catch (e) {
+                console.error('[AssetDetailScreen] Error fetching slidebox albums:', e);
+            }
+        };
+        fetchAlbums();
+    }, []);
+
+    useEffect(() => {
+        if (toastMessage) {
+            const timer = setTimeout(() => {
+                setToastMessage(null);
+                setUndoAction(null);
+            }, 3000);
+            return () => clearTimeout(timer);
+        }
+    }, [toastMessage]);
 
     useEffect(() => {
         const item = assets[currentIndex];
@@ -347,6 +402,77 @@ export default function AssetDetailScreen({ route, navigation }) {
     
     const currentAsset = assets[currentIndex] || {};
 
+    const handleAddToAlbum = async (album) => {
+        if (!currentAsset || !currentAsset.hash) return;
+        
+        // Optimistic toast with Undo
+        setToastMessage(`Added to ${album.data.name}`);
+        setUndoAction(() => async () => {
+            await RemoteAlbumService.removeAssetFromAlbum(album.data.info.id, currentAsset.hash);
+            setToastMessage(`Undid Add`);
+            setUndoAction(null);
+        });
+        
+        try {
+            await RemoteAlbumService.addAssetToAlbum(album.data.info.id, currentAsset.hash);
+            // Auto advance
+            if (currentIndex < assets.length - 1) {
+                flatListRef.current?.scrollToIndex({ index: currentIndex + 1, animated: true });
+            }
+        } catch (e) {
+            setToastMessage(`Failed to add to ${album.data.name}`);
+            setUndoAction(null);
+        }
+    };
+
+    const handleSwipeUpAction = async () => {
+        if (!currentAsset) return;
+        
+        const albumIdMatch = source.match(/^album_(.+)$/);
+        if (albumIdMatch) {
+            // In an album view: Remove from album
+            const albumId = albumIdMatch[1];
+            setToastMessage('Removed from Album');
+            setUndoAction(() => async () => {
+                await RemoteAlbumService.addAssetToAlbum(albumId, currentAsset.hash);
+                setToastMessage('Restored to Album');
+                setUndoAction(null);
+            });
+            
+            try {
+                await RemoteAlbumService.removeAssetFromAlbum(albumId, currentAsset.hash);
+                DeviceEventEmitter.emit('assetRemovedFromAlbum', { albumId, hash: currentAsset.hash });
+                
+                // Optimistically update local view
+                const newAssets = assets.filter(a => a.hash !== currentAsset.hash);
+                if (newAssets.length === 0) {
+                    navigation.goBack();
+                } else {
+                    GalleryStore.setAssets(newAssets, source);
+                    setAssets(newAssets);
+                    if (currentIndex >= newAssets.length) {
+                        const newIndex = newAssets.length - 1;
+                        setCurrentIndex(newIndex);
+                        // Fix blank screen: force FlatList to scroll to the new last item
+                        setTimeout(() => {
+                            flatListRef.current?.scrollToIndex({ index: newIndex, animated: false });
+                        }, 50);
+                    }
+                }
+            } catch (e) {
+                setToastMessage('Failed to remove');
+                setUndoAction(null);
+            }
+        } else {
+            // In regular gallery: prompt to delete
+            handleDelete();
+        }
+    };
+
+    useEffect(() => {
+        swipeActionRef.current = handleSwipeUpAction;
+    });
+
     const handleShare = async () => {
         if (!currentAsset || isSharing) return;
         
@@ -477,12 +603,17 @@ export default function AssetDetailScreen({ route, navigation }) {
                 { text: "Delete", style: "destructive", onPress: () => executeDelete('remote') }
             ]);
         } else if (currentAsset.status === 'synced') {
-            Alert.alert("Delete Photo", "Where would you like to delete this from?", [
-                { text: "Device Only", onPress: () => executeDelete('local') },
-                { text: "Lomorage Only", onPress: () => executeDelete('remote') },
-                { text: "Both", style: "destructive", onPress: () => executeDelete('both') }
-            ], { cancelable: true });
+            Alert.alert("Delete Photo", "Delete this item from device and Lomorage backup?", [
+                { text: "Cancel", style: "cancel" },
+                { text: "Delete from Backup", style: "destructive", onPress: () => executeDelete('remote') },
+                { text: "Delete from Device", style: "destructive", onPress: () => executeDelete('local') },
+                { text: "Delete from Both", style: "destructive", onPress: () => executeDelete('both') }
+            ]);
         }
+    };
+
+    const handleTrashPress = () => {
+        handleDelete();
     };
 
     const onViewableItemsChanged = useRef(({ viewableItems }) => {
@@ -703,7 +834,7 @@ export default function AssetDetailScreen({ route, navigation }) {
     };
 
     return (
-        <View style={styles.container}>
+        <View style={styles.container} {...panResponder.panHandlers}>
             <View style={styles.header}>
                 <TouchableOpacity onPress={() => navigation.canGoBack() && navigation.goBack()} style={styles.iconButton}>
                     <ChevronLeft color="#000" size={28} />
@@ -745,7 +876,12 @@ export default function AssetDetailScreen({ route, navigation }) {
                             <Share color="#007AFF" size={24} />
                         )}
                     </TouchableOpacity>
-                    <TouchableOpacity onPress={handleDelete} style={styles.iconButton}>
+                    {source.startsWith('album_') && (
+                        <TouchableOpacity onPress={handleSwipeUpAction} style={styles.iconButton}>
+                            <FolderMinus color="#ff9500" size={24} />
+                        </TouchableOpacity>
+                    )}
+                    <TouchableOpacity onPress={handleTrashPress} style={styles.iconButton}>
                         <Trash2 color="#ef4444" size={24} />
                     </TouchableOpacity>
                 </View>
@@ -754,6 +890,7 @@ export default function AssetDetailScreen({ route, navigation }) {
             <View style={styles.imageContainer}>
                 {assets.length > 0 ? (
                     <FlatList
+                        ref={flatListRef}
                         data={assets}
                         keyExtractor={item => item.id}
                         horizontal
@@ -778,6 +915,33 @@ export default function AssetDetailScreen({ route, navigation }) {
                     {new Date(currentAsset.creationTime || 0).toLocaleString()}
                 </Text>
             </View>
+
+            {userAlbums.length > 0 && (
+                <View style={styles.slideboxContainer}>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.slideboxScroll}>
+                        {userAlbums.map((album, idx) => (
+                            <TouchableOpacity 
+                                key={idx} 
+                                style={styles.slideboxAlbum}
+                                onPress={() => handleAddToAlbum(album)}
+                            >
+                                <Text style={styles.slideboxAlbumText} numberOfLines={1}>{album.data.name}</Text>
+                            </TouchableOpacity>
+                        ))}
+                    </ScrollView>
+                </View>
+            )}
+
+            {toastMessage && (
+                <View style={styles.toastContainer}>
+                    <Text style={styles.toastText}>{toastMessage}</Text>
+                    {undoAction && (
+                        <TouchableOpacity onPress={undoAction} style={styles.undoBtn}>
+                            <Text style={styles.undoBtnText}>UNDO</Text>
+                        </TouchableOpacity>
+                    )}
+                </View>
+            )}
 
             {isUploading && (
                 <View style={styles.progressOverlay}>
@@ -844,6 +1008,62 @@ const styles = StyleSheet.create({
         fontSize: 14,
         color: '#666',
         marginTop: 4,
+    },
+    slideboxContainer: {
+        height: 60,
+        backgroundColor: '#fff',
+        borderTopWidth: StyleSheet.hairlineWidth,
+        borderTopColor: '#e5e5ea',
+        justifyContent: 'center',
+    },
+    slideboxScroll: {
+        paddingHorizontal: 12,
+        alignItems: 'center',
+    },
+    slideboxAlbum: {
+        backgroundColor: '#f2f2f7',
+        paddingHorizontal: 16,
+        paddingVertical: 10,
+        borderRadius: 20,
+        marginHorizontal: 4,
+    },
+    slideboxAlbumText: {
+        fontSize: 14,
+        fontWeight: '500',
+        color: '#1c1c1e',
+    },
+    toastContainer: {
+        position: 'absolute',
+        bottom: 160,
+        alignSelf: 'center',
+        backgroundColor: 'rgba(0,0,0,0.85)',
+        paddingHorizontal: 20,
+        paddingVertical: 12,
+        borderRadius: 24,
+        zIndex: 1000,
+        flexDirection: 'row',
+        alignItems: 'center',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.3,
+        shadowRadius: 5,
+        elevation: 6,
+    },
+    toastText: {
+        color: '#fff',
+        fontSize: 15,
+        fontWeight: '500',
+    },
+    undoBtn: {
+        marginLeft: 16,
+        paddingLeft: 16,
+        borderLeftWidth: 1,
+        borderLeftColor: 'rgba(255,255,255,0.3)',
+    },
+    undoBtnText: {
+        color: '#ff9500',
+        fontWeight: 'bold',
+        fontSize: 15,
     },
     progressOverlay: {
         position: 'absolute',

@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Dimensions } from 'react-native';
+import React, { useEffect, useState, useCallback } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, Dimensions, DeviceEventEmitter } from 'react-native';
 import { Image } from 'expo-image';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { FlashList } from '@shopify/flash-list';
@@ -20,7 +20,7 @@ export default function FolderDetailScreen() {
     const NUM_COLUMNS = isFacesFolder ? 3 : 1;
     const FACE_ITEM_WIDTH = (width - SPACING * 4) / 3;
 
-    useEffect(() => {
+    const loadFolderItems = useCallback(() => {
         const root = RemoteAlbumService.getRootCollection();
         if (root) {
             const collection = root.getCollectionByPath(folderPath);
@@ -30,12 +30,28 @@ export default function FolderDetailScreen() {
         }
     }, [folderPath]);
 
+    useEffect(() => {
+        loadFolderItems();
+
+        const sub1 = DeviceEventEmitter.addListener('albumDeleted', () => {
+            loadFolderItems();
+        });
+        const sub2 = DeviceEventEmitter.addListener('albumRenamed', () => {
+            loadFolderItems();
+        });
+
+        return () => {
+            sub1.remove();
+            sub2.remove();
+        };
+    }, [loadFolderItems]);
+
     const handleAlbumPress = (album) => {
-        navigation.push('AlbumDetail', { albumId: album.info.id, albumName: album.name });
+        navigation.push('AlbumDetail', { albumId: album.info.id, albumName: album.name, fullPath: album.info.name });
     };
 
     const handleFolderPress = (folder) => {
-        navigation.push('FolderDetail', { folderPath: folder.fullPath, folderName: folder.name });
+        navigation.push('FolderDetail', { folderPath: folder.fullPath, folderName: folder.name, fullPath: folder.fullPath });
     };
 
     const renderItem = ({ item }) => {

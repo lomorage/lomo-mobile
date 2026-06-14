@@ -1,9 +1,9 @@
 import React, { useEffect, useState, useLayoutEffect } from 'react';
-import { View, Text, StyleSheet, Dimensions, ActivityIndicator, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, Dimensions, ActivityIndicator, TouchableOpacity, Alert, Modal, TextInput, KeyboardAvoidingView, Platform, DeviceEventEmitter } from 'react-native';
 import { Image } from 'expo-image';
 import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/native';
 import { FlashList } from '@shopify/flash-list';
-import { PlayCircle, Heart } from 'lucide-react-native';
+import { PlayCircle, Heart, CheckCircle2, Circle, MoreVertical, Trash2 } from 'lucide-react-native';
 import RemoteAlbumService from '../services/RemoteAlbumService';
 import NetworkQueue from '../services/NetworkQueue';
 import AssetDBService from '../services/AssetDBService';
@@ -18,9 +18,16 @@ const ITEM_SIZE = (width - SPACING * (NUM_COLUMNS + 1)) / NUM_COLUMNS;
 export default function AlbumDetailScreen() {
     const [assets, setAssets] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [selectMode, setSelectMode] = useState(false);
+    const [selectedHashes, setSelectedHashes] = useState(new Set());
+    const [promptState, setPromptState] = useState({ visible: false, text: '' });
     const navigation = useNavigation();
     const route = useRoute();
-    const { albumId, albumName } = route.params;
+    const { albumId, albumName: initialAlbumName, fullPath: initialFullPath } = route.params;
+    const [albumName, setAlbumName] = useState(initialAlbumName);
+    const [fullPath, setFullPath] = useState(initialFullPath || initialAlbumName);
+
+    const isSystemAlbum = !albumId || albumName.startsWith('/') || albumName === 'Favorites';
 
     // useLayoutEffect(() => {
     //     navigation.setOptions({
@@ -41,6 +48,27 @@ export default function AlbumDetailScreen() {
             };
         }, [albumId, assets.length]) // dependency on albumId
     );
+
+    useEffect(() => {
+        const sub1 = DeviceEventEmitter.addListener('albumAssetsUpdated', (updatedAlbumId) => {
+            if (String(updatedAlbumId) === String(albumId)) {
+                loadAlbumAssets();
+            }
+        });
+        const sub2 = DeviceEventEmitter.addListener('assetRemovedFromAlbum', ({ albumId: updatedAlbumId, hash }) => {
+            if (String(updatedAlbumId) === String(albumId)) {
+                setAssets(prev => {
+                    const newAssets = prev.filter(a => a.hash !== hash);
+                    GalleryStore.setAssets(newAssets, `album_${albumId}`);
+                    return newAssets;
+                });
+            }
+        });
+        return () => {
+            sub1.remove();
+            sub2.remove();
+        };
+    }, [albumId]);
 
     const loadAlbumAssets = async () => {
         setLoading(true);
@@ -86,7 +114,99 @@ export default function AlbumDetailScreen() {
     };
 
     const handleAssetPress = (item, index) => {
-        navigation.navigate('AssetDetail', { initialIndex: index, source: `album_${albumId}` });
+        if (selectMode) {
+            const newSet = new Set(selectedHashes);
+            if (newSet.has(item.hash)) {
+                newSet.delete(item.hash);
+            } else {
+                newSet.add(item.hash);
+            }
+            setSelectedHashes(newSet);
+        } else {
+            navigation.navigate('AssetDetail', { initialIndex: index, source: `album_${albumId}` });
+        }
+    };
+
+    const handleBatchRemove = () => {
+        if (selectedHashes.size === 0) return;
+        Alert.alert(
+            'Remove Photos',
+            `Are you sure you want to remove ${selectedHashes.size} photos from this album?`,
+            [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Remove', style: 'destructive', onPress: async () => {
+                    setLoading(true);
+                    for (const hash of selectedHashes) {
+                        await RemoteAlbumService.removeAssetFromAlbum(albumId, hash);
+                    }
+                    setAssets(prev => {
+                        const newAssets = prev.filter(a => !selectedHashes.has(a.hash));
+                        GalleryStore.setAssets(newAssets, `album_${albumId}`);
+                        return newAssets;
+                    });
+                    setSelectedHashes(new Set());
+                    setSelectMode(false);
+                    setLoading(false);
+                }}
+            ]
+        );
+    };
+
+    const handleMenuPress = () => {
+        Alert.alert(
+            'Album Options',
+            `Manage "${albumName}"`,
+            [
+                { text: 'Rename', onPress: () => setPromptState({ visible: true, text: albumName }) },
+                { text: 'Delete', style: 'destructive', onPress: confirmDeleteAlbum },
+                { text: 'Cancel', style: 'cancel' }
+            ]
+        );
+    };
+
+    const confirmDeleteAlbum = () => {
+        Alert.alert(
+            'Delete Album',
+            `Are you sure you want to delete "${albumName}"? This will not delete the photos inside.`,
+            [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Delete', style: 'destructive', onPress: async () => {
+                    RemoteAlbumService.deleteAlbumFromTree(albumId);
+                    DeviceEventEmitter.emit('albumDeleted', albumId);
+                    await RemoteAlbumService.deleteAlbum(albumId);
+                    navigation.goBack();
+                }}
+            ]
+        );
+    };
+
+    const handlePromptSubmit = async () => {
+        const text = promptState.text.trim();
+        if (!text) {
+            setPromptState({ visible: false, text: '' });
+            return;
+        }
+        
+        let newFullPath = text;
+        if (fullPath && fullPath.includes('/')) {
+            const parts = fullPath.split('/');
+            if (parts[parts.length - 1] === '') {
+                parts.pop();
+            }
+            parts[parts.length - 1] = newFullPath;
+            newFullPath = parts.join('/');
+        }
+
+        setPromptState({ visible: false, text: '' });
+        setLoading(true);
+        RemoteAlbumService.renameAlbumInTree(albumId, text, newFullPath);
+        DeviceEventEmitter.emit('albumRenamed', { albumId, newName: text, newFullPath });
+        const success = await RemoteAlbumService.updateAlbumInfo(albumId, newFullPath);
+        if (success) {
+            setAlbumName(text);
+            setFullPath(newFullPath);
+        }
+        setLoading(false);
     };
 
     const renderItem = ({ item, index }) => {
@@ -106,13 +226,22 @@ export default function AlbumDetailScreen() {
                     recyclingKey={item.id ? String(item.id) : null}
                 />
                 {isVideo && (
-                    <View style={[styles.imageOverlay, styles.videoOverlay]}>
-                        <PlayCircle color="#fff" size={32} />
+                    <View style={styles.videoIndicator}>
+                        <PlayCircle color="#fff" size={20} />
                     </View>
                 )}
                 {item.isFavorite && albumName !== 'Favorites' && albumName !== '/Favorites' && (
                     <View style={styles.favoriteIndicator}>
                         <Heart color="#ef4444" fill="#ef4444" size={14} />
+                    </View>
+                )}
+                {selectMode && (
+                    <View style={styles.selectOverlay}>
+                        {selectedHashes.has(item.hash) ? (
+                            <CheckCircle2 color="#007AFF" fill="#fff" size={24} />
+                        ) : (
+                            <Circle color="#fff" size={24} />
+                        )}
                     </View>
                 )}
             </TouchableOpacity>
@@ -122,11 +251,39 @@ export default function AlbumDetailScreen() {
     return (
         <View style={styles.container}>
             <View style={styles.header}>
-                <TouchableOpacity onPress={() => navigation.canGoBack() && navigation.goBack()} style={styles.iconButton}>
-                    <Text style={{fontSize: 24, paddingHorizontal: 10}}>‹</Text>
-                </TouchableOpacity>
-                <Text style={styles.title} numberOfLines={1}>{albumName || 'Album'}</Text>
-                <View style={{ width: 44 }} />
+                {selectMode ? (
+                    <>
+                        <TouchableOpacity onPress={() => { setSelectMode(false); setSelectedHashes(new Set()); }} style={styles.headerBtn}>
+                            <Text style={styles.headerBtnText}>Cancel</Text>
+                        </TouchableOpacity>
+                        <Text style={styles.title}>
+                            {selectedHashes.size > 0 ? `${selectedHashes.size} Selected` : 'Select Items'}
+                        </Text>
+                        <TouchableOpacity 
+                            onPress={() => setSelectedHashes(selectedHashes.size === assets.length ? new Set() : new Set(assets.map(a => a.hash)))} 
+                            style={styles.headerBtn}
+                        >
+                            <Text style={styles.headerBtnText}>{selectedHashes.size === assets.length ? 'Deselect All' : 'Select All'}</Text>
+                        </TouchableOpacity>
+                    </>
+                ) : (
+                    <>
+                        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.headerBtn}>
+                            <Text style={styles.headerBtnText}>Back</Text>
+                        </TouchableOpacity>
+                        <Text style={styles.title} numberOfLines={1}>{albumName}</Text>
+                        <View style={{ flexDirection: 'row' }}>
+                            <TouchableOpacity onPress={() => setSelectMode(true)} style={styles.headerBtn}>
+                                <Text style={styles.headerBtnText}>Select</Text>
+                            </TouchableOpacity>
+                            {!isSystemAlbum && (
+                                <TouchableOpacity onPress={handleMenuPress} style={styles.headerIconBtn}>
+                                    <MoreVertical color="#007AFF" size={24} />
+                                </TouchableOpacity>
+                            )}
+                        </View>
+                    </>
+                )}
             </View>
 
             {loading && assets.length === 0 ? (
@@ -144,8 +301,56 @@ export default function AlbumDetailScreen() {
                     estimatedItemSize={ITEM_SIZE}
                     numColumns={NUM_COLUMNS}
                     contentContainerStyle={{ padding: SPACING }}
+                    refreshing={loading}
+                    onRefresh={loadAlbumAssets}
                 />
             )}
+
+            {selectMode && (
+                <View style={styles.bottomToolbar}>
+                    <TouchableOpacity 
+                        style={[styles.toolbarBtn, selectedHashes.size === 0 && { opacity: 0.5 }]} 
+                        disabled={selectedHashes.size === 0}
+                        onPress={handleBatchRemove}
+                    >
+                        <Trash2 color="#ef4444" size={24} />
+                        <Text style={styles.toolbarBtnText}>Remove from Album</Text>
+                    </TouchableOpacity>
+                </View>
+            )}
+
+            <Modal
+                visible={promptState.visible}
+                transparent={true}
+                animationType="fade"
+                onRequestClose={() => setPromptState({ visible: false, text: '' })}
+            >
+                <KeyboardAvoidingView 
+                    behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                    style={styles.modalOverlay}
+                >
+                    <View style={styles.promptContainer}>
+                        <Text style={styles.promptTitle}>Rename Album</Text>
+                        <TextInput
+                            style={styles.promptInput}
+                            value={promptState.text}
+                            onChangeText={t => setPromptState(prev => ({ ...prev, text: t }))}
+                            placeholder="Album Name"
+                            autoFocus
+                            returnKeyType="done"
+                            onSubmitEditing={handlePromptSubmit}
+                        />
+                        <View style={styles.promptActions}>
+                            <TouchableOpacity style={styles.promptBtn} onPress={() => setPromptState({ visible: false, text: '' })}>
+                                <Text style={styles.promptBtnCancel}>Cancel</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity style={styles.promptBtn} onPress={handlePromptSubmit}>
+                                <Text style={styles.promptBtnSubmit}>Save</Text>
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                </KeyboardAvoidingView>
+            </Modal>
         </View>
     );
 }
@@ -159,23 +364,33 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
-        paddingHorizontal: 10,
+        paddingHorizontal: 16,
         paddingTop: 15,
         paddingBottom: 15,
         backgroundColor: '#fff',
         borderBottomWidth: 1,
         borderBottomColor: '#eee',
     },
+    headerBtn: {
+        paddingVertical: 5,
+        paddingHorizontal: 8,
+    },
+    headerIconBtn: {
+        paddingVertical: 5,
+        paddingHorizontal: 5,
+        marginLeft: 10,
+    },
+    headerBtnText: {
+        color: '#007AFF',
+        fontSize: 16,
+        fontWeight: '500',
+    },
     title: {
         fontSize: 18,
         fontWeight: 'bold',
         color: '#1a1a1a',
-        flex: 1,
+        maxWidth: '50%',
         textAlign: 'center',
-    },
-    iconButton: {
-        padding: 5,
-        width: 44,
     },
     centerContainer: {
         flex: 1,
@@ -193,22 +408,96 @@ const styles = StyleSheet.create({
         width: '100%',
         height: '100%',
     },
-    imageOverlay: {
-        ...StyleSheet.absoluteFillObject,
-        backgroundColor: 'rgba(0,0,0,0.1)',
-    },
-    videoOverlay: {
-        justifyContent: 'center',
-        alignItems: 'center',
-        backgroundColor: 'transparent',
+    videoIndicator: {
+        position: 'absolute',
+        bottom: 5,
+        left: 5,
     },
     favoriteIndicator: {
         position: 'absolute',
-        top: 4,
-        right: 4,
-        backgroundColor: 'rgba(255,255,255,0.7)',
-        borderRadius: 10,
-        padding: 2,
+        bottom: 5,
+        right: 5,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.3,
+        shadowRadius: 1,
+        elevation: 2,
+    },
+    selectOverlay: {
+        position: 'absolute',
+        top: 5,
+        right: 5,
+        backgroundColor: 'rgba(255,255,255,0.4)',
+        borderRadius: 12,
+    },
+    bottomToolbar: {
+        flexDirection: 'row',
+        justifyContent: 'center',
+        alignItems: 'center',
+        paddingVertical: 15,
+        paddingBottom: 30,
+        backgroundColor: '#f8f8f8',
+        borderTopWidth: StyleSheet.hairlineWidth,
+        borderTopColor: '#d1d1d6',
+    },
+    toolbarBtn: {
+        alignItems: 'center',
+        flexDirection: 'row',
+    },
+    toolbarBtnText: {
+        color: '#ef4444',
+        fontSize: 16,
+        fontWeight: '500',
+        marginLeft: 8,
+    },
+    modalOverlay: {
+        flex: 1,
+        backgroundColor: 'rgba(0,0,0,0.4)',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    promptContainer: {
+        width: '80%',
+        backgroundColor: '#fff',
+        borderRadius: 12,
+        padding: 20,
+        alignItems: 'center',
+    },
+    promptTitle: {
+        fontSize: 18,
+        fontWeight: '600',
+        marginBottom: 16,
+        color: '#333',
+    },
+    promptInput: {
+        width: '100%',
+        borderWidth: 1,
+        borderColor: '#ddd',
+        borderRadius: 8,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        fontSize: 16,
+        marginBottom: 20,
+        backgroundColor: '#f9f9f9',
+    },
+    promptActions: {
+        flexDirection: 'row',
+        justifyContent: 'flex-end',
+        width: '100%',
+    },
+    promptBtn: {
+        paddingVertical: 10,
+        paddingHorizontal: 20,
+        marginLeft: 10,
+    },
+    promptBtnCancel: {
+        fontSize: 16,
+        color: '#666',
+    },
+    promptBtnSubmit: {
+        fontSize: 16,
+        fontWeight: '600',
+        color: '#007AFF',
     },
     emptyText: {
         fontSize: 16,

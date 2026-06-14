@@ -98,4 +98,33 @@ export class LomoCollection {
         }
         return curr;
     }
+
+    renameAlbum(albumId, newName, newFullPath) {
+        for (const [key, album] of this.albums.entries()) {
+            if (String(album.info.id) === String(albumId)) {
+                this.albums.delete(key);
+                album.name = newName;
+                if (newFullPath) album.info.name = newFullPath;
+                this.albums.set(newName, album);
+                return true;
+            }
+        }
+        for (const folder of this.folders.values()) {
+            if (folder.renameAlbum(albumId, newName, newFullPath)) return true;
+        }
+        return false;
+    }
+
+    deleteAlbum(albumId) {
+        for (const [key, album] of this.albums.entries()) {
+            if (String(album.info.id) === String(albumId)) {
+                this.albums.delete(key);
+                return true;
+            }
+        }
+        for (const folder of this.folders.values()) {
+            if (folder.deleteAlbum(albumId)) return true;
+        }
+        return false;
+    }
 }

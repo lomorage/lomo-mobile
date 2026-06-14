@@ -60,6 +60,20 @@ class RemoteAlbumService {
     return this.rootCollection;
   }
 
+  renameAlbumInTree(albumId, newName, newFullPath) {
+    if (this.rootCollection) {
+        return this.rootCollection.renameAlbum(albumId, newName, newFullPath);
+    }
+    return false;
+  }
+
+  deleteAlbumFromTree(albumId) {
+    if (this.rootCollection) {
+        return this.rootCollection.deleteAlbum(albumId);
+    }
+    return false;
+  }
+
   /**
    * Retrieves all assets inside a specific album.
    * @param {string} albumId - The ID of the album.
@@ -190,6 +204,86 @@ class RemoteAlbumService {
     } catch (e) {
       console.error(`Failed to create album: ${title}`, e);
       throw e;
+    }
+  }
+
+  /**
+   * Updates an album's information on the server
+   * @param {string} albumId 
+   * @param {string} title 
+   * @returns {Promise<boolean>}
+   */
+  async updateAlbumInfo(albumId, title) {
+    const serverUrl = AuthService.getServerUrl();
+    const token = AuthService.getToken();
+    if (!serverUrl || !token || !albumId) return false;
+
+    // Find existing album to preserve its CoverImage
+    let existingCoverImage = "";
+    if (this.rootCollection) {
+        let found = null;
+        const findAlbum = (collection) => {
+            for (const album of collection.albums.values()) {
+                if (String(album.info.id) === String(albumId)) {
+                    found = album;
+                    return;
+                }
+            }
+            if (!found) {
+                for (const folder of collection.folders.values()) {
+                    findAlbum(folder);
+                    if (found) return;
+                }
+            }
+        };
+        findAlbum(this.rootCollection);
+        if (found && found.info.coverImage) {
+            existingCoverImage = found.info.coverImage;
+        }
+    }
+
+    try {
+      const response = await axios.put(`${serverUrl}/album`, {
+        ID: parseInt(albumId, 10),
+        Title: title,
+        Description: "",
+        Author: "Lomorage User",
+        CoverImage: existingCoverImage
+      }, {
+        headers: { 
+          Authorization: `token=${token}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 10000,
+        skipAutoProbe: true
+      });
+      return response.status === 200;
+    } catch (error) {
+      console.error(`[RemoteAlbumService] Error updating album ${albumId}:`, error.message);
+      return false;
+    }
+  }
+
+  /**
+   * Deletes an album from the server
+   * @param {string} albumId 
+   * @returns {Promise<boolean>}
+   */
+  async deleteAlbum(albumId) {
+    const serverUrl = AuthService.getServerUrl();
+    const token = AuthService.getToken();
+    if (!serverUrl || !token || !albumId) return false;
+
+    try {
+      const response = await axios.delete(`${serverUrl}/album/${albumId}`, {
+        headers: { Authorization: `token=${token}` },
+        timeout: 10000,
+        skipAutoProbe: true
+      });
+      return response.status === 200;
+    } catch (error) {
+      console.error(`[RemoteAlbumService] Error deleting album ${albumId}:`, error.message);
+      return false;
     }
   }
 }
