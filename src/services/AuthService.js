@@ -3,8 +3,10 @@ import axios from 'axios';
 import Argon2 from 'react-native-argon2';
 import { Alert, Platform, DeviceEventEmitter } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
+import NetworkQueue from './NetworkQueue';
 
 axios.defaults.timeout = 60000; // Global 60s fallback to prevent native Java SocketTimeout popups
+NetworkQueue.setupInterceptors(axios);
 
 const TOKEN_KEY = 'lomo_auth_token';
 const SERVER_KEY = 'lomo_server_url';

@@ -170,7 +170,7 @@ export default function PhotoMapScreen() {
 
   const getFullImageUrl = useCallback((hash) => {
     if (!hash) return null;
-    return `${AuthService.getServerUrl()}/preview/${hash}?width=1200&height=-1&token=${AuthService.getToken()}`;
+    return `${AuthService.getServerUrl()}/asset/${hash}?token=${AuthService.getToken()}`;
   }, []);
 
   const getFullVideoUrl = useCallback((hash) => {
@@ -333,18 +333,24 @@ export default function PhotoMapScreen() {
     }
   }, [isFocused]);
 
+  const loadAssetsTimeout = useRef(null);
+
   useEffect(() => {
     const { DeviceEventEmitter } = require('react-native');
     console.log(`[PhotoMapScreen] remoteAssetsUpdated listener useEffect hook: isFocused=${isFocused}`);
     const sub = DeviceEventEmitter.addListener('remoteAssetsUpdated', () => {
       console.log(`[PhotoMapScreen] remoteAssetsUpdated event received, isFocused=${isFocused}`);
       if (isFocused) {
-        loadAssets();
+        if (loadAssetsTimeout.current) clearTimeout(loadAssetsTimeout.current);
+        loadAssetsTimeout.current = setTimeout(() => {
+          loadAssets();
+        }, 5000);
       }
     });
     return () => {
       console.log(`[PhotoMapScreen] remoteAssetsUpdated listener cleanup`);
       sub.remove();
+      if (loadAssetsTimeout.current) clearTimeout(loadAssetsTimeout.current);
     };
   }, [isFocused]);
 

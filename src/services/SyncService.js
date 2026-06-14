@@ -717,11 +717,13 @@ class SyncService {
 
     try {
       // Without ?all=1, the backend returns only year/month level with hashes (no day/asset details)
-      const response = await axios.get(`${url}/assets/merkletree`, {
-        headers: { Authorization: `token=${token}` },
-        timeout: 30000,
-        skipAutoProbe: true
-      });
+        const response = await axios.get(`${url}/assets/merkletree`, {
+          headers: { Authorization: `token=${token}` },
+          timeout: 30000,
+          skipAutoProbe: true,
+          priority: 4,
+          groupId: 'SyncService'
+        });
       return response.data;
     } catch (e) {
       console.error('[SyncService] Failed to fetch month-level tree', e);
@@ -958,7 +960,9 @@ class SyncService {
       const response = await axios.get(`${url}/assets/merkletree/${year}/${month}?all=1`, {
         headers: { Authorization: `token=${token}` },
         timeout: 60000,
-        skipAutoProbe: true
+        skipAutoProbe: true,
+        priority: 4,
+        groupId: 'SyncService'
       });
       return response.data; // { Month: X, Hash: "...", Days: [...] }
     } catch (e) {
@@ -997,7 +1001,9 @@ class SyncService {
               const res = await axios.get(`${url}/asset/metadata/${asset.hash}`, {
                 headers: { Authorization: `token=${token}` },
                 timeout: 10000,
-                skipAutoProbe: true
+                skipAutoProbe: true,
+                priority: 4,
+                groupId: 'SyncService'
               });
               const data = res.data;
               if (data && (data.Latitude !== 0 || data.Longitude !== 0)) {
@@ -1105,7 +1111,9 @@ class SyncService {
       const response = await axios.get(`${url}/assets/merkletree/${year}/${month}/${day}`, {
         headers: { Authorization: `token=${token}` },
         timeout: 60000,
-        skipAutoProbe: true
+        skipAutoProbe: true,
+        priority: 4,
+        groupId: 'SyncService'
       });
       return response.data; // { Day: X, Hash: "...", Assets: [...] }
     } catch (e) {

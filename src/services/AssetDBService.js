@@ -522,19 +522,50 @@ class AssetDBService {
     }
   }
 
-  // --- Offline Favorites Caching ---
-
+  /**
+   * Sets the favorite status of an asset by hash.
+   * @param {string} hash - The SHA1 hash of the asset.
+   * @param {boolean} isFavorite - The desired favorite status.
+   */
   async setAssetFavoriteStatus(hash, isFavorite) {
     if (!this.db) return;
     try {
       await this.db.runAsync(
-        `UPDATE MediaAsset SET isFavorite = ? WHERE id = ?`,
+        `UPDATE MediaAsset SET isFavorite = ? WHERE hash = ?`,
         [isFavorite ? 1 : 0, hash]
       );
-    } catch (error) {
-      console.error(`[AssetDBService] Failed to set favorite status for ${hash}:`, error);
+    } catch (e) {
+      console.error(`Failed to update favorite status for ${hash}:`, e);
     }
   }
+
+  /**
+   * Synchronizes the favorite status from the server to the local database.
+   * @param {Array<string>} favHashes - Array of asset hashes that are currently favorited on the server.
+   */
+  async syncFavoriteStatus(favHashes) {
+    if (!this.db) return;
+    try {
+      // 1. Reset all remote assets to not favorite
+      await this.db.execAsync(`UPDATE MediaAsset SET isFavorite = 0 WHERE isLocal = 0`);
+      
+      // 2. Set the favorited ones in chunks of 500 to avoid SQLite parameter limits
+      if (favHashes && favHashes.length > 0) {
+        for (let i = 0; i < favHashes.length; i += 500) {
+          const chunk = favHashes.slice(i, i + 500);
+          const placeholders = chunk.map(() => '?').join(',');
+          await this.db.runAsync(
+            `UPDATE MediaAsset SET isFavorite = 1 WHERE hash IN (${placeholders}) AND isLocal = 0`,
+            chunk
+          );
+        }
+      }
+    } catch (e) {
+      console.error(`[AssetDBService] Failed to sync favorite status:`, e);
+    }
+  }
+
+  // --- Offline Favorites Caching ---
 
   async updateAssetCachePath(hash, localCachePath) {
     if (!this.db) return;

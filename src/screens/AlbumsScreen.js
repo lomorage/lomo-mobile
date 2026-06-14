@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Dimensions } from 'react-native';
 import { Image } from 'expo-image';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { FlashList } from '@shopify/flash-list';
 import { Folder, Users, Image as ImageIcon } from 'lucide-react-native';
 import RemoteAlbumService from '../services/RemoteAlbumService';
+import NetworkQueue from '../services/NetworkQueue';
 
 const { width } = Dimensions.get('window');
 const SPACING = 16;
@@ -14,14 +15,21 @@ export default function AlbumsScreen() {
     const [loading, setLoading] = useState(true);
     const navigation = useNavigation();
 
-    useEffect(() => {
-        loadAlbums();
-    }, []);
+    useFocusEffect(
+        React.useCallback(() => {
+            loadAlbums();
+            
+            // Clean up: when user leaves Albums tab, abort any pending Album requests
+            return () => {
+                NetworkQueue.cancelGroup('Albums');
+            };
+        }, [])
+    );
 
     const loadAlbums = async () => {
         setLoading(true);
         try {
-            const rootCollection = await RemoteAlbumService.getAlbumsHierarchy();
+            const rootCollection = await RemoteAlbumService.getAlbumsHierarchy({ priority: 1, groupId: 'Albums' });
             setCollection(rootCollection);
         } catch (error) {
             console.error('[AlbumsScreen] Failed to load albums', error);
@@ -39,49 +47,56 @@ export default function AlbumsScreen() {
     };
 
     const renderItem = ({ item }) => {
-        if (item.type === 'folder') {
-            const folder = item.data;
-            const isFaces = folder.name === 'Faces' || folder.fullPath.includes('/Faces');
-            return (
-                <TouchableOpacity style={styles.listRow} onPress={() => handleFolderPress(folder)}>
-                    <View style={styles.coverContainer}>
+        const isFolder = item.type === 'folder';
+        const data = item.data;
+        
+        let count = 0;
+        let isFaces = false;
+        let coverUri = null;
+        
+        if (isFolder) {
+            count = (data.folders ? data.folders.size : 0) + (data.albums ? data.albums.size : 0);
+            isFaces = data.name === 'Faces' || (data.fullPath && data.fullPath.includes('/Faces'));
+        } else {
+            count = data.info && data.info.count ? data.info.count : 0;
+            if (data.info && data.info.coverImage) {
+                coverUri = data.info.coverImage.startsWith('data:') 
+                    ? data.info.coverImage 
+                    : 'data:image/jpeg;base64,' + data.info.coverImage;
+            }
+        }
+
+        return (
+            <TouchableOpacity
+                style={styles.listRow}
+                onPress={() => isFolder ? handleFolderPress(data) : handleAlbumPress(data)}
+            >
+                <View style={styles.coverContainer}>
+                    {isFolder ? (
                         <View style={[styles.placeholderCover, { backgroundColor: isFaces ? '#F0F5FF' : '#F5F5F5' }]}>
                             {isFaces ? <Users color="#007AFF" size={28} strokeWidth={1.5} /> : <Folder color="#8E8E93" size={28} strokeWidth={1.5} />}
                         </View>
-                    </View>
-                    <View style={styles.infoContainer}>
-                        <Text style={styles.titleText} numberOfLines={1}>{folder.name}</Text>
-                        <Text style={styles.subtitleText}>{folder.children ? folder.children.length : 0} items</Text>
-                    </View>
-                </TouchableOpacity>
-            );
-        } else {
-            const album = item.data;
-            let coverSource = null;
-            if (album.info.coverImage) {
-                const base64Prefix = 'data:image/jpeg;base64,';
-                const uri = album.info.coverImage.startsWith('data:') ? album.info.coverImage : base64Prefix + album.info.coverImage;
-                coverSource = { uri };
-            }
-
-            return (
-                <TouchableOpacity style={styles.listRow} onPress={() => handleAlbumPress(album)}>
-                    <View style={styles.coverContainer}>
-                        {coverSource ? (
-                            <Image source={coverSource} style={styles.coverImage} contentFit="cover" cachePolicy="memory-disk" />
+                    ) : (
+                        coverUri ? (
+                            <Image 
+                                source={{ uri: coverUri }} 
+                                style={styles.coverImage} 
+                                contentFit="cover" 
+                                cachePolicy="memory-disk" 
+                            />
                         ) : (
                             <View style={[styles.placeholderCover, { backgroundColor: '#F5F5F5' }]}>
                                 <ImageIcon color="#8E8E93" size={28} strokeWidth={1.5} />
                             </View>
-                        )}
-                    </View>
-                    <View style={styles.infoContainer}>
-                        <Text style={styles.titleText} numberOfLines={1}>{album.name}</Text>
-                        <Text style={styles.subtitleText}>Album</Text>
-                    </View>
-                </TouchableOpacity>
-            );
-        }
+                        )
+                    )}
+                </View>
+                <View style={styles.infoContainer}>
+                    <Text style={styles.titleText} numberOfLines={1}>{data.name}</Text>
+                    {count > 0 && <Text style={styles.subtitleText}>{count} items</Text>}
+                </View>
+            </TouchableOpacity>
+        );
     };
 
     const items = collection ? collection.getItems() : [];

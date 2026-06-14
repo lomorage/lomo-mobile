@@ -86,7 +86,6 @@ export default function HomeScreen({ navigation }) {
     const [error, setError] = useState(null);
     const [permissionStatus, setPermissionStatus] = useState('granted');
     const [loading, setLoading] = useState(true);
-    const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
     
     const { debugMode, excludedAlbums } = useSettings();
 
@@ -265,7 +264,7 @@ const formatSpeed = (bytesPerSec) => {
                 return {
                     id: asset.id,
                     hash: asset.hash,
-                    uri: `${serverUrl}/preview/${asset.hash}?width=500&height=-1&token=${token}`,
+                    uri: `${serverUrl}/preview/${asset.hash}?width=320&height=-1&token=${token}`,
                     status: 'remote',
                     creationTime: asset.creationTime || 0,
                     mediaType: asset.mediaType || (isVideoExtension(filename) ? 'video' : 'photo'),
@@ -290,9 +289,6 @@ const formatSpeed = (bytesPerSec) => {
         while (j < filteredRemoteAssets.length) combined.push(filteredRemoteAssets[j++]);
         
         let finalCombined = combined;
-        if (showFavoritesOnly) {
-            finalCombined = combined.filter(a => a.isFavorite);
-        }
         
         if (isMounted.current) {
             GalleryStore.setAssets(finalCombined);
@@ -302,7 +298,7 @@ const formatSpeed = (bytesPerSec) => {
             AutoBackupManager.syncQueueWithGallery();
             MetricsTracker.end('HomeScreen_mergeAndSetAssets', `(Assets: ${finalCombined.length}, finalize: ${finalize})`);
         }
-    }, [showFavoritesOnly]);
+    }, []);
 
     const formatDateHeader = (timestamp) => {
         if (!timestamp || timestamp === 0) return 'Unknown Date';
@@ -586,12 +582,6 @@ const formatSpeed = (bytesPerSec) => {
         GalleryStore.setAssets(assets);
     }, [assets]);
 
-    useEffect(() => {
-        if (localAssetsRef.current) {
-            mergeAndSetAssets(localAssetsRef.current, false);
-        }
-    }, [showFavoritesOnly, mergeAndSetAssets]);
-
     const loadAndSync = useCallback(async () => {
         if (assetsCountRef.current === 0) {
             setLoading(true);
@@ -687,7 +677,7 @@ const formatSpeed = (bytesPerSec) => {
                  setLoading(false);
             }
         }
-    }, [loading]);
+    }, [loading, mergeAndSetAssets]);
 
     const StatusIcon = memo(({ item, currentAssetId, activeAssetIds = [] }) => {
         if (item.id === currentAssetId || activeAssetIds.includes(item.id)) {
@@ -759,7 +749,7 @@ const formatSpeed = (bytesPerSec) => {
                     </View>
                 ) : null}
                 {asset.isFavorite ? (
-                    <View style={[styles.livePhotoBadge, { right: 5, left: undefined, backgroundColor: 'transparent', borderWidth: 0, shadowOpacity: 0 }]}>
+                    <View style={{ position: 'absolute', bottom: 5, right: 5, backgroundColor: 'rgba(0,0,0,0.4)', borderRadius: 12, padding: 4 }}>
                         <Heart color="#ef4444" fill="#ef4444" size={14} />
                     </View>
                 ) : null}
@@ -936,13 +926,6 @@ const formatSpeed = (bytesPerSec) => {
 
                     <TouchableOpacity onPress={() => navigation.navigate('PhotoMap')} style={{ marginRight: 15, padding: 4 }}>
                         <MapPin size={24} color="#333" />
-                    </TouchableOpacity>
-
-                    <TouchableOpacity 
-                        onPress={() => setShowFavoritesOnly(!showFavoritesOnly)} 
-                        style={{ marginRight: 15, padding: 4 }}
-                    >
-                        <Heart size={24} color={showFavoritesOnly ? "#ef4444" : "#333"} fill={showFavoritesOnly ? "#ef4444" : "none"} />
                     </TouchableOpacity>
 
                     <TouchableOpacity onPress={() => navigation.navigate('Settings')} style={styles.settingsButton}>

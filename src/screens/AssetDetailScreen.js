@@ -12,6 +12,7 @@ import SyncService from '../services/SyncService';
 import UploadService from '../services/UploadService';
 import { useSettings } from '../context/SettingsContext';
 import axios from 'axios';
+import NetworkQueue from '../services/NetworkQueue';
 import OfflineCacheService from '../services/OfflineCacheService';
 import AssetDBService from '../services/AssetDBService';
 import GalleryStore from '../store/GalleryStore';
@@ -215,7 +216,11 @@ export default function AssetDetailScreen({ route, navigation }) {
                 try {
                     const url = AuthService.getServerUrl();
                     const res = await axios.get(`${url}/asset/metadata/${item.hash}`, {
-                        headers: { Authorization: `token=${AuthService.getToken()}` }
+                        headers: { Authorization: `token=${AuthService.getToken()}` },
+                        timeout: 5000,
+                        skipAutoProbe: true,
+                        priority: 1,
+                        groupId: 'AssetDetail'
                     });
                     if (res.status === 200 && res.data) {
                         const metadata = res.data;
@@ -237,17 +242,32 @@ export default function AssetDetailScreen({ route, navigation }) {
             };
             fetchMeta();
         }
-    }, [currentIndex, assets]);
+
+        return () => {
+            NetworkQueue.cancelGroup('AssetDetail');
+        };
+    }, [currentIndex, assets.length]);
 
     const handleToggleFavorite = async () => {
         const item = assets[currentIndex];
-        if (!item || item.status !== 'remote' || !item.hash) return;
+        if (!item || (item.status !== 'remote' && item.status !== 'synced') || !item.hash) return;
         
         const newValue = !isFavorite;
         setIsFavorite(newValue); // Optimistic UI update
         item.isFavorite = newValue; // Update local array to keep it in sync
+        GalleryStore.setAssets([...assets], source); // Force re-render of thumbnails in grids
 
-        await OfflineCacheService.toggleFavorite(item.hash, newValue);
+        try {
+            await OfflineCacheService.toggleFavorite(item.hash, newValue);
+            // Optionally, emit an event if other screens need to update immediately
+        } catch (error) {
+            console.error('[AssetDetailScreen] Failed to toggle favorite:', error);
+            // Revert on failure
+            setIsFavorite(!newValue);
+            item.isFavorite = !newValue;
+            GalleryStore.setAssets([...assets], source);
+            Alert.alert('Error', 'Failed to update favorite status');
+        }
     };
 
     useEffect(() => {
@@ -432,7 +452,7 @@ export default function AssetDetailScreen({ route, navigation }) {
                          // Switch URI to the backend because the local file is now physically destroyed
                          const baseUrl = AuthService.getServerUrl();
                          const token = AuthService.getToken();
-                         updatedAsset.uri = `${baseUrl}/preview/${currentAsset.hash}?width=500&height=-1&token=${token}`;
+                         updatedAsset.uri = `${baseUrl}/preview/${currentAsset.hash}?width=320&height=-1&token=${token}`;
                     }
 
                     const newAssets = [...assets];
@@ -580,10 +600,15 @@ export default function AssetDetailScreen({ route, navigation }) {
             ? `${baseUrl}/preview/${item.hash}?width=320&height=-1&token=${token}`
             : null;
 
-        let staticImageUri = (isRemote && isLive)
-            ? item.uri
-            : ((item.mediaType === 'video' && isRemote) ? thumbUri : uri);
-
+        let staticImageUri = uri;
+        if (isRemote && item.hash) {
+            if (item.mediaType === 'video') {
+                staticImageUri = thumbUri;
+            } else {
+                // Fetch original asset for full screen viewing to avoid expensive server transcoding
+                staticImageUri = `${baseUrl}/asset/${item.hash}?token=${token}`;
+            }
+        }
         // Offline Cache overriding logic:
         if (item.status === 'remote' && item.localCachePath) {
             thumbUri = item.localCachePath;
@@ -707,7 +732,7 @@ export default function AssetDetailScreen({ route, navigation }) {
                             <CloudUpload color={isUploading ? "#ccc" : "#007AFF"} size={24} />
                         </TouchableOpacity>
                     ) : null}
-                    {currentAsset.status === 'remote' ? (
+                    {currentAsset.status === 'remote' || currentAsset.status === 'synced' ? (
                         <TouchableOpacity onPress={handleToggleFavorite} style={styles.iconButton}>
                             <Heart color={isFavorite ? "#ef4444" : "#007AFF"} fill={isFavorite ? "#ef4444" : "transparent"} size={24} />
                         </TouchableOpacity>

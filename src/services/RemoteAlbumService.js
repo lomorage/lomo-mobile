@@ -5,9 +5,10 @@ import { LomoCollection } from '../models/LomoCollection';
 class RemoteAlbumService {
   /**
    * Retrieves all albums from the server as a flat list.
+   * @param {Object} options - Options like { priority, groupId }
    * @returns {Promise<Array>} Array of album objects.
    */
-  async getAlbums() {
+  async getAlbums(options = {}) {
     const serverUrl = AuthService.getServerUrl();
     const token = AuthService.getToken();
     if (!serverUrl || !token) {
@@ -19,15 +20,25 @@ class RemoteAlbumService {
       const response = await axios.get(`${serverUrl}/album`, {
         headers: { Authorization: `token=${token}` },
         timeout: 10000,
-        skipAutoProbe: true
+        skipAutoProbe: true,
+        priority: options.priority ?? 1,
+        groupId: options.groupId ?? 'Albums'
       });
-      const data = response.data?.Albums || [];
-        return data.map((a, index) => ({
-          id: a.ID || a.id || `album_${index}`,
-          name: a.Title || a.title || a.name || a.Name || 'Unnamed Album',
-          coverImage: a.CoverImage || a.coverImage || '',
-          count: a.AssetsCount || a.assetsCount || a.count || a.Count || 0
-        }));
+      let albumsData = [];
+      if (Array.isArray(response.data)) {
+        albumsData = response.data;
+      } else if (response.data?.Albums) {
+        albumsData = response.data.Albums;
+      } else if (response.data?.albums) {
+        albumsData = response.data.albums;
+      }
+      
+      return albumsData.map((a, index) => ({
+        id: a.ID || a.id || `album_${index}`,
+        name: a.Title || a.title || a.name || a.Name || 'Unnamed Album',
+        coverImage: a.CoverImage || a.coverImage || '',
+        count: a.AssetsCount || a.assetsCount || a.count || a.Count || 0
+      }));
     } catch (error) {
       console.error('[RemoteAlbumService] Error fetching albums:', error.message);
       return [];
@@ -36,10 +47,11 @@ class RemoteAlbumService {
 
   /**
    * Retrieves all albums from the server and builds a hierarchical tree.
+   * @param {Object} options - Options like { priority, groupId }
    * @returns {Promise<LomoCollection>} Root LomoCollection node.
    */
-  async getAlbumsHierarchy() {
-    const flatAlbums = await this.getAlbums();
+  async getAlbumsHierarchy(options = {}) {
+    const flatAlbums = await this.getAlbums(options);
     this.rootCollection = LomoCollection.buildCollections(flatAlbums);
     return this.rootCollection;
   }
@@ -51,9 +63,10 @@ class RemoteAlbumService {
   /**
    * Retrieves all assets inside a specific album.
    * @param {string} albumId - The ID of the album.
+   * @param {Object} options - Options like { priority, groupId }
    * @returns {Promise<Array>} Array of asset hashes.
    */
-  async getAlbumAssets(albumId) {
+  async getAlbumAssets(albumId, options = {}) {
     const serverUrl = AuthService.getServerUrl();
     const token = AuthService.getToken();
     if (!serverUrl || !token || !albumId) {
@@ -66,7 +79,9 @@ class RemoteAlbumService {
         params: { hash: 1, page: 0 },
         headers: { Authorization: `token=${token}` },
         skipAutoProbe: true,
-        timeout: 10000
+        timeout: 10000,
+        priority: options.priority ?? 1,
+        groupId: options.groupId ?? 'AlbumDetail'
       });
       const data = response.data || [];
       // API returns array of objects { Name, Hash } or strings depending on version/params
@@ -94,11 +109,15 @@ class RemoteAlbumService {
     try {
       const response = await axios.post(
         `${serverUrl}/album/${albumId}/assets`,
-        [assetHash],
-        { headers: { Authorization: `token=${token}` } }
+        JSON.stringify([assetHash]),
+        { headers: { Authorization: `token=${token}`, 'Content-Type': 'application/json' } }
       );
       return response.status === 200 || response.status === 201;
     } catch (error) {
+      if (error.response && error.response.status === 500) {
+        console.warn(`[RemoteAlbumService] 500 error adding asset ${assetHash} to album ${albumId}. Likely already exists. Ignoring.`);
+        return true;
+      }
       console.error(`[RemoteAlbumService] Error adding asset ${assetHash} to album ${albumId}:`, error.message);
       return false;
     }
@@ -122,12 +141,16 @@ class RemoteAlbumService {
       const response = await axios.delete(
         `${serverUrl}/album/${albumId}/assets`,
         {
-          data: [assetHash],
-          headers: { Authorization: `token=${token}` }
+          data: JSON.stringify([assetHash]),
+          headers: { Authorization: `token=${token}`, 'Content-Type': 'application/json' }
         }
       );
       return response.status === 200;
     } catch (error) {
+      if (error.response && error.response.status === 500) {
+        console.warn(`[RemoteAlbumService] 500 error removing asset ${assetHash} from album ${albumId}. Likely doesn't exist. Ignoring.`);
+        return true;
+      }
       console.error(`[RemoteAlbumService] Error removing asset ${assetHash} from album ${albumId}:`, error.message);
       return false;
     }

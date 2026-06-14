@@ -1,10 +1,11 @@
 import React, { useEffect, useState, useLayoutEffect } from 'react';
 import { View, Text, StyleSheet, Dimensions, ActivityIndicator, TouchableOpacity } from 'react-native';
 import { Image } from 'expo-image';
-import { useNavigation, useRoute } from '@react-navigation/native';
+import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/native';
 import { FlashList } from '@shopify/flash-list';
 import { PlayCircle, Heart } from 'lucide-react-native';
 import RemoteAlbumService from '../services/RemoteAlbumService';
+import NetworkQueue from '../services/NetworkQueue';
 import AssetDBService from '../services/AssetDBService';
 import GalleryStore from '../store/GalleryStore';
 import AuthService from '../services/AuthService';
@@ -28,15 +29,24 @@ export default function AlbumDetailScreen() {
     //     });
     // }, [navigation, albumName]);
 
-    useEffect(() => {
-        loadAlbumAssets();
-    }, [albumId]);
+    useFocusEffect(
+        React.useCallback(() => {
+            // Only load if we haven't loaded yet
+            if (assets.length === 0) {
+                loadAlbumAssets();
+            }
+            
+            return () => {
+                NetworkQueue.cancelGroup('AlbumDetail');
+            };
+        }, [albumId, assets.length]) // dependency on albumId
+    );
 
     const loadAlbumAssets = async () => {
         setLoading(true);
         try {
             // 1. Get asset hashes for this album from server
-            const hashes = await RemoteAlbumService.getAlbumAssets(albumId);
+            const hashes = await RemoteAlbumService.getAlbumAssets(albumId, { priority: 1, groupId: 'AlbumDetail' });
             
             if (hashes.length > 0) {
                 // 2. Fetch full metadata from local SQLite cache (for the ones we have)
@@ -51,7 +61,7 @@ export default function AlbumDetailScreen() {
                     return {
                         id: localAsset ? localAsset.id : hash, // Use hash as ID to prevent FlatList key collisions
                         hash: hash,
-                        uri: `${serverUrl}/preview/${hash}?width=500&height=-1&token=${token}`,
+                        uri: `${serverUrl}/preview/${hash}?width=320&height=-1&token=${token}`,
                         status: 'remote',
                         creationTime: localAsset ? localAsset.creationTime : Date.now(),
                         mediaType: localAsset ? localAsset.mediaType : 'image', // Fallback to image if not in DB
@@ -100,7 +110,7 @@ export default function AlbumDetailScreen() {
                         <PlayCircle color="#fff" size={32} />
                     </View>
                 )}
-                {item.isFavorite && (
+                {item.isFavorite && albumName !== 'Favorites' && albumName !== '/Favorites' && (
                     <View style={styles.favoriteIndicator}>
                         <Heart color="#ef4444" fill="#ef4444" size={14} />
                     </View>

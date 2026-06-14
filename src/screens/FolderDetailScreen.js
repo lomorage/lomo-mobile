@@ -84,6 +84,7 @@ export default function FolderDetailScreen() {
                 );
             }
 
+            const count = album.info && album.info.count ? album.info.count : 0;
             return (
                 <TouchableOpacity style={styles.listRow} onPress={() => handleAlbumPress(album)}>
                     <View style={styles.listCoverContainer}>
@@ -97,7 +98,7 @@ export default function FolderDetailScreen() {
                     </View>
                     <View style={styles.infoContainer}>
                         <Text style={styles.titleText} numberOfLines={1}>{album.name}</Text>
-                        <Text style={styles.subtitleText}>Album</Text>
+                        {count > 0 && <Text style={styles.subtitleText}>{count} items</Text>}
                     </View>
                 </TouchableOpacity>
             );

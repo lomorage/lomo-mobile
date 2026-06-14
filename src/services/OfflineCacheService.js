@@ -1,4 +1,4 @@
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { DeviceEventEmitter } from 'react-native';
 import AssetDBService from './AssetDBService';
 import RemoteAlbumService from './RemoteAlbumService';
@@ -28,7 +28,6 @@ class OfflineCacheService {
     try {
       console.log('[OfflineCacheService] Syncing favorites from server...');
       const albums = await RemoteAlbumService.getAlbums();
-      // Look for the reserved Favorites album, iOS uses "/Favorites", others might use "Favorites"
       let favAlbum = albums.find(a => a.name === '/Favorites' || a.name === 'Favorites');
       
       if (!favAlbum) {
@@ -49,23 +48,8 @@ class OfflineCacheService {
         return;
       }
 
-      // 1. Reset all existing remote favorites to 0
-      await AssetDBService.db.runAsync(`UPDATE MediaAsset SET isFavorite = 0 WHERE isLocal = 0`);
-
-      // 2. Set fetched hashes to 1
-      // For large lists, this should ideally be batched, but we can iterate for now
-      if (favoriteHashes.length > 0) {
-        await AssetDBService.db.withExclusiveTransactionAsync(async () => {
-          const stmt = await AssetDBService.db.prepareAsync(`UPDATE MediaAsset SET isFavorite = 1 WHERE id = ?`);
-          try {
-            for (const hash of favoriteHashes) {
-              await stmt.executeAsync([hash.toLowerCase()]);
-            }
-          } finally {
-            await stmt.finalizeAsync();
-          }
-        });
-      }
+      // Bulk update SQLite
+      await AssetDBService.syncFavoriteStatus(favoriteHashes);
 
       console.log('[OfflineCacheService] SQLite favorites synced. Triggering cleanup and download.');
       
@@ -138,7 +122,7 @@ class OfflineCacheService {
       
       // For images, we pull a 1200px width preview. For videos, maybe a preview frame or just the video if small?
       // Since video caching can be huge, we'll just cache the high-res image preview for videos too, so it looks good offline.
-      const remoteUri = `${serverUrl}/preview/${asset.hash}?width=1200&height=-1&token=${token}`;
+      const remoteUri = `${serverUrl}/asset/${asset.hash}?token=${token}`;
 
       try {
         const downloadRes = await FileSystem.downloadAsync(remoteUri, fileUri);
