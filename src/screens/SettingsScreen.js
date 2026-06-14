@@ -295,7 +295,7 @@ export default function SettingsScreen({ navigation }) {
     return (
         <View style={styles.container}>
             <View style={styles.header}>
-                <TouchableOpacity onPress={() => navigation.goBack()} style={styles.iconButton}>
+                <TouchableOpacity onPress={() => navigation.canGoBack() && navigation.goBack()} style={styles.iconButton}>
                     <ChevronLeft color="#000" size={28} />
                 </TouchableOpacity>
                 <Text style={styles.title}>Settings</Text>

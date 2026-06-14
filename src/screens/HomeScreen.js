@@ -3,9 +3,10 @@ import { StyleSheet, View, Dimensions, TouchableOpacity, Text, ActivityIndicator
 import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 import { FlashList } from '@shopify/flash-list';
-import { Cloud, CheckCircle, Smartphone, PlayCircle, PauseCircle, Settings as SettingsIcon, UploadCloud, X, MapPin } from 'lucide-react-native';
+import { Cloud, CheckCircle, Smartphone, PlayCircle, PauseCircle, Settings as SettingsIcon, UploadCloud, X, MapPin, Heart } from 'lucide-react-native';
 import MediaService from '../services/MediaService';
 import SyncService from '../services/SyncService';
+import OfflineCacheService from '../services/OfflineCacheService';
 import AuthService from '../services/AuthService';
 import AssetDBService from '../services/AssetDBService';
 import AutoBackupManager from '../services/AutoBackupManager';
@@ -85,6 +86,7 @@ export default function HomeScreen({ navigation }) {
     const [error, setError] = useState(null);
     const [permissionStatus, setPermissionStatus] = useState('granted');
     const [loading, setLoading] = useState(true);
+    const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
     
     const { debugMode, excludedAlbums } = useSettings();
 
@@ -267,7 +269,9 @@ const formatSpeed = (bytesPerSec) => {
                     status: 'remote',
                     creationTime: asset.creationTime || 0,
                     mediaType: asset.mediaType || (isVideoExtension(filename) ? 'video' : 'photo'),
-                    filename: filename
+                    filename: filename,
+                    isFavorite: asset.isFavorite,
+                    localCachePath: asset.localCachePath
                 };
             });
         // Fast O(N) linear merge of two pre-sorted arrays (descending)
@@ -285,15 +289,20 @@ const formatSpeed = (bytesPerSec) => {
         while (i < initialAssets.length) combined.push(initialAssets[i++]);
         while (j < filteredRemoteAssets.length) combined.push(filteredRemoteAssets[j++]);
         
+        let finalCombined = combined;
+        if (showFavoritesOnly) {
+            finalCombined = combined.filter(a => a.isFavorite);
+        }
+        
         if (isMounted.current) {
-            GalleryStore.setAssets(combined);
-            setAssets(combined);
+            GalleryStore.setAssets(finalCombined);
+            setAssets(finalCombined);
             // Always sync queue immediately so new photos start backing up on app launch
             const AutoBackupManager = require('../services/AutoBackupManager').default;
             AutoBackupManager.syncQueueWithGallery();
-            MetricsTracker.end('HomeScreen_mergeAndSetAssets', `(Assets: ${combined.length}, finalize: ${finalize})`);
+            MetricsTracker.end('HomeScreen_mergeAndSetAssets', `(Assets: ${finalCombined.length}, finalize: ${finalize})`);
         }
-    }, []);
+    }, [showFavoritesOnly]);
 
     const formatDateHeader = (timestamp) => {
         if (!timestamp || timestamp === 0) return 'Unknown Date';
@@ -577,6 +586,12 @@ const formatSpeed = (bytesPerSec) => {
         GalleryStore.setAssets(assets);
     }, [assets]);
 
+    useEffect(() => {
+        if (localAssetsRef.current) {
+            mergeAndSetAssets(localAssetsRef.current, false);
+        }
+    }, [showFavoritesOnly, mergeAndSetAssets]);
+
     const loadAndSync = useCallback(async () => {
         if (assetsCountRef.current === 0) {
             setLoading(true);
@@ -656,6 +671,11 @@ const formatSpeed = (bytesPerSec) => {
                     mergeAndSetAssets(cumulativeLocalAssets, true);
                     setSyncing(false);
                     setSyncProgress(null);
+                    
+                    // Trigger offline cache sync in background
+                    OfflineCacheService.syncFavoritesFromServer().catch(e => {
+                        console.error('[HomeScreen] OfflineCacheService failed:', e);
+                    });
                 }
             }
 
@@ -690,9 +710,13 @@ const formatSpeed = (bytesPerSec) => {
         // handle network cancellation automatically when views go off-screen. 
         // Conditionally unmounting <Image> breaks FlashList's native view recycling.
 
-        const thumbnailUri = (asset.status === 'remote' && asset.hash)
+        let thumbnailUri = (asset.status === 'remote' && asset.hash)
             ? `${AuthService.getServerUrl()}/preview/${asset.hash}?width=320&height=-1&token=${AuthService.getToken()}`
             : safeUri(asset.uri);
+
+        if (asset.status === 'remote' && asset.localCachePath) {
+            thumbnailUri = asset.localCachePath;
+        }
 
         return (
             <TouchableOpacity
@@ -732,6 +756,11 @@ const formatSpeed = (bytesPerSec) => {
                 {isLivePhoto(asset) ? (
                     <View style={styles.livePhotoBadge}>
                         <LivePhotoIcon size={12} color="#fff" />
+                    </View>
+                ) : null}
+                {asset.isFavorite ? (
+                    <View style={[styles.livePhotoBadge, { right: 5, left: undefined, backgroundColor: 'transparent', borderWidth: 0, shadowOpacity: 0 }]}>
+                        <Heart color="#ef4444" fill="#ef4444" size={14} />
                     </View>
                 ) : null}
                 {asset.mediaType === 'video' ? (
@@ -907,6 +936,13 @@ const formatSpeed = (bytesPerSec) => {
 
                     <TouchableOpacity onPress={() => navigation.navigate('PhotoMap')} style={{ marginRight: 15, padding: 4 }}>
                         <MapPin size={24} color="#333" />
+                    </TouchableOpacity>
+
+                    <TouchableOpacity 
+                        onPress={() => setShowFavoritesOnly(!showFavoritesOnly)} 
+                        style={{ marginRight: 15, padding: 4 }}
+                    >
+                        <Heart size={24} color={showFavoritesOnly ? "#ef4444" : "#333"} fill={showFavoritesOnly ? "#ef4444" : "none"} />
                     </TouchableOpacity>
 
                     <TouchableOpacity onPress={() => navigation.navigate('Settings')} style={styles.settingsButton}>

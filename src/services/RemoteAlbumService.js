@@ -1,0 +1,174 @@
+import axios from 'axios';
+import AuthService from './AuthService';
+import { LomoCollection } from '../models/LomoCollection';
+
+class RemoteAlbumService {
+  /**
+   * Retrieves all albums from the server as a flat list.
+   * @returns {Promise<Array>} Array of album objects.
+   */
+  async getAlbums() {
+    const serverUrl = AuthService.getServerUrl();
+    const token = AuthService.getToken();
+    if (!serverUrl || !token) {
+      console.warn('[RemoteAlbumService] No server URL or token available for getAlbums');
+      return [];
+    }
+
+    try {
+      const response = await axios.get(`${serverUrl}/album`, {
+        headers: { Authorization: `token=${token}` },
+        timeout: 10000,
+        skipAutoProbe: true
+      });
+      const data = response.data?.Albums || [];
+        return data.map((a, index) => ({
+          id: a.ID || a.id || `album_${index}`,
+          name: a.Title || a.title || a.name || a.Name || 'Unnamed Album',
+          coverImage: a.CoverImage || a.coverImage || '',
+          count: a.AssetsCount || a.assetsCount || a.count || a.Count || 0
+        }));
+    } catch (error) {
+      console.error('[RemoteAlbumService] Error fetching albums:', error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Retrieves all albums from the server and builds a hierarchical tree.
+   * @returns {Promise<LomoCollection>} Root LomoCollection node.
+   */
+  async getAlbumsHierarchy() {
+    const flatAlbums = await this.getAlbums();
+    this.rootCollection = LomoCollection.buildCollections(flatAlbums);
+    return this.rootCollection;
+  }
+
+  getRootCollection() {
+    return this.rootCollection;
+  }
+
+  /**
+   * Retrieves all assets inside a specific album.
+   * @param {string} albumId - The ID of the album.
+   * @returns {Promise<Array>} Array of asset hashes.
+   */
+  async getAlbumAssets(albumId) {
+    const serverUrl = AuthService.getServerUrl();
+    const token = AuthService.getToken();
+    if (!serverUrl || !token || !albumId) {
+      console.warn('[RemoteAlbumService] Missing requirements for getAlbumAssets');
+      return [];
+    }
+
+    try {
+      const response = await axios.get(`${serverUrl}/album/${albumId}/assets`, {
+        params: { hash: 1, page: 0 },
+        headers: { Authorization: `token=${token}` },
+        skipAutoProbe: true,
+        timeout: 10000
+      });
+      const data = response.data || [];
+      // API returns array of objects { Name, Hash } or strings depending on version/params
+      return data.map(item => typeof item === 'string' ? item : (item.Hash || item.Name || item.hash || item.name)).filter(Boolean);
+    } catch (error) {
+      console.error(`[RemoteAlbumService] Error fetching assets for album ${albumId}:`, error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Adds an asset to a specific album.
+   * @param {string} albumId - The ID of the album.
+   * @param {string} assetHash - The hash (ID) of the asset to add.
+   * @returns {Promise<boolean>} True if successful.
+   */
+  async addAssetToAlbum(albumId, assetHash) {
+    const serverUrl = AuthService.getServerUrl();
+    const token = AuthService.getToken();
+    if (!serverUrl || !token || !albumId || !assetHash) {
+      console.warn('[RemoteAlbumService] Missing requirements for addAssetToAlbum');
+      return false;
+    }
+
+    try {
+      const response = await axios.post(
+        `${serverUrl}/album/${albumId}/assets`,
+        [assetHash],
+        { headers: { Authorization: `token=${token}` } }
+      );
+      return response.status === 200 || response.status === 201;
+    } catch (error) {
+      console.error(`[RemoteAlbumService] Error adding asset ${assetHash} to album ${albumId}:`, error.message);
+      return false;
+    }
+  }
+
+  /**
+   * Removes an asset from a specific album.
+   * @param {string} albumId - The ID of the album.
+   * @param {string} assetHash - The hash (ID) of the asset to remove.
+   * @returns {Promise<boolean>} True if successful.
+   */
+  async removeAssetFromAlbum(albumId, assetHash) {
+    const serverUrl = AuthService.getServerUrl();
+    const token = AuthService.getToken();
+    if (!serverUrl || !token || !albumId || !assetHash) {
+      console.warn('[RemoteAlbumService] Missing requirements for removeAssetFromAlbum');
+      return false;
+    }
+
+    try {
+      const response = await axios.delete(
+        `${serverUrl}/album/${albumId}/assets`,
+        {
+          data: [assetHash],
+          headers: { Authorization: `token=${token}` }
+        }
+      );
+      return response.status === 200;
+    } catch (error) {
+      console.error(`[RemoteAlbumService] Error removing asset ${assetHash} from album ${albumId}:`, error.message);
+      return false;
+    }
+  }
+
+  /**
+   * Creates a new album on the server
+   * @param {string} title 
+   */
+  async createAlbum(title) {
+    const serverUrl = AuthService.getServerUrl();
+    const token = AuthService.getToken();
+    if (!serverUrl || !token) return null;
+
+    try {
+      const response = await axios.post(`${serverUrl}/album`, {
+        Title: title,
+        Description: "",
+        Author: "Lomorage User" // We can just use a generic or empty string if username isn't easily accessible
+      }, {
+        headers: { 
+          Authorization: `token=${token}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 10000,
+        skipAutoProbe: true
+      });
+      const a = response.data;
+      if (a && a.ID) {
+        return {
+          id: a.ID,
+          name: a.Title,
+          count: 0
+        };
+      }
+      return null;
+    } catch (e) {
+      console.error(`Failed to create album: ${title}`, e);
+      throw e;
+    }
+  }
+}
+
+export default new RemoteAlbumService();

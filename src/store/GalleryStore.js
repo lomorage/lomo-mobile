@@ -1,16 +1,18 @@
 class GalleryStore {
     constructor() {
-        this.assets = [];
+        this.assetsBySource = {
+            'gallery': []
+        };
         this.listeners = new Set();
     }
 
-    setAssets(assets) {
-        this.assets = assets;
-        this.notify();
+    setAssets(assets, source = 'gallery') {
+        this.assetsBySource[source] = assets;
+        this.notify(source);
     }
 
-    getAssets() {
-        return this.assets;
+    getAssets(source = 'gallery') {
+        return this.assetsBySource[source] || [];
     }
 
     subscribe(listener) {
@@ -18,8 +20,8 @@ class GalleryStore {
         return () => this.listeners.delete(listener); // return unsubscribe function
     }
 
-    notify() {
-        this.listeners.forEach(listener => listener(this.assets));
+    notify(source) {
+        this.listeners.forEach(listener => listener(this.assetsBySource[source], source));
     }
 }
 

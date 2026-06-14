@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { StyleSheet, View, Dimensions, TouchableOpacity, Text, FlatList, Alert, DeviceEventEmitter, Pressable, ActivityIndicator, Animated, Vibration } from 'react-native';
 import { Image } from 'expo-image';
-import { ChevronLeft, CloudUpload, Trash2, Share } from 'lucide-react-native';
+import { ChevronLeft, CloudUpload, Trash2, Share, Heart } from 'lucide-react-native';
 import * as Sharing from 'expo-sharing';
 import { Ionicons } from '@expo/vector-icons';
 import { useVideoPlayer, VideoView } from 'expo-video';
@@ -11,6 +11,9 @@ import MediaService from '../services/MediaService';
 import SyncService from '../services/SyncService';
 import UploadService from '../services/UploadService';
 import { useSettings } from '../context/SettingsContext';
+import axios from 'axios';
+import OfflineCacheService from '../services/OfflineCacheService';
+import AssetDBService from '../services/AssetDBService';
 import GalleryStore from '../store/GalleryStore';
 import ZoomableMedia from '../components/ZoomableMedia';
 
@@ -180,8 +183,8 @@ function AssetVideoPlayer({ uri, style, shouldPlay, nativeControls = false }) {
 }
 
 export default function AssetDetailScreen({ route, navigation }) {
-    const { initialIndex } = route.params;
-    const [assets, setAssets] = useState(GalleryStore.getAssets());
+    const { initialIndex, source = 'gallery' } = route.params;
+    const [assets, setAssets] = useState(GalleryStore.getAssets(source));
     
     const { debugMode } = useSettings();
     const [useOriginalVideo, setUseOriginalVideo] = useState(false);
@@ -193,8 +196,59 @@ export default function AssetDetailScreen({ route, navigation }) {
     const [isLivePlaying, setIsLivePlaying] = useState(false);
     const [flatListScrollEnabled, setFlatListScrollEnabled] = useState(true);
     const [isSharing, setIsSharing] = useState(false);
+    const [isFavorite, setIsFavorite] = useState(false);
     const scaleAnim = useRef(new Animated.Value(1)).current;
     const fadeAnim = useRef(new Animated.Value(0)).current;
+
+    useEffect(() => {
+        const item = assets[currentIndex];
+        if (!item) return;
+        if (item.status === 'remote') {
+            setIsFavorite(item.isFavorite === true);
+        } else {
+            setIsFavorite(false);
+        }
+
+        // On-demand metadata fetching for Album assets that haven't synced yet
+        if (item.isMetadataPartial && item.status === 'remote' && item.hash) {
+            const fetchMeta = async () => {
+                try {
+                    const url = AuthService.getServerUrl();
+                    const res = await axios.get(`${url}/asset/metadata/${item.hash}`, {
+                        headers: { Authorization: `token=${AuthService.getToken()}` }
+                    });
+                    if (res.status === 200 && res.data) {
+                        const metadata = res.data;
+                        const newAssets = [...assets];
+                        newAssets[currentIndex] = {
+                            ...item,
+                            isMetadataPartial: false,
+                            mediaType: metadata.type === 1 ? 'video' : 'image',
+                            creationTime: metadata.date ? new Date(metadata.date).getTime() : item.creationTime,
+                            filename: metadata.name,
+                            mediaSubtypes: metadata.subtype ? [metadata.subtype] : []
+                        };
+                        GalleryStore.setAssets(newAssets, source);
+                        setAssets(newAssets);
+                    }
+                } catch(e) {
+                    console.warn('[AssetDetail] Failed to fetch on-demand metadata', e.message);
+                }
+            };
+            fetchMeta();
+        }
+    }, [currentIndex, assets]);
+
+    const handleToggleFavorite = async () => {
+        const item = assets[currentIndex];
+        if (!item || item.status !== 'remote' || !item.hash) return;
+        
+        const newValue = !isFavorite;
+        setIsFavorite(newValue); // Optimistic UI update
+        item.isFavorite = newValue; // Update local array to keep it in sync
+
+        await OfflineCacheService.toggleFavorite(item.hash, newValue);
+    };
 
     useEffect(() => {
         let active = true;
@@ -323,7 +377,7 @@ export default function AssetDetailScreen({ route, navigation }) {
                 const updatedAsset = { ...currentAsset, status: 'synced', hash: result.hash };
                 const newAssets = [...assets];
                 newAssets[currentIndex] = updatedAsset;
-                GalleryStore.setAssets(newAssets);
+                GalleryStore.setAssets(newAssets, source);
                 setAssets(newAssets);
                 DeviceEventEmitter.emit('assetUpdated', updatedAsset);
                 
@@ -363,12 +417,12 @@ export default function AssetDetailScreen({ route, navigation }) {
                 
                 if (isFullyDeleted) {
                     const newAssets = assets.filter(a => a.id !== currentAsset.id);
-                    GalleryStore.setAssets(newAssets);
+                    GalleryStore.setAssets(newAssets, source);
                     setAssets(newAssets);
                     DeviceEventEmitter.emit('assetDeleted', currentAsset.id);
                     
                     if (newAssets.length === 0) {
-                        navigation.goBack();
+                        if (navigation.canGoBack()) navigation.goBack();
                     } else if (currentIndex >= newAssets.length) {
                         setCurrentIndex(newAssets.length - 1);
                     }
@@ -383,7 +437,7 @@ export default function AssetDetailScreen({ route, navigation }) {
 
                     const newAssets = [...assets];
                     newAssets[currentIndex] = updatedAsset;
-                    GalleryStore.setAssets(newAssets);
+                    GalleryStore.setAssets(newAssets, source);
                     setAssets(newAssets);
                     DeviceEventEmitter.emit('assetUpdated', updatedAsset);
                 }
@@ -522,13 +576,21 @@ export default function AssetDetailScreen({ route, navigation }) {
             console.log(`[AssetDetail] renderItem index=${index}: isVisible=${isVisible}, shouldMountVideo=${shouldMountVideo}, resolvedVideoUri=${resolvedVideoUri}`);
         }
 
-        const thumbUri = (item.status === 'remote' && item.hash)
+        let thumbUri = (item.status === 'remote' && item.hash)
             ? `${baseUrl}/preview/${item.hash}?width=320&height=-1&token=${token}`
             : null;
 
-        const staticImageUri = (isRemote && isLive)
+        let staticImageUri = (isRemote && isLive)
             ? item.uri
             : ((item.mediaType === 'video' && isRemote) ? thumbUri : uri);
+
+        // Offline Cache overriding logic:
+        if (item.status === 'remote' && item.localCachePath) {
+            thumbUri = item.localCachePath;
+            if (item.mediaType !== 'video') {
+                staticImageUri = item.localCachePath;
+            }
+        }
 
         return (
             <View style={{ width, height: height * 0.7, justifyContent: 'center', alignItems: 'center', position: 'relative', backgroundColor: '#fff' }}>
@@ -618,7 +680,7 @@ export default function AssetDetailScreen({ route, navigation }) {
     return (
         <View style={styles.container}>
             <View style={styles.header}>
-                <TouchableOpacity onPress={() => navigation.goBack()} style={styles.iconButton}>
+                <TouchableOpacity onPress={() => navigation.canGoBack() && navigation.goBack()} style={styles.iconButton}>
                     <ChevronLeft color="#000" size={28} />
                 </TouchableOpacity>
                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
@@ -643,6 +705,11 @@ export default function AssetDetailScreen({ route, navigation }) {
                             disabled={isUploading}
                         >
                             <CloudUpload color={isUploading ? "#ccc" : "#007AFF"} size={24} />
+                        </TouchableOpacity>
+                    ) : null}
+                    {currentAsset.status === 'remote' ? (
+                        <TouchableOpacity onPress={handleToggleFavorite} style={styles.iconButton}>
+                            <Heart color={isFavorite ? "#ef4444" : "#007AFF"} fill={isFavorite ? "#ef4444" : "transparent"} size={24} />
                         </TouchableOpacity>
                     ) : null}
                     

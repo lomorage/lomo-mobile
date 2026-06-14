@@ -10,9 +10,11 @@ class AssetDBService {
 
   async init() {
     if (this.db) return;
+    if (this.initPromise) return this.initPromise;
     
-    try {
-      this.db = await SQLite.openDatabaseAsync(this.dbName);
+    this.initPromise = (async () => {
+      try {
+        this.db = await SQLite.openDatabaseAsync(this.dbName);
 
       // Create base table if not exists (Version 1)
       await this.db.execAsync(`
@@ -25,7 +27,9 @@ class AssetDBService {
           longitude REAL DEFAULT 0.0,
           createTime INTEGER DEFAULT 0,
           mediaType TEXT,
-          filename TEXT
+          filename TEXT,
+          isFavorite INTEGER DEFAULT 0,
+          localCachePath TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_isLocal_hasGeo ON MediaAsset(isLocal, hasGeo);
         CREATE INDEX IF NOT EXISTS idx_hasGeo ON MediaAsset(hasGeo);
@@ -57,14 +61,28 @@ class AssetDBService {
         console.log('[AssetDBService] Database migrated to version 2.');
       }
 
+      if (currentVersion < 3) {
+        // Version 3: Add isFavorite and localCachePath columns for offline viewing
+        try { await this.db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN isFavorite INTEGER DEFAULT 0;`); } catch (e) {}
+        try { await this.db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN localCachePath TEXT;`); } catch (e) {}
+        
+        await this.db.execAsync('PRAGMA user_version = 3');
+        currentVersion = 3;
+        console.log('[AssetDBService] Database migrated to version 3 (Added Favorites support).');
+      }
+
       // Smooth migration: if local_hash_cache_v2.json exists, migrate it to SQLite
       await this.migrateLocalHashCache();
 
       console.log(`[AssetDBService] Database initialized successfully (v${currentVersion}).`);
-    } catch (error) {
-      console.error('[AssetDBService] Failed to initialize DB:', error);
-      throw error;
-    }
+      } catch (error) {
+        console.error('[AssetDBService] Failed to initialize DB:', error);
+        throw error;
+      } finally {
+        this.initPromise = null;
+      }
+    })();
+    return this.initPromise;
   }
 
   async migrateLocalHashCache() {
@@ -409,17 +427,56 @@ class AssetDBService {
     if (!this.db) return [];
     try {
       const rows = await this.db.getAllAsync(
-        `SELECT hash, filename, createTime, mediaType FROM MediaAsset WHERE isLocal = 0 ORDER BY createTime DESC`
+        `SELECT hash, filename, createTime, mediaType, isFavorite, localCachePath FROM MediaAsset WHERE isLocal = 0 ORDER BY createTime DESC`
       );
       return rows.map(r => ({
         id: `remote-${r.hash}`,
         hash: r.hash,
         filename: r.filename,
         creationTime: r.createTime || 0,
-        mediaType: r.mediaType || 'photo'
+        mediaType: r.mediaType || 'photo',
+        isFavorite: r.isFavorite === 1,
+        localCachePath: r.localCachePath
       }));
     } catch (error) {
       console.error('[AssetDBService] Failed to get remote assets:', error);
+      return [];
+    }
+  }
+
+  async getAssetsByHashes(hashes) {
+    if (!this.db || !hashes || hashes.length === 0) return [];
+    try {
+      const results = [];
+      const CHUNK_SIZE = 400; // SQLite limit is usually 999 vars
+      for (let i = 0; i < hashes.length; i += CHUNK_SIZE) {
+        const chunk = hashes.slice(i, i + CHUNK_SIZE);
+        const placeholders = chunk.map(() => '?').join(', ');
+        const bindArgs = chunk.map(h => h.toLowerCase());
+        
+        const rows = await this.db.getAllAsync(
+          `SELECT hash, filename, createTime, mediaType, isFavorite, localCachePath 
+           FROM MediaAsset 
+           WHERE hash IN (${placeholders}) OR id IN (${placeholders})
+           ORDER BY createTime DESC`,
+          bindArgs.concat(bindArgs)
+        );
+        
+        if (rows) {
+          results.push(...rows.map(r => ({
+            id: r.hash,
+            hash: r.hash,
+            filename: r.filename,
+            creationTime: r.createTime,
+            mediaType: r.mediaType,
+            isFavorite: Boolean(r.isFavorite),
+            localCachePath: r.localCachePath
+          })));
+        }
+      }
+      return results;
+    } catch (e) {
+      console.error('[AssetDB] getAssetsByHashes error', e);
       return [];
     }
   }
@@ -462,6 +519,71 @@ class AssetDBService {
       console.log(`[AssetDBService] Healed filenames for ${updates.length} remote assets.`);
     } catch (error) {
       console.error('[AssetDBService] Failed to update remote asset filenames:', error);
+    }
+  }
+
+  // --- Offline Favorites Caching ---
+
+  async setAssetFavoriteStatus(hash, isFavorite) {
+    if (!this.db) return;
+    try {
+      await this.db.runAsync(
+        `UPDATE MediaAsset SET isFavorite = ? WHERE id = ?`,
+        [isFavorite ? 1 : 0, hash]
+      );
+    } catch (error) {
+      console.error(`[AssetDBService] Failed to set favorite status for ${hash}:`, error);
+    }
+  }
+
+  async updateAssetCachePath(hash, localCachePath) {
+    if (!this.db) return;
+    try {
+      await this.db.runAsync(
+        `UPDATE MediaAsset SET localCachePath = ? WHERE id = ?`,
+        [localCachePath, hash]
+      );
+    } catch (error) {
+      console.error(`[AssetDBService] Failed to update cache path for ${hash}:`, error);
+    }
+  }
+
+  async getFavoriteAssetsToCache() {
+    if (!this.db) return [];
+    try {
+      const rows = await this.db.getAllAsync(
+        `SELECT hash, filename, mediaType FROM MediaAsset WHERE isLocal = 0 AND isFavorite = 1 AND localCachePath IS NULL`
+      );
+      return rows;
+    } catch (error) {
+      console.error('[AssetDBService] Failed to get favorite assets to cache:', error);
+      return [];
+    }
+  }
+
+  async getFavoriteAssets() {
+    if (!this.db) return [];
+    try {
+      const rows = await this.db.getAllAsync(
+        `SELECT hash, filename, localCachePath FROM MediaAsset WHERE isLocal = 0 AND isFavorite = 1`
+      );
+      return rows;
+    } catch (error) {
+      console.error('[AssetDBService] Failed to get favorite assets:', error);
+      return [];
+    }
+  }
+
+  async getRemoteAssetDetails(hash) {
+    if (!this.db) return null;
+    try {
+      return await this.db.getFirstAsync(
+        `SELECT isFavorite, localCachePath FROM MediaAsset WHERE id = ?`,
+        [hash]
+      );
+    } catch (error) {
+      console.error(`[AssetDBService] Failed to get details for ${hash}:`, error);
+      return null;
     }
   }
 }
