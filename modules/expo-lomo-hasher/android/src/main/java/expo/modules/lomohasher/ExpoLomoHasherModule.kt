@@ -56,6 +56,7 @@ class ExpoLomoHasherModule : Module() {
                 throw Exception("File not found at $path")
             }
             FileInputStream(file)
+        }
         var buffer: ByteArray
         try {
             buffer = ByteArray(1024 * 1024) // 1MB for max speed
@@ -145,6 +146,7 @@ class ExpoLomoHasherModule : Module() {
                 } else {
                     skipped += skipAttempt
                 }
+            }
             var buffer: ByteArray
             try {
                 buffer = ByteArray(1024 * 1024)
