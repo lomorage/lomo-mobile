@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
-import { StyleSheet, View, Dimensions, TouchableOpacity, Text, ActivityIndicator, RefreshControl, DeviceEventEmitter, AppState, PanResponder, Animated, Modal, TextInput, ScrollView, Alert } from 'react-native';
+import { StyleSheet, View, Dimensions, TouchableOpacity, Text, ActivityIndicator, RefreshControl, DeviceEventEmitter, AppState, PanResponder, Animated, Modal, TextInput, ScrollView, Alert, Platform } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 import { FlashList } from '@shopify/flash-list';
@@ -175,7 +175,9 @@ export default function HomeScreen({ navigation, route }) {
                             return {
                                 ...res,
                                 status: res.isLocal ? 'synced' : 'remote',
-                                uri: res.isLocal ? res.id : `${AuthService.getServerUrl()}/preview/${res.hash}?width=320&height=-1&token=${AuthService.getToken()}`
+                                uri: res.isLocal 
+                                    ? (Platform.OS === 'android' ? `content://media/external/images/media/${res.id}` : `ph://${res.id}`)
+                                    : `${AuthService.getServerUrl()}/preview/${res.hash}?width=320&height=-1&token=${AuthService.getToken()}`
                             };
                         });
                         
@@ -217,7 +219,9 @@ export default function HomeScreen({ navigation, route }) {
                 return {
                     ...res,
                     status: res.isLocal ? 'synced' : 'remote',
-                    uri: res.isLocal ? res.id : `${AuthService.getServerUrl()}/preview/${res.hash}?width=320&height=-1&token=${AuthService.getToken()}`
+                    uri: res.isLocal 
+                        ? (Platform.OS === 'android' ? `content://media/external/images/media/${res.id}` : `ph://${res.id}`)
+                        : `${AuthService.getServerUrl()}/preview/${res.hash}?width=320&height=-1&token=${AuthService.getToken()}`
                 };
             });
             
@@ -258,7 +262,9 @@ export default function HomeScreen({ navigation, route }) {
                     return {
                         ...res,
                         status: res.isLocal ? 'synced' : 'remote',
-                        uri: res.isLocal ? res.id : `${AuthService.getServerUrl()}/preview/${res.hash}?width=320&height=-1&token=${AuthService.getToken()}`
+                        uri: res.isLocal 
+                            ? (Platform.OS === 'android' ? `content://media/external/images/media/${res.id}` : `ph://${res.id}`)
+                            : `${AuthService.getServerUrl()}/preview/${res.hash}?width=320&height=-1&token=${AuthService.getToken()}`
                     };
                 });
                 
