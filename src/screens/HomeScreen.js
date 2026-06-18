@@ -1,15 +1,16 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
-import { StyleSheet, View, Dimensions, TouchableOpacity, Text, ActivityIndicator, RefreshControl, DeviceEventEmitter, AppState, PanResponder, Animated, Modal } from 'react-native';
+import { StyleSheet, View, Dimensions, TouchableOpacity, Text, ActivityIndicator, RefreshControl, DeviceEventEmitter, AppState, PanResponder, Animated, Modal, TextInput } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 import { FlashList } from '@shopify/flash-list';
-import { Cloud, CheckCircle, Smartphone, PlayCircle, PauseCircle, Settings as SettingsIcon, UploadCloud, X, MapPin, Heart } from 'lucide-react-native';
+import { Cloud, CheckCircle, Smartphone, PlayCircle, PauseCircle, Settings as SettingsIcon, UploadCloud, X, MapPin, Heart, Search } from 'lucide-react-native';
 import MediaService from '../services/MediaService';
 import SyncService from '../services/SyncService';
 import OfflineCacheService from '../services/OfflineCacheService';
 import AuthService from '../services/AuthService';
 import AssetDBService from '../services/AssetDBService';
 import AutoBackupManager from '../services/AutoBackupManager';
+import AIService from '../services/AIService';
 import { useSettings } from '../context/SettingsContext';
 import GalleryStore from '../store/GalleryStore';
 import MetricsTracker from '../utils/MetricsTracker';
@@ -86,6 +87,11 @@ export default function HomeScreen({ navigation }) {
     const [error, setError] = useState(null);
     const [permissionStatus, setPermissionStatus] = useState('granted');
     const [loading, setLoading] = useState(true);
+
+    const [isSearching, setIsSearching] = useState(false);
+    const [searchQuery, setSearchQuery] = useState('');
+    const [searchResults, setSearchResults] = useState([]);
+    const [isSearchLoading, setIsSearchLoading] = useState(false);
     
     const { debugMode, excludedAlbums } = useSettings();
 
@@ -114,6 +120,62 @@ export default function HomeScreen({ navigation }) {
     useEffect(() => {
         backupStateRef.current = backupState;
     }, [backupState]);
+
+    const assetsRef = useRef([]);
+    useEffect(() => {
+        assetsRef.current = assets;
+    }, [assets]);
+
+    useEffect(() => {
+        if (!isSearching || searchQuery.trim() === '') {
+            setSearchResults([]);
+            GalleryStore.setAssets([], 'search');
+            setIsSearchLoading(false);
+            return;
+        }
+
+        // Clear previous results immediately to transition to central loading state
+        setSearchResults([]);
+        GalleryStore.setAssets([], 'search');
+        setIsSearchLoading(true);
+        const timer = setTimeout(async () => {
+            try {
+                const results = await AIService.searchSimilarity(searchQuery);
+                const currentAssets = assetsRef.current || [];
+                const mappedResults = results.map(res => {
+                    const matched = currentAssets.find(a => a.id === res.id || (res.hash && a.hash === res.hash));
+                    if (matched) {
+                        return { ...matched, score: res.score };
+                    }
+                    return {
+                        ...res,
+                        status: res.isLocal ? 'synced' : 'remote',
+                        uri: res.isLocal ? res.id : `${AuthService.getServerUrl()}/preview/${res.hash}?width=320&height=-1&token=${AuthService.getToken()}`
+                    };
+                });
+                
+                const topResults = mappedResults
+                    .sort((a, b) => b.score - a.score)
+                    .slice(0, 100);
+
+                GalleryStore.setAssets(topResults, 'search');
+                setSearchResults(topResults);
+            } catch (err) {
+                console.error('[HomeScreen] Search error:', err);
+            } finally {
+                setIsSearchLoading(false);
+            }
+        }, 500);
+
+        return () => clearTimeout(timer);
+    }, [searchQuery, isSearching]);
+
+    const activeAssets = useMemo(() => {
+        if (isSearching && searchQuery.trim() !== '') {
+            return searchResults;
+        }
+        return assets;
+    }, [isSearching, searchQuery, searchResults, assets]);
 
     const localAssetsRef = useRef([]);
     const remoteAssetsListRef = useRef([]);
@@ -322,7 +384,35 @@ const formatSpeed = (bytesPerSec) => {
     const { timelineData, stickyHeaderIndices } = useMemo(() => {
         const data = [];
         const indices = [];
-        if (!assets || assets.length === 0) return { timelineData: data, stickyHeaderIndices: indices };
+        if (!activeAssets || activeAssets.length === 0) return { timelineData: data, stickyHeaderIndices: indices };
+
+        const isActivelySearching = isSearching && searchQuery.trim() !== '';
+
+        if (isActivelySearching) {
+            let currentRowItems = [];
+            let currentOffset = 0;
+
+            const pushRow = () => {
+                if (currentRowItems.length > 0) {
+                    const rowId = `row-${currentRowItems.map(item => item.id).join('_')}`;
+                    data.push({ type: 'row', id: rowId, items: currentRowItems, length: ITEM_SIZE, offset: currentOffset });
+                    currentOffset += ITEM_SIZE;
+                    currentRowItems = [];
+                }
+            };
+
+            activeAssets.forEach((asset, globalIndex) => {
+                currentRowItems.push({ ...asset, globalIndex });
+                if (currentRowItems.length === COLUMN_COUNT) {
+                    pushRow();
+                }
+            });
+            pushRow();
+
+            timelineDataRef.current = data;
+            stickyHeaderIndicesRef.current = [];
+            return { timelineData: data, stickyHeaderIndices: [] };
+        }
 
         const dateCache = new Map();
         let currentHeaderKey = null;
@@ -344,10 +434,9 @@ const formatSpeed = (bytesPerSec) => {
         const ydD = yd.getDate(), ydM = yd.getMonth(), ydY = yd.getFullYear();
         const headerKeyCache = new Map();
 
-        assets.forEach((asset, globalIndex) => {
-            // Priority: 1. CreationTime (EXIF), 2. ModificationTime (File Metadata), 3. 0 fallback
+        activeAssets.forEach((asset, globalIndex) => {
             const time = asset.creationTime || asset.modificationTime || 0;
-            const dayInt = Math.floor(time / 86400000); // Fast integer math for caching
+            const dayInt = Math.floor(time / 86400000);
 
             let headerKey = headerKeyCache.get(dayInt);
             if (headerKey === undefined) {
@@ -358,7 +447,6 @@ const formatSpeed = (bytesPerSec) => {
                 if (isToday) headerKey = 'today';
                 else if (isYesterday) headerKey = 'yesterday';
                 else {
-                    // Monthly grouping for everything else to eliminate gaps
                     headerKey = d.getFullYear() * 100 + (d.getMonth() + 1);
                 }
                 headerKeyCache.set(dayInt, headerKey);
@@ -368,7 +456,6 @@ const formatSpeed = (bytesPerSec) => {
                 pushRow();
                 currentHeaderKey = headerKey;
                 
-                // Only call expensive formatting once per unique headerKey
                 let headerTitle = dateCache.get(headerKey);
                 if (!headerTitle) {
                     headerTitle = formatDateHeader(time);
@@ -391,7 +478,7 @@ const formatSpeed = (bytesPerSec) => {
         stickyHeaderIndicesRef.current = indices;
 
         return { timelineData: data, stickyHeaderIndices: indices };
-    }, [assets]);
+    }, [activeAssets, isSearching, searchQuery]);
 
     const getItemLayout = useCallback((data, index) => {
         const item = data ? data[index] : null;
@@ -508,20 +595,16 @@ const formatSpeed = (bytesPerSec) => {
         
         const subDelete = DeviceEventEmitter.addListener('assetDeleted', (deletedId) => {
             setAssets(prev => prev.filter(a => a.id !== deletedId));
+            setSearchResults(prev => prev.filter(a => a.id !== deletedId));
         });
         
         flushTimerRef.current = setInterval(() => {
             if (pendingAssetUpdates.current.size > 0) {
-                setAssets(prev => {
-                    const newAssets = prev.map(a => {
-                        if (pendingAssetUpdates.current.has(a.id)) {
-                            return pendingAssetUpdates.current.get(a.id);
-                        }
-                        return a;
-                    });
-                    pendingAssetUpdates.current.clear();
-                    return newAssets;
-                });
+                const updates = new Map(pendingAssetUpdates.current);
+                pendingAssetUpdates.current.clear();
+                
+                setAssets(prev => prev.map(a => updates.has(a.id) ? updates.get(a.id) : a));
+                setSearchResults(prev => prev.map(a => updates.has(a.id) ? updates.get(a.id) : a));
             }
         }, 1000); // Batch asset updates to 1 FPS to prevent massive UI flashing during concurrent uploads
 
@@ -694,11 +777,8 @@ const formatSpeed = (bytesPerSec) => {
         }
     });
 
-    const RenderAsset = memo(({ asset, globalIndex, navigation, debugMode, currentAssetId, activeAssetIds, activeLoadRef }) => {
+    const RenderAsset = memo(({ asset, globalIndex, navigation, debugMode, currentAssetId, activeAssetIds, activeLoadRef, source }) => {
         const loadStartTime = useRef(0);
-        // We do NOT use manual Scrub-Lock here because FlashList recycling and expo-image 
-        // handle network cancellation automatically when views go off-screen. 
-        // Conditionally unmounting <Image> breaks FlashList's native view recycling.
 
         let thumbnailUri = (asset.status === 'remote' && asset.hash)
             ? `${AuthService.getServerUrl()}/preview/${asset.hash}?width=320&height=-1&token=${AuthService.getToken()}`
@@ -711,7 +791,7 @@ const formatSpeed = (bytesPerSec) => {
         return (
             <TouchableOpacity
                 style={styles.itemContainer}
-                onPress={() => navigation.navigate('AssetDetail', { initialIndex: globalIndex })}
+                onPress={() => navigation.navigate('AssetDetail', { initialIndex: globalIndex, source })}
             >
                 <Image
                     source={{ uri: thumbnailUri }}
@@ -719,7 +799,7 @@ const formatSpeed = (bytesPerSec) => {
                     contentFit="cover"
                     cachePolicy="memory-disk"
                     transition={0}
-                    recyclingKey={asset.id ? String(asset.id) : null} // Help expo-image recycle correctly in FlashList
+                    recyclingKey={asset.id ? String(asset.id) : null}
                     onLoadStart={() => {
                         if (asset.status === 'remote') {
                             loadStartTime.current = Date.now();
@@ -776,7 +856,8 @@ const formatSpeed = (bytesPerSec) => {
             prevProps.asset.id !== nextProps.asset.id || 
             prevProps.asset.status !== nextProps.asset.status ||
             prevProps.asset.hash !== nextProps.asset.hash ||
-            prevProps.asset.uri !== nextProps.asset.uri
+            prevProps.asset.uri !== nextProps.asset.uri ||
+            prevProps.source !== nextProps.source
         ) return false;
         if (prevProps.debugMode !== nextProps.debugMode) return false;
         if (prevProps.currentAssetId !== nextProps.currentAssetId && (prevProps.asset.id === prevProps.currentAssetId || prevProps.asset.id === nextProps.currentAssetId)) return false;
@@ -790,7 +871,7 @@ const formatSpeed = (bytesPerSec) => {
         return true;
     });
 
-    const TimelineRow = memo(({ item, navigation, debugMode, currentAssetId, activeAssetIds, activeLoadCountRef }) => (
+    const TimelineRow = memo(({ item, navigation, debugMode, currentAssetId, activeAssetIds, activeLoadCountRef, source }) => (
         <View style={styles.row}>
             {item.items.map((asset, index) => (
                 <RenderAsset 
@@ -802,6 +883,7 @@ const formatSpeed = (bytesPerSec) => {
                     currentAssetId={currentAssetId}
                     activeAssetIds={activeAssetIds}
                     activeLoadRef={activeLoadCountRef}
+                    source={source}
                 />
             ))}
             {Array.from({ length: COLUMN_COUNT - item.items.length }).map((_, i) => (
@@ -810,11 +892,11 @@ const formatSpeed = (bytesPerSec) => {
         </View>
     ), (prevProps, nextProps) => {
         if (prevProps.debugMode !== nextProps.debugMode) return false;
+        if (prevProps.source !== nextProps.source) return false;
 
         const prevItems = prevProps.item.items;
         const nextItems = nextProps.item.items;
 
-        // 1. If row items metadata changed, re-render
         if (prevItems.length !== nextItems.length) return false;
         for (let i = 0; i < prevItems.length; i++) {
             if (prevItems[i].id !== nextItems[i].id || 
@@ -825,14 +907,12 @@ const formatSpeed = (bytesPerSec) => {
             }
         }
 
-        // 2. If currentAssetId changed, check if it affects this row
         if (prevProps.currentAssetId !== nextProps.currentAssetId) {
             const hasOldCurrent = prevItems.some(asset => asset.id === prevProps.currentAssetId);
             const hasNewCurrent = nextItems.some(asset => asset.id === nextProps.currentAssetId);
             if (hasOldCurrent || hasNewCurrent) return false;
         }
 
-        // 3. If activeAssetIds changed, check if it affects any asset in this row
         const prevActive = prevProps.activeAssetIds || [];
         const nextActive = nextProps.activeAssetIds || [];
         for (const asset of nextItems) {
@@ -861,6 +941,7 @@ const formatSpeed = (bytesPerSec) => {
                 activeAssetIds={extraData?.activeAssetIds || []}
                 isScrubbing={extraData?.isScrubbing || false}
                 activeLoadCountRef={globalActiveLoadCount}
+                source={extraData?.source || 'gallery'}
             />
         );
     }, [navigation]);
@@ -885,54 +966,88 @@ const formatSpeed = (bytesPerSec) => {
         isScrubbing,
         currentAssetId: backupState.currentAssetId,
         activeAssetIds: backupState.activeAssetIds,
-        debugMode
-    }), [isScrubbing, backupState.currentAssetId, backupState.activeAssetIds, debugMode]);
+        debugMode,
+        source: isSearching && searchQuery.trim() !== '' ? 'search' : 'gallery'
+    }), [isScrubbing, backupState.currentAssetId, backupState.activeAssetIds, debugMode, isSearching, searchQuery]);
 
     return (
         <View style={styles.container}>
-            <View style={styles.header}>
-                <View style={{ flex: 1 }}>
-                    <Text style={styles.title}>Lomorage</Text>
-                    <Text style={styles.subtitle}>
-                        {`${assets.length} items${syncing ? ` • ${syncProgress?.message || 'Loading...'}` : error ? ' • Offline' : ''}`}
-                    </Text>
-                    {syncing && syncProgress?.total > 0 && syncProgress?.current !== undefined ? (
-                        <Text style={styles.progressText}>
-                             {`(${syncProgress.current}/${syncProgress.total})`}
+            {isSearching ? (
+                <View style={styles.searchHeader}>
+                    <View style={styles.searchBarContainer}>
+                        <Search size={18} color="#999" style={styles.searchIcon} />
+                        <TextInput
+                            style={styles.searchInput}
+                            placeholder="搜索照片 (如: 猫, 海滩, 食物)..."
+                            value={searchQuery}
+                            onChangeText={setSearchQuery}
+                            autoFocus
+                            clearButtonMode="while-editing"
+                            returnKeyType="search"
+                        />
+                        {isSearchLoading && timelineData.length > 0 ? (
+                            <ActivityIndicator size="small" color="#007AFF" style={styles.searchLoadingIndicator} />
+                        ) : null}
+                    </View>
+                    <TouchableOpacity 
+                        onPress={() => {
+                            setIsSearching(false);
+                            setSearchQuery('');
+                            setSearchResults([]);
+                        }} 
+                        style={styles.cancelButton}
+                    >
+                        <Text style={styles.cancelButtonText}>取消</Text>
+                    </TouchableOpacity>
+                </View>
+            ) : (
+                <View style={styles.header}>
+                    <View style={{ flex: 1 }}>
+                        <Text style={styles.title}>Lomorage</Text>
+                        <Text style={styles.subtitle}>
+                            {`${assets.length} items${syncing ? ` • ${syncProgress?.message || 'Loading...'}` : error ? ' • Offline' : ''}`}
                         </Text>
-                    ) : null}
-                </View>
-                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                    {syncing ? <ActivityIndicator size="small" color="#007AFF" style={{ marginRight: 10 }} /> : null}
-                    
-                    {/* OPTION A: Backup Status Icon */}
-                    {(backupState.totalCount > 0 || backupState.isBackingUp) && (
-                        <TouchableOpacity 
-                            onPress={() => setBottomSheetVisible(true)} 
-                            style={{ marginRight: 15, width: 36, height: 36, justifyContent: 'center', alignItems: 'center' }}
-                        >
-                            <Cloud size={24} color={backupState.isPaused ? '#999' : '#007AFF'} />
-                            {backupState.pendingCount > 0 ? (
-                                <View style={{ width: 24, height: 4, backgroundColor: '#E5E5EA', borderRadius: 2, marginTop: 4, overflow: 'hidden' }}>
-                                    <View style={{ height: '100%', backgroundColor: backupState.isPaused ? '#999' : '#007AFF', width: `${smoothOverallProgress * 100}%` }} />
-                                </View>
-                            ) : (
-                                <View style={{ position: 'absolute', right: -2, bottom: -2, backgroundColor: '#fff', borderRadius: 8 }}>
-                                    <CheckCircle size={14} color="#34C759" />
-                                </View>
-                            )}
+                        {syncing && syncProgress?.total > 0 && syncProgress?.current !== undefined ? (
+                            <Text style={styles.progressText}>
+                                 {`(${syncProgress.current}/${syncProgress.total})`}
+                            </Text>
+                        ) : null}
+                    </View>
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        {syncing ? <ActivityIndicator size="small" color="#007AFF" style={{ marginRight: 10 }} /> : null}
+                        
+                        {(backupState.totalCount > 0 || backupState.isBackingUp) && (
+                            <TouchableOpacity 
+                                onPress={() => setBottomSheetVisible(true)} 
+                                style={{ marginRight: 15, width: 36, height: 36, justifyContent: 'center', alignItems: 'center' }}
+                            >
+                                <Cloud size={24} color={backupState.isPaused ? '#999' : '#007AFF'} />
+                                {backupState.pendingCount > 0 ? (
+                                    <View style={{ width: 24, height: 4, backgroundColor: '#E5E5EA', borderRadius: 2, marginTop: 4, overflow: 'hidden' }}>
+                                        <View style={{ height: '100%', backgroundColor: backupState.isPaused ? '#999' : '#007AFF', width: `${smoothOverallProgress * 100}%` }} />
+                                    </View>
+                                ) : (
+                                    <View style={{ position: 'absolute', right: -2, bottom: -2, backgroundColor: '#fff', borderRadius: 8 }}>
+                                        <CheckCircle size={14} color="#34C759" />
+                                    </View>
+                                )}
+                            </TouchableOpacity>
+                        )}
+
+                        <TouchableOpacity onPress={() => setIsSearching(true)} style={{ marginRight: 15, padding: 4 }}>
+                            <Search size={24} color="#333" />
                         </TouchableOpacity>
-                    )}
 
-                    <TouchableOpacity onPress={() => navigation.navigate('PhotoMap')} style={{ marginRight: 15, padding: 4 }}>
-                        <MapPin size={24} color="#333" />
-                    </TouchableOpacity>
+                        <TouchableOpacity onPress={() => navigation.navigate('PhotoMap')} style={{ marginRight: 15, padding: 4 }}>
+                            <MapPin size={24} color="#333" />
+                        </TouchableOpacity>
 
-                    <TouchableOpacity onPress={() => navigation.navigate('Settings')} style={styles.settingsButton}>
-                        <SettingsIcon size={24} color="#333" />
-                    </TouchableOpacity>
+                        <TouchableOpacity onPress={() => navigation.navigate('Settings')} style={styles.settingsButton}>
+                            <SettingsIcon size={24} color="#333" />
+                        </TouchableOpacity>
+                    </View>
                 </View>
-            </View>
+            )}
 
             {/* REMOVED BIG BANNER FOR OPTION A */}
 
@@ -986,7 +1101,14 @@ const formatSpeed = (bytesPerSec) => {
                         }
                         ListEmptyComponent={
                             <View style={styles.centered}>
-                                <Text>No photos found.</Text>
+                                {isSearchLoading ? (
+                                    <View style={{ alignItems: 'center' }}>
+                                        <ActivityIndicator size="small" color="#007AFF" style={{ marginBottom: 8 }} />
+                                        <Text style={{ color: '#8e8e93', fontSize: 14 }}>正在搜索...</Text>
+                                    </View>
+                                ) : (
+                                    <Text style={{ color: '#8e8e93', fontSize: 15 }}>{isSearching ? "未找到符合条件的照片。" : "No photos found."}</Text>
+                                )}
                             </View>
                         }
                     />
@@ -1363,5 +1485,45 @@ const styles = StyleSheet.create({
         color: '#8e8e93',
         marginTop: 20,
         fontSize: 15,
-    }
+    },
+    searchHeader: {
+        paddingHorizontal: 15,
+        paddingTop: 15,
+        paddingBottom: 15,
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: '#fff',
+        borderBottomWidth: StyleSheet.hairlineWidth,
+        borderBottomColor: '#ebebeb',
+    },
+    searchBarContainer: {
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: '#F2F2F7',
+        borderRadius: 10,
+        paddingHorizontal: 10,
+        height: 38,
+    },
+    searchIcon: {
+        marginRight: 8,
+    },
+    searchInput: {
+        flex: 1,
+        fontSize: 16,
+        color: '#000',
+        padding: 0,
+    },
+    searchLoadingIndicator: {
+        marginLeft: 8,
+    },
+    cancelButton: {
+        marginLeft: 12,
+        paddingVertical: 8,
+    },
+    cancelButtonText: {
+        color: '#007AFF',
+        fontSize: 16,
+        fontWeight: '500',
+    },
 });

@@ -1168,6 +1168,17 @@ class SyncService {
       return { uploadAssets, downloadAssets };
     } finally {
       this.isSyncing = false;
+      // Trigger AI embedding extraction and metadata sync in the background
+      try {
+        const AIService = require('./AIService').default;
+        AIService.processLocalEmbeddings(30).then(() => {
+          AIService.syncEmbeddings().catch(e => console.warn('[SyncService] AI sync failed:', e.message));
+        }).catch(err => {
+          console.warn('[SyncService] AI local processing failed:', err.message);
+        });
+      } catch (e) {
+        console.warn('[SyncService] Failed to load AIService:', e.message);
+      }
     }
   }
 

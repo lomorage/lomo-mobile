@@ -14,11 +14,13 @@ Pod::Spec.new do |s|
 
   s.dependency 'ExpoModulesCore'
   s.dependency 'Zip', '~> 2.1'
+  s.dependency 'onnxruntime-objc'
 
   # Swift/Objective-C compatibility
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',
   }
 
+  s.resources = "assets/*"
   s.source_files = "**/*.{h,m,mm,swift,hpp,cpp}"
 end

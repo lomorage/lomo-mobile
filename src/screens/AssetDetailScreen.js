@@ -562,6 +562,12 @@ export default function AssetDetailScreen({ route, navigation }) {
                 }
                 
                 if (isFullyDeleted) {
+                    // Delete from local SQLite
+                    await AssetDBService.deleteAsset(currentAsset.id);
+                    if (currentAsset.hash) {
+                        await AssetDBService.deleteAsset(currentAsset.hash);
+                    }
+
                     const newAssets = assets.filter(a => a.id !== currentAsset.id);
                     GalleryStore.setAssets(newAssets, source);
                     setAssets(newAssets);
@@ -573,6 +579,16 @@ export default function AssetDetailScreen({ route, navigation }) {
                         setCurrentIndex(newAssets.length - 1);
                     }
                 } else {
+                    // Update isLocal status in SQLite
+                    const db = AssetDBService.db;
+                    if (db) {
+                        if (newStatus === 'remote') {
+                            await db.runAsync('UPDATE MediaAsset SET isLocal = 0 WHERE id = ? OR hash = ?', [currentAsset.id, currentAsset.hash || currentAsset.id]);
+                        } else if (newStatus === 'local') {
+                            await db.runAsync('UPDATE MediaAsset SET isLocal = 1 WHERE id = ? OR hash = ?', [currentAsset.id, currentAsset.hash || currentAsset.id]);
+                        }
+                    }
+
                     const updatedAsset = { ...currentAsset, status: newStatus };
                     if (newStatus === 'remote' && currentAsset.hash) {
                          // Switch URI to the backend because the local file is now physically destroyed

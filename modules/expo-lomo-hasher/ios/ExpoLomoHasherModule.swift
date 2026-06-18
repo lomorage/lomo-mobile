@@ -3,8 +3,153 @@ import CryptoKit
 import Foundation
 import Photos
 import Zip
+import onnxruntime_objc
+import UIKit
 
 public class ExpoLomoHasherModule: Module {
+  private var visualSession: ORTSession?
+  private var textualSession: ORTSession?
+  private var ortEnv: ORTEnv?
+  private var clipTokenizer: ClipTokenizer?
+
+  private func getOrtEnv() throws -> ORTEnv {
+    if let env = ortEnv { return env }
+    let env = try ORTEnv(loggingLevel: .warning)
+    ortEnv = env
+    return env
+  }
+
+  private func getResourcePath(name: String, ext: String) -> String? {
+    if let path = Bundle(for: ExpoLomoHasherModule.self).path(forResource: name, ofType: ext) {
+      return path
+    }
+    if let path = Bundle.main.path(forResource: name, ofType: ext) {
+      return path
+    }
+    if let bundle = Bundle(identifier: "org.cocoapods.ExpoLomoHasher"),
+       let path = bundle.path(forResource: name, ofType: ext) {
+      return path
+    }
+    return nil
+  }
+
+  private func resolveModelPath(modelPath: String) throws -> String {
+    if modelPath.contains("/") || modelPath.contains("\\") {
+      return modelPath
+    }
+    let name = (modelPath as NSString).deletingPathExtension
+    let ext = (modelPath as NSString).pathExtension
+    guard let path = getResourcePath(name: name, ext: ext) else {
+      throw NSError(domain: "ExpoLomoHasher", code: 4, userInfo: [NSLocalizedDescriptionKey: "Resource not found: \(modelPath)"])
+    }
+    return path
+  }
+
+  private func getVisualSession(modelPath: String) throws -> ORTSession {
+    if let session = visualSession { return session }
+    let env = try getOrtEnv()
+    let options = try ORTSessionOptions()
+    try options.setIntraOpNumThreads(2)
+    let resolved = try resolveModelPath(modelPath: modelPath)
+    let session = try ORTSession(env: env, modelPath: resolved, sessionOptions: options)
+    visualSession = session
+    return session
+  }
+
+  private func getTextualSession(modelPath: String) throws -> ORTSession {
+    if let session = textualSession { return session }
+    let env = try getOrtEnv()
+    let options = try ORTSessionOptions()
+    try options.setIntraOpNumThreads(2)
+    let resolved = try resolveModelPath(modelPath: modelPath)
+    let session = try ORTSession(env: env, modelPath: resolved, sessionOptions: options)
+    textualSession = session
+    return session
+  }
+
+  private func getTokenizer(vocabPath: String, mergesPath: String) throws -> ClipTokenizer {
+    if let tokenizer = clipTokenizer { return tokenizer }
+    let resolvedVocab = try resolveModelPath(modelPath: vocabPath)
+    let resolvedMerges = try resolveModelPath(modelPath: mergesPath)
+    let tokenizer = try ClipTokenizer(vocabPath: resolvedVocab, mergesPath: resolvedMerges)
+    clipTokenizer = tokenizer
+    return tokenizer
+  }
+
+  private func centerCropAndResize(image: UIImage, targetSize: CGFloat) -> UIImage? {
+    let sourceSize = image.size
+    let cropSize = min(sourceSize.width, sourceSize.height)
+    let cropRect = CGRect(
+        x: (sourceSize.width - cropSize) / 2.0,
+        y: (sourceSize.height - cropSize) / 2.0,
+        width: cropSize,
+        height: cropSize
+    )
+    guard let cgImage = image.cgImage?.cropping(to: cropRect) else { return nil }
+    
+    let size = CGSize(width: targetSize, height: targetSize)
+    UIGraphicsBeginImageContextWithOptions(size, false, 1.0)
+    UIImage(cgImage: cgImage).draw(in: CGRect(origin: .zero, size: size))
+    let resizedImage = UIGraphicsGetImageFromCurrentImageContext()
+    UIGraphicsEndImageContext()
+    return resizedImage
+  }
+
+  private func preprocessImage(image: UIImage) -> Data? {
+    guard let cgImage = image.cgImage else { return nil }
+    let width = 224
+    let height = 224
+    
+    var pixelBuffer = [UInt8](repeating: 0, count: width * height * 4)
+    let colorSpace = CGColorSpaceCreateDeviceRGB()
+    guard let context = CGContext(
+        data: &pixelBuffer,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: width * 4,
+        space: colorSpace,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+    ) else { return nil }
+    
+    context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+    
+    var floatBuffer = [Float](repeating: 0.0, count: 1 * 3 * width * height)
+    let stride = width * height
+    
+    for i in 0..<height {
+        for j in 0..<width {
+            let offset = (i * width + j) * 4
+            let r = Float(pixelBuffer[offset]) / 255.0
+            let g = Float(pixelBuffer[offset + 1]) / 255.0
+            let b = Float(pixelBuffer[offset + 2]) / 255.0
+            
+            let idx = i * width + j
+            floatBuffer[idx] = (r - 0.48145467) / 0.26862955
+            floatBuffer[idx + stride] = (g - 0.4578275) / 0.2613026
+            floatBuffer[idx + stride * 2] = (b - 0.40821072) / 0.2757771
+        }
+    }
+    
+    return Data(bytes: floatBuffer, count: floatBuffer.count * MemoryLayout<Float>.size)
+  }
+
+  private func normalizeL2(_ inputArray: [Float]) -> [Float] {
+    var norm: Float = 0.0
+    for val in inputArray {
+        norm += val * val
+    }
+    norm = sqrt(norm)
+    if norm == 0.0 { return inputArray }
+    return inputArray.map { $0 / norm }
+  }
+
+  private func floatArrayToBase64(_ floats: [Float]) -> String {
+    let size = floats.count * MemoryLayout<Float>.size
+    let data = Data(bytes: floats, count: size)
+    return data.base64EncodedString()
+  }
+
   public func definition() -> ModuleDefinition {
     Name("ExpoLomoHasher")
 
@@ -320,6 +465,150 @@ public class ExpoLomoHasherModule: Module {
           promise.resolve(true)
         } catch {
           promise.reject("SLICE_ERROR", "Failed to slice file: \(error.localizedDescription)")
+        }
+      }
+    }
+
+    AsyncFunction("encodeImageEmbeddingAsync") { (imageUriString: String, modelPath: String, promise: Promise) in
+      DispatchQueue.global(qos: .userInitiated).async {
+        do {
+          let image: UIImage
+          if imageUriString.hasPrefix("ph://") {
+            guard let asset = self.getPHAsset(from: imageUriString) else {
+              promise.reject("ERR_ASSET_NOT_FOUND", "Asset not found: \(imageUriString)")
+              return
+            }
+            
+            let manager = PHImageManager.default()
+            let options = PHImageRequestOptions()
+            options.isSynchronous = true
+            options.isNetworkAccessAllowed = true
+            
+            var fetchedImage: UIImage?
+            manager.requestImage(for: asset, targetSize: PHImageManagerMaximumSize, contentMode: .aspectFit, options: options) { img, _ in
+              fetchedImage = img
+            }
+            guard let img = fetchedImage else {
+              promise.reject("ERR_IMAGE_FETCH", "Failed to fetch image: \(imageUriString)")
+              return
+            }
+            image = img
+          } else {
+            let url: URL
+            if imageUriString.hasPrefix("file://") {
+              guard let parsed = URL(string: imageUriString) else {
+                promise.reject("INVALID_URI", "Invalid URI: \(imageUriString)")
+                return
+              }
+              url = parsed
+            } else {
+              url = URL(fileURLWithPath: imageUriString)
+            }
+            guard let img = UIImage(contentsOfFile: url.path) else {
+              promise.reject("ERR_IMAGE_LOAD", "Failed to load image from path: \(url.path)")
+              return
+            }
+            image = img
+          }
+          
+          guard let cropped = self.centerCropAndResize(image: image, targetSize: 224) else {
+            promise.reject("ERR_PREPROCESS", "Center crop failed")
+            return
+          }
+          guard let inputData = self.preprocessImage(image: cropped) else {
+            promise.reject("ERR_PREPROCESS", "Preprocess image failed")
+            return
+          }
+          
+          let session = try self.getVisualSession(modelPath: modelPath)
+          let shape: [NSNumber] = [1, 3, 224, 224]
+          let inputTensor = try ORTValue(tensorData: NSMutableData(data: inputData), elementType: .float, shape: shape)
+          
+          let outputNames = try session.outputNames()
+          let outputs = try session.run(withInputs: ["pixel_values": inputTensor], outputNames: outputNames, runOptions: nil)
+          guard let firstOutputName = outputNames.first, let outputVal = outputs[firstOutputName] else {
+            promise.reject("ERR_INFERENCE", "Output not found")
+            return
+          }
+          
+          let outputData = try outputVal.tensorData()
+          let count = outputData.count / MemoryLayout<Float>.size
+          var floats = [Float](repeating: 0.0, count: count)
+          outputData.copyBytes(to: UnsafeMutableBufferPointer(start: &floats, count: count))
+          
+          let normalized = self.normalizeL2(floats)
+          let base64 = self.floatArrayToBase64(normalized)
+          promise.resolve(base64)
+        } catch {
+          promise.reject("ERR_IMAGE_EMBEDDING", error.localizedDescription)
+        }
+      }
+    }
+
+    AsyncFunction("encodeTextEmbeddingAsync") { (text: String, modelPath: String, vocabPath: String, mergesPath: String, promise: Promise) in
+      DispatchQueue.global(qos: .userInitiated).async {
+        do {
+          let tokenizer = try self.getTokenizer(vocabPath: vocabPath, mergesPath: mergesPath)
+          let session = try self.getTextualSession(modelPath: modelPath)
+          
+          let tokenBOS: Int32 = 49406
+          let tokenEOS: Int32 = 49407
+          
+          let queryFilter = try NSRegularExpression(pattern: "[^A-Za-z0-9 ]", options: [])
+          let textClean = queryFilter.stringByReplacingMatches(
+            in: text,
+            options: [],
+            range: NSRange(location: 0, length: text.utf16.count),
+            withTemplate: ""
+          ).lowercased()
+          
+          var tokens = [Int32]()
+          tokens.append(tokenBOS)
+          tokens.append(contentsOf: tokenizer.tokenize(text: textClean))
+          tokens.append(tokenEOS)
+          
+          var mask = [Int32]()
+          for _ in tokens {
+              mask.append(1)
+          }
+          while tokens.count < 77 {
+              tokens.append(0)
+              mask.append(0)
+          }
+          
+          let tokensFinal = Array(tokens.prefix(77))
+          let maskFinal = Array(mask.prefix(77))
+          
+          let shape: [NSNumber] = [1, 77]
+          
+          let tokenData = Data(bytes: tokensFinal, count: 77 * MemoryLayout<Int32>.size)
+          let maskData = Data(bytes: maskFinal, count: 77 * MemoryLayout<Int32>.size)
+          
+          let inputIdsTensor = try ORTValue(tensorData: NSMutableData(data: tokenData), elementType: .int32, shape: shape)
+          let attentionMaskTensor = try ORTValue(tensorData: NSMutableData(data: maskData), elementType: .int32, shape: shape)
+          
+          let inputMap: [String: ORTValue] = [
+            "input_ids": inputIdsTensor,
+            "attention_mask": attentionMaskTensor
+          ]
+          
+          let outputNames = try session.outputNames()
+          let outputs = try session.run(withInputs: inputMap, outputNames: outputNames, runOptions: nil)
+          guard let firstOutputName = outputNames.first, let outputVal = outputs[firstOutputName] else {
+            promise.reject("ERR_INFERENCE", "Output not found")
+            return
+          }
+          
+          let outputData = try outputVal.tensorData()
+          let count = outputData.count / MemoryLayout<Float>.size
+          var floats = [Float](repeating: 0.0, count: count)
+          outputData.copyBytes(to: UnsafeMutableBufferPointer(start: &floats, count: count))
+          
+          let normalized = self.normalizeL2(floats)
+          let base64 = self.floatArrayToBase64(normalized)
+          promise.resolve(base64)
+        } catch {
+          promise.reject("ERR_TEXT_EMBEDDING", error.localizedDescription)
         }
       }
     }

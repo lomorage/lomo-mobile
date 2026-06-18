@@ -51,3 +51,8 @@ jest_output*.txt
 *.pem
 
 .env
+
+# Local Credentials
+lomo-mobile.jks
+credentials.json
+upload_certificate.pem

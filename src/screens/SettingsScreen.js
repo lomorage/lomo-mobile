@@ -72,7 +72,11 @@ export default function SettingsScreen({ navigation }) {
         uploadConcurrency,
         updateUploadConcurrency,
         excludedAlbums,
-        toggleAlbumExclusion
+        toggleAlbumExclusion,
+        remoteAIProcessingEnabled,
+        toggleRemoteAIProcessing,
+        searchThreshold,
+        updateSearchThreshold
     } = useSettings();
     const { logout } = useAuth();
     const [stats, setStats] = React.useState({ local: 0, remote: 0 });
@@ -412,6 +416,45 @@ export default function SettingsScreen({ navigation }) {
                     </TouchableOpacity>
                 )}
 
+            </View>
+
+            <View style={styles.section}>
+                <Text style={styles.sectionTitle}>AI & Search Settings</Text>
+                
+                <View style={styles.settingRow}>
+                    <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabel}>Index Remote Photos Locally</Text>
+                        <Text style={styles.settingDescription}>Download remote photos' previews and extract embeddings locally when charging and on Wi-Fi (for photos without server embeddings).</Text>
+                    </View>
+                    <Switch
+                        value={remoteAIProcessingEnabled}
+                        onValueChange={toggleRemoteAIProcessing}
+                        trackColor={{ false: '#d1d1d1', true: '#4CAF50' }}
+                        thumbColor={'#fff'}
+                    />
+                </View>
+
+                <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8 }]}>
+                    <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabel}>Search Match Strictness</Text>
+                        <Text style={styles.settingDescription}>Adjust the similarity threshold. Higher values return fewer, more precise results.</Text>
+                    </View>
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        <TouchableOpacity 
+                            onPress={() => updateSearchThreshold(Math.max(0.1, Math.round((searchThreshold - 0.02) * 100) / 100))}
+                            style={styles.stepperButton}
+                        >
+                            <Text style={styles.stepperText}>-</Text>
+                        </TouchableOpacity>
+                        <Text style={styles.stepperValue}>{searchThreshold.toFixed(2)}</Text>
+                        <TouchableOpacity 
+                            onPress={() => updateSearchThreshold(Math.min(0.5, Math.round((searchThreshold + 0.02) * 100) / 100))}
+                            style={styles.stepperButton}
+                        >
+                            <Text style={styles.stepperText}>+</Text>
+                        </TouchableOpacity>
+                    </View>
+                </View>
             </View>
 
             <View style={styles.section}>

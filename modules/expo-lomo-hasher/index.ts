@@ -15,6 +15,8 @@ type ExpoLomoHasherModuleType = {
   extractVideoFromZipAsync(zipUri: string): Promise<string>;
   getLocalLivePhotoVideoUriAsync(uri: string): Promise<string>;
   sliceFileAsync(sourceUri: string, destUri: string, offset: number): Promise<boolean>;
+  encodeImageEmbeddingAsync(imageUri: string, modelPath: string): Promise<string>;
+  encodeTextEmbeddingAsync(text: string, modelPath: string, vocabPath: string, mergesPath: string): Promise<string>;
 };
 
 const ExpoLomoHasher = requireNativeModule<ExpoLomoHasherModuleType>('ExpoLomoHasher');
@@ -42,4 +44,13 @@ export async function getLocalLivePhotoVideoUriAsync(uri: string): Promise<strin
 export async function sliceFileAsync(sourceUri: string, destUri: string, offset: number): Promise<boolean> {
   return await ExpoLomoHasher.sliceFileAsync(sourceUri, destUri, offset);
 }
+
+export async function encodeImageEmbeddingAsync(imageUri: string, modelPath: string): Promise<string> {
+  return await ExpoLomoHasher.encodeImageEmbeddingAsync(imageUri, modelPath);
+}
+
+export async function encodeTextEmbeddingAsync(text: string, modelPath: string, vocabPath: string, mergesPath: string): Promise<string> {
+  return await ExpoLomoHasher.encodeTextEmbeddingAsync(text, modelPath, vocabPath, mergesPath);
+}
+
 

@@ -13,6 +13,8 @@ export function SettingsProvider({ children }) {
     const [hashConcurrency, setHashConcurrency] = useState(2);
     const [uploadConcurrency, setUploadConcurrency] = useState(3);
     const [excludedAlbums, setExcludedAlbums] = useState([]);
+    const [remoteAIProcessingEnabled, setRemoteAIProcessingEnabled] = useState(false);
+    const [searchThreshold, setSearchThreshold] = useState(0.25);
     const [isLoading, setIsLoading] = useState(true);
 
     useEffect(() => {
@@ -60,6 +62,14 @@ export function SettingsProvider({ children }) {
                 } catch (e) {
                     console.error('Failed to parse excluded albums:', e);
                 }
+            }
+            const savedRemoteAI = await SecureStore.getItemAsync('lomorage_remote_ai_processing');
+            if (savedRemoteAI !== null) {
+                setRemoteAIProcessingEnabled(savedRemoteAI === 'true');
+            }
+            const savedThreshold = await SecureStore.getItemAsync('lomorage_search_threshold');
+            if (savedThreshold !== null) {
+                setSearchThreshold(parseFloat(savedThreshold));
             }
         } catch (error) {
             console.error('Failed to load settings', error);
@@ -175,6 +185,25 @@ export function SettingsProvider({ children }) {
         await SecureStore.setItemAsync('lomorage_upload_concurrency', value.toString());
     };
 
+    const toggleRemoteAIProcessing = async () => {
+        try {
+            const newValue = !remoteAIProcessingEnabled;
+            await SecureStore.setItemAsync('lomorage_remote_ai_processing', newValue.toString());
+            setRemoteAIProcessingEnabled(newValue);
+        } catch (error) {
+            console.error('Failed to update remote AI processing setting', error);
+        }
+    };
+
+    const updateSearchThreshold = async (val) => {
+        try {
+            await SecureStore.setItemAsync('lomorage_search_threshold', val.toString());
+            setSearchThreshold(val);
+        } catch (error) {
+            console.error('Failed to save search threshold', error);
+        }
+    };
+
     const toggleAlbumExclusion = async (albumId) => {
         let newList;
         if (excludedAlbums.includes(albumId)) {
@@ -207,6 +236,10 @@ export function SettingsProvider({ children }) {
             updateUploadConcurrency,
             excludedAlbums,
             toggleAlbumExclusion,
+            remoteAIProcessingEnabled,
+            toggleRemoteAIProcessing,
+            searchThreshold,
+            updateSearchThreshold,
             isLoading
         }}>
             {children}

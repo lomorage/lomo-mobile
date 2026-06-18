@@ -71,6 +71,16 @@ class AssetDBService {
         console.log('[AssetDBService] Database migrated to version 3 (Added Favorites support).');
       }
 
+      if (currentVersion < 4) {
+        // Version 4: Add clipEmbeddingVersion and clipEmbedding columns for AI search
+        try { await this.db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN clipEmbeddingVersion INTEGER;`); } catch (e) {}
+        try { await this.db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN clipEmbedding TEXT;`); } catch (e) {}
+        
+        await this.db.execAsync('PRAGMA user_version = 4');
+        currentVersion = 4;
+        console.log('[AssetDBService] Database migrated to version 4 (Added CLIP Embedding support).');
+      }
+
       // Smooth migration: if local_hash_cache_v2.json exists, migrate it to SQLite
       await this.migrateLocalHashCache();
 
@@ -615,6 +625,19 @@ class AssetDBService {
     } catch (error) {
       console.error(`[AssetDBService] Failed to get details for ${hash}:`, error);
       return null;
+    }
+  }
+
+  async deleteAsset(idOrHash) {
+    if (!this.db) return;
+    try {
+      console.log(`[AssetDBService] Deleting asset from SQLite: ${idOrHash}`);
+      await this.db.runAsync(
+        'DELETE FROM MediaAsset WHERE id = ? OR hash = ?',
+        [idOrHash, idOrHash]
+      );
+    } catch (error) {
+      console.error('[AssetDBService] Failed to delete asset from SQLite:', error);
     }
   }
 }
