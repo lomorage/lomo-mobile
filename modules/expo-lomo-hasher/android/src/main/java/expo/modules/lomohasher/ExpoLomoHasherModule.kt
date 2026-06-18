@@ -316,9 +316,9 @@ class ExpoLomoHasherModule : Module() {
       val width = options.outWidth
       val height = options.outHeight
       
-      // Step 2: Compute inSampleSize targeting ~512px to prevent high memory usage
+      // Step 2: Compute inSampleSize targeting ~320px to prevent high memory usage
       var inSampleSize = 1
-      val targetSize = 512
+      val targetSize = 320
       if (width > targetSize || height > targetSize) {
           val halfWidth = width / 2
           val halfHeight = height / 2

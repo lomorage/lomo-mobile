@@ -475,9 +475,12 @@ export default function AssetDetailScreen({ route, navigation }) {
 
     const handleFindSimilar = () => {
         if (!currentAsset) return;
-        navigation.navigate('Photos', {
-            searchImageId: currentAsset.id,
-            searchImageFilename: currentAsset.filename || '图片'
+        navigation.navigate('MainTabs', {
+            screen: 'Photos',
+            params: {
+                searchImageId: currentAsset.id,
+                searchImageFilename: currentAsset.filename || '图片'
+            }
         });
     };
 

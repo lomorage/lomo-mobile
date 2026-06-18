@@ -27,7 +27,19 @@ const SMART_TAGS = [
     { label: '🏞️ 风景', query: 'landscape' },
     { label: '🌸 花卉', query: 'flower' },
     { label: '📄 截图', query: 'screenshot' },
-    { label: '🚗 汽车', query: 'car' }
+    { label: '🚗 汽车', query: 'car' },
+    { label: '👶 宝宝', query: 'baby' },
+    { label: '🌲 森林', query: 'forest' },
+    { label: '🏔️ 雪山', query: 'snowy mountain' },
+    { label: '🌃 夜景', query: 'night view' },
+    { label: '🏠 建筑', query: 'building' },
+    { label: '☕ 咖啡', query: 'coffee' },
+    { label: '🚲 自行车', query: 'bicycle' },
+    { label: '⚽ 运动', query: 'sports' },
+    { label: '✈️ 旅行', query: 'travel' },
+    { label: '🌊 海洋', query: 'ocean' },
+    { label: '🍁 红叶', query: 'autumn leaves' },
+    { label: '🎸 音乐', query: 'musical instrument' }
 ];
 
 const isLivePhoto = (asset) => {
