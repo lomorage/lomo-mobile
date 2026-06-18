@@ -24,6 +24,7 @@ class AIService {
   constructor() {
     this.isProcessing = false;
     this.isSyncing = false;
+    this.vectorCache = new Map(); // id -> Float32Array
   }
 
   // Check if device is connected to Wi-Fi and charging
@@ -131,7 +132,7 @@ class AIService {
     }
   }
 
-  // Helper to update embedding in SQLite
+  // Helper to update embedding in SQLite and cache in memory
   async saveAssetEmbedding(idOrHash, embeddingBase64, version = 1) {
     const db = AssetDBService.db;
     if (!db) return;
@@ -139,6 +140,25 @@ class AIService {
       'UPDATE MediaAsset SET clipEmbedding = ?, clipEmbeddingVersion = ? WHERE id = ? OR hash = ?',
       [embeddingBase64, version, idOrHash, idOrHash]
     );
+    
+    // Sync with in-memory cache
+    if (embeddingBase64 && embeddingBase64 !== 'failed' && embeddingBase64 !== 'none') {
+      try {
+        const row = await db.getFirstAsync('SELECT id FROM MediaAsset WHERE id = ? OR hash = ?', [idOrHash, idOrHash]);
+        if (row && row.id) {
+          this.vectorCache.set(row.id, base64ToFloat32Array(embeddingBase64));
+        }
+      } catch (e) {
+        console.warn('[AIService] Failed to update vector cache on save:', e);
+      }
+    } else {
+      try {
+        const row = await db.getFirstAsync('SELECT id FROM MediaAsset WHERE id = ? OR hash = ?', [idOrHash, idOrHash]);
+        if (row && row.id) {
+          this.vectorCache.delete(row.id);
+        }
+      } catch (e) {}
+    }
   }
 
   // 2. Synchronize embeddings with lomo-backend
@@ -374,26 +394,32 @@ class AIService {
   // 3. Similarity Search: perform fast Cosine Similarity in JavaScript
   async searchSimilarity(queryTextOrVector, threshold = null, limit = 50) {
     try {
+      const isImageSearch = Array.isArray(queryTextOrVector) || queryTextOrVector instanceof Float32Array;
+      
       let finalThreshold = threshold;
       if (finalThreshold === null) {
-        finalThreshold = 0.25; // default fallback
-        try {
-          const savedVal = await SecureStore.getItemAsync('lomorage_search_threshold');
-          if (savedVal !== null) {
-            const parsed = parseFloat(savedVal);
-            if (!isNaN(parsed)) {
-              finalThreshold = parsed;
+        if (isImageSearch) {
+          finalThreshold = 0.55; // default fallback for image similarity search
+        } else {
+          finalThreshold = 0.25; // default fallback for text search
+          try {
+            const savedVal = await SecureStore.getItemAsync('lomorage_search_threshold');
+            if (savedVal !== null) {
+              const parsed = parseFloat(savedVal);
+              if (!isNaN(parsed)) {
+                finalThreshold = parsed;
+              }
             }
+          } catch (e) {
+            console.warn('[AIService] Failed to read search threshold, using default 0.25:', e);
           }
-        } catch (e) {
-          console.warn('[AIService] Failed to read search threshold, using default 0.25:', e);
         }
       }
 
       let textVector;
       let searchQuery = '';
 
-      if (Array.isArray(queryTextOrVector) || queryTextOrVector instanceof Float32Array) {
+      if (isImageSearch) {
         textVector = queryTextOrVector;
         searchQuery = '[Similar Photo]';
         console.log(`[AIService] Searching similarity by image vector input directly.`);
@@ -422,9 +448,9 @@ class AIService {
       const db = AssetDBService.db;
       if (!db) return [];
 
-      // Fetch all embeddings from local DB in one single query
+      // Fetch all embeddings metadata from local DB (exclude clipEmbedding string to keep database payload lightweight)
       const rows = await db.getAllAsync(`
-        SELECT id, hash, filename, mediaType, createTime AS creationTime, isLocal, localCachePath, isFavorite, clipEmbedding 
+        SELECT id, hash, filename, mediaType, createTime AS creationTime, isLocal, localCachePath, isFavorite 
         FROM MediaAsset 
         WHERE clipEmbedding IS NOT NULL 
           AND clipEmbedding != "" 
@@ -432,15 +458,43 @@ class AIService {
           AND clipEmbedding != "none"
       `);
 
+      // Identify which embeddings are missing from our in-memory cache
+      const missingIds = [];
+      for (const row of rows) {
+        if (!this.vectorCache.has(row.id)) {
+          missingIds.push(row.id);
+        }
+      }
+
+      // Batch load missing embeddings from SQLite and parse them into memory
+      if (missingIds.length > 0) {
+        console.log(`[AIService] Vector cache miss for ${missingIds.length} items. Loading from DB...`);
+        const chunkSize = 500;
+        for (let i = 0; i < missingIds.length; i += chunkSize) {
+          const chunk = missingIds.slice(i, i + chunkSize);
+          const placeholders = chunk.map(() => '?').join(',');
+          const chunkRows = await db.getAllAsync(`
+            SELECT id, clipEmbedding FROM MediaAsset WHERE id IN (${placeholders})
+          `, chunk);
+          
+          for (const crow of chunkRows) {
+            if (crow.clipEmbedding && crow.clipEmbedding.length >= 100) {
+              try {
+                this.vectorCache.set(crow.id, base64ToFloat32Array(crow.clipEmbedding));
+              } catch (e) {
+                console.warn(`[AIService] Failed to parse embedding for asset ${crow.id}:`, e);
+              }
+            }
+          }
+        }
+      }
+
       const allCandidates = [];
       let maxScore = 0;
 
       for (const row of rows) {
-        if (!row.clipEmbedding || row.clipEmbedding.length < 100) {
-          continue;
-        }
-
-        const imageVector = base64ToFloat32Array(row.clipEmbedding);
+        const imageVector = this.vectorCache.get(row.id);
+        if (!imageVector) continue;
         
         // Dot product (equivalent to Cosine Similarity since vectors are normalized)
         let score = 0;
@@ -467,17 +521,20 @@ class AIService {
         }
       }
 
-      // Calculate adaptive threshold:
-      // - The absolute floor is determined by (finalThreshold - 0.06), e.g., if user set 0.25, floor is 0.19.
-      // - The relative threshold is (maxScore - 0.04), allowing candidates close to the top match to appear.
-      const floorThreshold = Math.max(0.12, finalThreshold - 0.06);
-      const adaptiveThreshold = Math.max(floorThreshold, maxScore - 0.04);
-
-      const results = allCandidates.filter(c => c.score >= adaptiveThreshold);
+      let results;
+      if (isImageSearch) {
+        // For image-to-image search, use finalThreshold directly (no adaptive relative subtraction because maxScore of self-match is 1.0)
+        results = allCandidates.filter(c => c.score >= finalThreshold);
+      } else {
+        // For text search, calculate adaptive threshold based on maximum similarity score
+        const floorThreshold = Math.max(0.12, finalThreshold - 0.06);
+        const adaptiveThreshold = Math.max(floorThreshold, maxScore - 0.04);
+        results = allCandidates.filter(c => c.score >= adaptiveThreshold);
+      }
 
       // Sort by score descending
       results.sort((a, b) => b.score - a.score);
-      console.log(`[AIService] Search maxScore=${maxScore.toFixed(4)}, adaptiveThreshold=${adaptiveThreshold.toFixed(4)} (floor=${floorThreshold.toFixed(4)}) for "${searchQuery}". Found ${results.length} matches.`);
+      console.log(`[AIService] Search maxScore=${maxScore.toFixed(4)}, matches=${results.length} for "${searchQuery}".`);
       results.slice(0, 5).forEach((r, idx) => {
         console.log(`  #${idx + 1}: filename=${r.filename}, score=${r.score.toFixed(4)}, isLocal=${r.isLocal}`);
       });
@@ -505,7 +562,19 @@ class AIService {
       console.log(`[AIService] Embedding missing for asset ${assetId}, generating on the fly...`);
       let imageUri = null;
       if (row && row.isLocal === 1) {
-        imageUri = assetId;
+        try {
+          const info = await MediaService.getAssetInfo(assetId);
+          imageUri = info?.localUri || info?.uri;
+        } catch (e) {
+          console.warn(`[AIService] Failed to get asset info for ${assetId} during on-the-fly embedding:`, e.message);
+        }
+        if (!imageUri) {
+          if (Platform.OS === 'android') {
+            imageUri = `content://media/external/images/media/${assetId}`;
+          } else if (Platform.OS === 'ios') {
+            imageUri = `ph://${assetId}`;
+          }
+        }
       } else if (row && row.localCachePath) {
         imageUri = row.localCachePath;
       } else if (row && row.hash) {

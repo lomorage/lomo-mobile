@@ -972,6 +972,7 @@ const formatSpeed = (bytesPerSec) => {
             prevProps.asset.status !== nextProps.asset.status ||
             prevProps.asset.hash !== nextProps.asset.hash ||
             prevProps.asset.uri !== nextProps.asset.uri ||
+            prevProps.asset.score !== nextProps.asset.score ||
             prevProps.source !== nextProps.source
         ) return false;
         if (prevProps.debugMode !== nextProps.debugMode) return false;
@@ -1017,7 +1018,8 @@ const formatSpeed = (bytesPerSec) => {
             if (prevItems[i].id !== nextItems[i].id || 
                 prevItems[i].status !== nextItems[i].status ||
                 prevItems[i].hash !== nextItems[i].hash ||
-                prevItems[i].uri !== nextItems[i].uri) {
+                prevItems[i].uri !== nextItems[i].uri ||
+                prevItems[i].score !== nextItems[i].score) {
                 return false;
             }
         }
