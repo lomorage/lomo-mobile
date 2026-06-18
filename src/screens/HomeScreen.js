@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
-import { StyleSheet, View, Dimensions, TouchableOpacity, Text, ActivityIndicator, RefreshControl, DeviceEventEmitter, AppState, PanResponder, Animated, Modal, TextInput } from 'react-native';
+import { StyleSheet, View, Dimensions, TouchableOpacity, Text, ActivityIndicator, RefreshControl, DeviceEventEmitter, AppState, PanResponder, Animated, Modal, TextInput, ScrollView, Alert } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 import { FlashList } from '@shopify/flash-list';
@@ -18,6 +18,17 @@ import MetricsTracker from '../utils/MetricsTracker';
 const { width } = Dimensions.get('window');
 const COLUMN_COUNT = 3;
 const ITEM_SIZE = width / COLUMN_COUNT;
+
+const SMART_TAGS = [
+    { label: '🐱 猫咪', query: 'cat' },
+    { label: '🐶 狗狗', query: 'dog' },
+    { label: '🍔 美食', query: 'food' },
+    { label: '🌅 海滩', query: 'beach' },
+    { label: '🏞️ 风景', query: 'landscape' },
+    { label: '🌸 花卉', query: 'flower' },
+    { label: '📄 截图', query: 'screenshot' },
+    { label: '🚗 汽车', query: 'car' }
+];
 
 const isLivePhoto = (asset) => {
     // 1. Local or synced asset with mediaSubtypes metadata
@@ -75,7 +86,7 @@ const LivePhotoIcon = ({ color = '#fff', size = 14 }) => {
     );
 };
 
-export default function HomeScreen({ navigation }) {
+export default function HomeScreen({ navigation, route }) {
     const [assets, setAssets] = useState([]);
     const [syncing, setSyncing] = useState(false);
     const [syncProgress, setSyncProgress] = useState(null);
@@ -125,6 +136,91 @@ export default function HomeScreen({ navigation }) {
     useEffect(() => {
         assetsRef.current = assets;
     }, [assets]);
+
+    // Handle Image-to-Image Search triggered from AssetDetailScreen
+    useEffect(() => {
+        const searchImageId = route.params?.searchImageId;
+        const searchImageFilename = route.params?.searchImageFilename;
+        if (searchImageId) {
+            (async () => {
+                try {
+                    setIsSearching(true);
+                    setSearchQuery(`[相似照片: ${searchImageFilename || '加载中...'}]`);
+                    setIsSearchLoading(true);
+                    setSearchResults([]);
+                    GalleryStore.setAssets([], 'search');
+                    
+                    const vector = await AIService.getOrGenerateAssetEmbedding(searchImageId);
+                    if (vector) {
+                        setSearchQuery(`[相似照片: ${searchImageFilename || '图片'}]`);
+                        const results = await AIService.searchSimilarity(vector);
+                        const currentAssets = assetsRef.current || [];
+                        const mappedResults = results.map(res => {
+                            const matched = currentAssets.find(a => a.id === res.id || (res.hash && a.hash === res.hash));
+                            if (matched) {
+                                return { ...matched, score: res.score };
+                            }
+                            return {
+                                ...res,
+                                status: res.isLocal ? 'synced' : 'remote',
+                                uri: res.isLocal ? res.id : `${AuthService.getServerUrl()}/preview/${res.hash}?width=320&height=-1&token=${AuthService.getToken()}`
+                            };
+                        });
+                        
+                        const topResults = mappedResults
+                            .sort((a, b) => b.score - a.score)
+                            .slice(0, 100);
+
+                        GalleryStore.setAssets(topResults, 'search');
+                        setSearchResults(topResults);
+                    } else {
+                        Alert.alert('提示', '无法计算此图片的特征向量，无法进行相似检索。');
+                    }
+                } catch (e) {
+                    console.error('[HomeScreen] Image search error:', e);
+                } finally {
+                    setIsSearchLoading(false);
+                }
+            })();
+            // Clear navigation params so it doesn't trigger again on re-focus
+            navigation.setParams({ searchImageId: undefined, searchImageFilename: undefined });
+        }
+    }, [route.params?.searchImageId]);
+
+    // Handle clicking a Smart Category Tag
+    const handleTagPress = async (tag) => {
+        setIsSearching(true);
+        setSearchQuery(tag.label);
+        setIsSearchLoading(true);
+        setSearchResults([]);
+        GalleryStore.setAssets([], 'search');
+        try {
+            const results = await AIService.searchSimilarity(tag.query);
+            const currentAssets = assetsRef.current || [];
+            const mappedResults = results.map(res => {
+                const matched = currentAssets.find(a => a.id === res.id || (res.hash && a.hash === res.hash));
+                if (matched) {
+                    return { ...matched, score: res.score };
+                }
+                return {
+                    ...res,
+                    status: res.isLocal ? 'synced' : 'remote',
+                    uri: res.isLocal ? res.id : `${AuthService.getServerUrl()}/preview/${res.hash}?width=320&height=-1&token=${AuthService.getToken()}`
+                };
+            });
+            
+            const topResults = mappedResults
+                .sort((a, b) => b.score - a.score)
+                .slice(0, 100);
+
+            GalleryStore.setAssets(topResults, 'search');
+            setSearchResults(topResults);
+        } catch (err) {
+            console.error('[HomeScreen] Smart tag search error:', err);
+        } finally {
+            setIsSearchLoading(false);
+        }
+    };
 
     useEffect(() => {
         if (!isSearching || searchQuery.trim() === '') {
@@ -841,6 +937,13 @@ const formatSpeed = (bytesPerSec) => {
                 {asset.status === 'remote' ? (
                     <View style={[styles.imageOverlay, { backgroundColor: 'rgba(0,0,0,0.1)' }]} />
                 ) : null}
+                {asset.score !== undefined ? (
+                    <View style={styles.scoreBadge}>
+                        <Text style={styles.scoreText}>
+                            {Math.min(99, Math.max(50, Math.round(50 + (asset.score - 0.18) * 250)))}%匹配
+                        </Text>
+                    </View>
+                ) : null}
                 {debugMode ? (
                     <View style={styles.debugOverlay}>
                         <Text style={styles.debugText}>{asset.status[0].toUpperCase()}</Text>
@@ -973,32 +1076,60 @@ const formatSpeed = (bytesPerSec) => {
     return (
         <View style={styles.container}>
             {isSearching ? (
-                <View style={styles.searchHeader}>
-                    <View style={styles.searchBarContainer}>
-                        <Search size={18} color="#999" style={styles.searchIcon} />
-                        <TextInput
-                            style={styles.searchInput}
-                            placeholder="搜索照片 (如: 猫, 海滩, 食物)..."
-                            value={searchQuery}
-                            onChangeText={setSearchQuery}
-                            autoFocus
-                            clearButtonMode="while-editing"
-                            returnKeyType="search"
-                        />
-                        {isSearchLoading && timelineData.length > 0 ? (
-                            <ActivityIndicator size="small" color="#007AFF" style={styles.searchLoadingIndicator} />
-                        ) : null}
+                <View style={{ backgroundColor: '#fff' }}>
+                    <View style={styles.searchHeader}>
+                        <View style={styles.searchBarContainer}>
+                            <Search size={18} color="#999" style={styles.searchIcon} />
+                            <TextInput
+                                style={styles.searchInput}
+                                placeholder="搜索照片 (如: 猫, 海滩, 食物)..."
+                                value={searchQuery}
+                                onChangeText={setSearchQuery}
+                                autoFocus
+                                clearButtonMode="while-editing"
+                                returnKeyType="search"
+                            />
+                            {isSearchLoading && timelineData.length > 0 ? (
+                                <ActivityIndicator size="small" color="#007AFF" style={styles.searchLoadingIndicator} />
+                            ) : null}
+                        </View>
+                        <TouchableOpacity 
+                            onPress={() => {
+                                setIsSearching(false);
+                                setSearchQuery('');
+                                setSearchResults([]);
+                            }} 
+                            style={styles.cancelButton}
+                        >
+                            <Text style={styles.cancelButtonText}>取消</Text>
+                        </TouchableOpacity>
                     </View>
-                    <TouchableOpacity 
-                        onPress={() => {
-                            setIsSearching(false);
-                            setSearchQuery('');
-                            setSearchResults([]);
-                        }} 
-                        style={styles.cancelButton}
+                    
+                    {/* Horizontal Smart Tags List */}
+                    <ScrollView 
+                        horizontal 
+                        showsHorizontalScrollIndicator={false} 
+                        style={styles.tagsContainer}
+                        contentContainerStyle={styles.tagsContent}
                     >
-                        <Text style={styles.cancelButtonText}>取消</Text>
-                    </TouchableOpacity>
+                        {SMART_TAGS.map((tag, idx) => (
+                            <TouchableOpacity 
+                                key={idx} 
+                                style={[
+                                    styles.tagButton,
+                                    searchQuery === tag.label && styles.tagButtonActive
+                                ]}
+                                onPress={() => handleTagPress(tag)}
+                            >
+                                <Text style={[
+                                    styles.tagText,
+                                    searchQuery === tag.label && styles.tagTextActive
+                                ]}>
+                                    {tag.label}
+                                </Text>
+                            </TouchableOpacity>
+                        ))}
+                    </ScrollView>
                 </View>
             ) : (
                 <View style={styles.header}>
@@ -1525,5 +1656,47 @@ const styles = StyleSheet.create({
         color: '#007AFF',
         fontSize: 16,
         fontWeight: '500',
+    },
+    scoreBadge: {
+        position: 'absolute',
+        top: 5,
+        left: 5,
+        backgroundColor: 'rgba(0,0,0,0.5)',
+        borderRadius: 4,
+        paddingHorizontal: 4,
+        paddingVertical: 2,
+    },
+    scoreText: {
+        color: '#fff',
+        fontSize: 9,
+        fontWeight: 'bold',
+    },
+    tagsContainer: {
+        backgroundColor: '#fff',
+        borderBottomWidth: StyleSheet.hairlineWidth,
+        borderBottomColor: '#ebebeb',
+        paddingVertical: 8,
+    },
+    tagsContent: {
+        paddingHorizontal: 15,
+        flexDirection: 'row',
+    },
+    tagButton: {
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+        borderRadius: 16,
+        backgroundColor: '#f2f2f7',
+        marginRight: 8,
+    },
+    tagButtonActive: {
+        backgroundColor: '#007AFF',
+    },
+    tagText: {
+        fontSize: 13,
+        color: '#3a3a3c',
+    },
+    tagTextActive: {
+        color: '#fff',
+        fontWeight: '600',
     },
 });

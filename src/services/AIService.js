@@ -372,7 +372,7 @@ class AIService {
   }
 
   // 3. Similarity Search: perform fast Cosine Similarity in JavaScript
-  async searchSimilarity(queryText, threshold = null, limit = 50) {
+  async searchSimilarity(queryTextOrVector, threshold = null, limit = 50) {
     try {
       let finalThreshold = threshold;
       if (finalThreshold === null) {
@@ -390,29 +390,37 @@ class AIService {
         }
       }
 
-      let searchQuery = queryText;
-      // Detect if query contains Chinese characters and translate to English
-      if (/[\u4e00-\u9fa5]/.test(queryText)) {
-        try {
-          const res = await axios.get(
-            `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=t&q=${encodeURIComponent(queryText)}`,
-            { timeout: 5000 }
-          );
-          if (res.data && res.data[0] && res.data[0][0] && res.data[0][0][0]) {
-            searchQuery = res.data[0][0][0];
-            console.log(`[AIService] Translated search query: "${queryText}" -> "${searchQuery}"`);
+      let textVector;
+      let searchQuery = '';
+
+      if (Array.isArray(queryTextOrVector) || queryTextOrVector instanceof Float32Array) {
+        textVector = queryTextOrVector;
+        searchQuery = '[Similar Photo]';
+        console.log(`[AIService] Searching similarity by image vector input directly.`);
+      } else {
+        searchQuery = queryTextOrVector;
+        // Detect if query contains Chinese characters and translate to English
+        if (/[\u4e00-\u9fa5]/.test(queryTextOrVector)) {
+          try {
+            const res = await axios.get(
+              `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=t&q=${encodeURIComponent(queryTextOrVector)}`,
+              { timeout: 5000 }
+            );
+            if (res.data && res.data[0] && res.data[0][0] && res.data[0][0][0]) {
+              searchQuery = res.data[0][0][0];
+              console.log(`[AIService] Translated search query: "${queryTextOrVector}" -> "${searchQuery}"`);
+            }
+          } catch (e) {
+            console.warn('[AIService] Translation failed, using original query:', e.message);
           }
-        } catch (e) {
-          console.warn('[AIService] Translation failed, using original query:', e.message);
         }
+
+        console.log(`[AIService] Searching for text: "${searchQuery}" (original: "${queryTextOrVector}")`);
+        textVector = await this.getTextEmbedding(searchQuery);
       }
 
-      console.log(`[AIService] Searching for: "${searchQuery}" (original: "${queryText}")`);
       const db = AssetDBService.db;
       if (!db) return [];
-
-      // Get text vector using translation if available
-      const textVector = await this.getTextEmbedding(searchQuery);
 
       // Fetch all embeddings from local DB in one single query
       const rows = await db.getAllAsync(`
@@ -479,6 +487,56 @@ class AIService {
       console.error('[AIService] Search similarity failed:', error);
       return [];
     }
+  }
+
+  // 4. Get or generate asset embedding on-the-fly (for image-to-image search)
+  async getOrGenerateAssetEmbedding(assetId) {
+    const db = AssetDBService.db;
+    if (!db) return null;
+    try {
+      const row = await db.getFirstAsync(
+        'SELECT clipEmbedding, isLocal, localCachePath, hash FROM MediaAsset WHERE id = ?',
+        [assetId]
+      );
+      if (row && row.clipEmbedding && row.clipEmbedding.length > 100 && row.clipEmbedding !== 'failed' && row.clipEmbedding !== 'none') {
+        return base64ToFloat32Array(row.clipEmbedding);
+      }
+      
+      console.log(`[AIService] Embedding missing for asset ${assetId}, generating on the fly...`);
+      let imageUri = null;
+      if (row && row.isLocal === 1) {
+        imageUri = assetId;
+      } else if (row && row.localCachePath) {
+        imageUri = row.localCachePath;
+      } else if (row && row.hash) {
+        // Download preview for remote asset
+        try {
+          const previewUrl = `${AuthService.getServerUrl()}/preview/${row.hash}?width=320&height=-1&token=${AuthService.getToken()}`;
+          const tempUri = `${FileSystem.cacheDirectory}similar_temp_${row.hash}.jpg`;
+          const downloadRes = await FileSystem.downloadAsync(previewUrl, tempUri);
+          if (downloadRes.status === 200) {
+            imageUri = tempUri;
+          }
+        } catch (e) {
+          console.warn('[AIService] Failed to download remote preview for on-the-fly embedding:', e);
+        }
+      }
+      
+      if (imageUri) {
+        const base64 = await this.getImageEmbedding(imageUri);
+        if (base64 && base64.length > 100) {
+          await this.saveAssetEmbedding(assetId, base64);
+          // Delete temp file if remote
+          if (imageUri.includes('similar_temp_')) {
+            try { await FileSystem.deleteAsync(imageUri, { idempotent: true }); } catch (e) {}
+          }
+          return base64ToFloat32Array(base64);
+        }
+      }
+    } catch (err) {
+      console.error('[AIService] Failed to get/generate embedding:', err);
+    }
+    return null;
   }
 }
 

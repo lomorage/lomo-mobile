@@ -304,10 +304,36 @@ class ExpoLomoHasherModule : Module() {
     AsyncFunction("encodeImageEmbeddingAsync") { imageUriString: String, modelPath: String ->
       val uri = Uri.parse(imageUriString)
       val context = appContext.reactContext ?: throw Exception("React context not available")
-      val inputStream = context.contentResolver.openInputStream(uri)
-          ?: throw Exception("Could not open input stream for: $imageUriString")
-      val bitmap = BitmapFactory.decodeStream(inputStream)
-      inputStream.close()
+      
+      // Step 1: Decode only bounds to calculate scale factor
+      val options = BitmapFactory.Options().apply {
+          inJustDecodeBounds = true
+      }
+      context.contentResolver.openInputStream(uri).use { stream ->
+          BitmapFactory.decodeStream(stream, null, options)
+      }
+      
+      val width = options.outWidth
+      val height = options.outHeight
+      
+      // Step 2: Compute inSampleSize targeting ~512px to prevent high memory usage
+      var inSampleSize = 1
+      val targetSize = 512
+      if (width > targetSize || height > targetSize) {
+          val halfWidth = width / 2
+          val halfHeight = height / 2
+          while (halfWidth / inSampleSize >= targetSize && halfHeight / inSampleSize >= targetSize) {
+              inSampleSize *= 2
+          }
+      }
+      
+      // Step 3: Decode scaled image
+      val decodeOptions = BitmapFactory.Options().apply {
+          inSampleSize = inSampleSize
+      }
+      val bitmap = context.contentResolver.openInputStream(uri).use { stream ->
+          BitmapFactory.decodeStream(stream, null, decodeOptions)
+      }
       
       if (bitmap == null) {
           throw Exception("Could not decode bitmap for: $imageUriString")

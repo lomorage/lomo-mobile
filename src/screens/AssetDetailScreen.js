@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { StyleSheet, View, Dimensions, TouchableOpacity, Text, FlatList, Alert, DeviceEventEmitter, Pressable, ActivityIndicator, Animated, Vibration, ScrollView, PanResponder } from 'react-native';
 import { Image } from 'expo-image';
-import { ChevronLeft, CloudUpload, Trash2, Share, Heart, FolderMinus } from 'lucide-react-native';
+import { ChevronLeft, CloudUpload, Trash2, Share, Heart, FolderMinus, Sparkles } from 'lucide-react-native';
 import * as Sharing from 'expo-sharing';
 import { Ionicons } from '@expo/vector-icons';
 import { useVideoPlayer, VideoView } from 'expo-video';
@@ -473,6 +473,14 @@ export default function AssetDetailScreen({ route, navigation }) {
         swipeActionRef.current = handleSwipeUpAction;
     });
 
+    const handleFindSimilar = () => {
+        if (!currentAsset) return;
+        navigation.navigate('Photos', {
+            searchImageId: currentAsset.id,
+            searchImageFilename: currentAsset.filename || '图片'
+        });
+    };
+
     const handleShare = async () => {
         if (!currentAsset || isSharing) return;
         
@@ -884,6 +892,11 @@ export default function AssetDetailScreen({ route, navigation }) {
                             <Heart color={isFavorite ? "#ef4444" : "#007AFF"} fill={isFavorite ? "#ef4444" : "transparent"} size={24} />
                         </TouchableOpacity>
                     ) : null}
+                    
+                    {/* Find Similar Photos */}
+                    <TouchableOpacity onPress={handleFindSimilar} style={styles.iconButton}>
+                        <Sparkles color="#007AFF" size={24} />
+                    </TouchableOpacity>
                     
                     <TouchableOpacity onPress={handleShare} style={styles.iconButton} disabled={isSharing}>
                         {isSharing ? (

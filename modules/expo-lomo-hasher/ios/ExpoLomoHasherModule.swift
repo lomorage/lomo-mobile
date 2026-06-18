@@ -485,7 +485,7 @@ public class ExpoLomoHasherModule: Module {
             options.isNetworkAccessAllowed = true
             
             var fetchedImage: UIImage?
-            manager.requestImage(for: asset, targetSize: PHImageManagerMaximumSize, contentMode: .aspectFit, options: options) { img, _ in
+            manager.requestImage(for: asset, targetSize: CGSize(width: 512, height: 512), contentMode: .aspectFill, options: options) { img, _ in
               fetchedImage = img
             }
             guard let img = fetchedImage else {
