@@ -178,13 +178,17 @@ export default function PhotoMapScreen() {
     return `${AuthService.getServerUrl()}/asset/${hash}?ext=mp4&token=${AuthService.getToken()}`;
   }, []);
 
-  const getLocalUri = useCallback((id, mediaType) => {
+  const getLocalUri = useCallback((id, mediaType, isThumbnail = false) => {
     if (!id) return null;
     if (Platform.OS === 'ios') {
       return `ph://${id}`;
     } else {
       const type = mediaType === 'video' ? 'video' : 'images';
-      return `content://media/external/${type}/media/${id}`;
+      let uri = `content://media/external/${type}/media/${id}`;
+      if (isThumbnail && mediaType === 'video' && Platform.OS === 'android') {
+        uri = `${uri}/thumbnail`;
+      }
+      return uri;
     }
   }, []);
 
@@ -528,7 +532,7 @@ export default function PhotoMapScreen() {
                 const leaves = supercluster.getLeaves(cluster.id, Infinity);
                 const clusterAssets = leaves.map(leaf => {
                   const { assetId, hash, isLocal, mediaType } = leaf.properties;
-                  const thumbUrl = isLocal ? getLocalUri(assetId, mediaType) : (hash ? getThumbnailUrl(hash) : null);
+                  const thumbUrl = isLocal ? getLocalUri(assetId, mediaType, true) : (hash ? getThumbnailUrl(hash) : null);
                   const fullUrl = isLocal ? getLocalUri(assetId, mediaType) : (hash ? (mediaType === 'video' ? getFullVideoUrl(hash) : getFullImageUrl(hash)) : null);
                   return { id: assetId, hash, isLocal, mediaType, thumbUrl, fullUrl };
                 });
@@ -550,7 +554,7 @@ export default function PhotoMapScreen() {
                 const leaves = supercluster.getLeaves(cluster.id, Infinity);
                 const clusterAssets = leaves.map(leaf => {
                   const { assetId, hash, isLocal, mediaType } = leaf.properties;
-                  const thumbUrl = isLocal ? getLocalUri(assetId, mediaType) : (hash ? getThumbnailUrl(hash) : null);
+                  const thumbUrl = isLocal ? getLocalUri(assetId, mediaType, true) : (hash ? getThumbnailUrl(hash) : null);
                   const fullUrl = isLocal ? getLocalUri(assetId, mediaType) : (hash ? (mediaType === 'video' ? getFullVideoUrl(hash) : getFullImageUrl(hash)) : null);
                   return { id: assetId, hash, isLocal, mediaType, thumbUrl, fullUrl };
                 });
@@ -566,7 +570,7 @@ export default function PhotoMapScreen() {
 
     // Single point
     const { assetId, hash, isLocal, mediaType } = cluster.properties;
-    const thumbUrl = isLocal ? getLocalUri(assetId, mediaType) : (hash ? getThumbnailUrl(hash) : null);
+    const thumbUrl = isLocal ? getLocalUri(assetId, mediaType, true) : (hash ? getThumbnailUrl(hash) : null);
     const fullUrl = isLocal ? getLocalUri(assetId, mediaType) : (hash ? (mediaType === 'video' ? getFullVideoUrl(hash) : getFullImageUrl(hash)) : null);
     
     return (

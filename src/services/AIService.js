@@ -378,6 +378,12 @@ class AIService {
               timeout: 15000
             });
             console.log(`[AIService] Uploaded embedding for server asset ID ${serverAssetId} successfully.`);
+            // Mark remote asset representation in SQLite as having the embedding to avoid re-upload loop
+            await db.runAsync(
+              'INSERT OR IGNORE INTO MediaAsset (id, hash, isLocal) VALUES (?, ?, 0)',
+              [asset.hash, asset.hash]
+            );
+            await this.saveAssetEmbedding(asset.hash, asset.clipEmbedding, 0);
           } catch (e) {
             console.warn(`[AIService] Failed to upload embedding for ${asset.hash}:`, e.message);
           }
@@ -386,6 +392,11 @@ class AIService {
       }
 
       // Part B: Download remote embeddings and phash from server
+      const savedRemoteAI = await SecureStore.getItemAsync('lomorage_remote_ai_processing');
+      const remoteAIEnabled = savedRemoteAI === 'true';
+      if (!remoteAIEnabled) {
+        console.log('[AIService] Skip remote embedding download: remote AI indexing disabled.');
+      } else {
       let hasMoreDownloads = true;
       while (hasMoreDownloads) {
         const remotePendingDownload = await db.getAllAsync(`
@@ -522,6 +533,7 @@ class AIService {
           }
         }
       }
+      } // end else remoteAIEnabled
 
     } catch (error) {
       console.error('[AIService] Error in syncEmbeddings:', error);
@@ -1008,6 +1020,9 @@ class AIService {
               width = localInfo.width || 0;
               height = localInfo.height || 0;
               displayUri = localInfo.localUri || localInfo.uri;
+              if (Platform.OS === 'android' && displayUri && displayUri.startsWith('content://') && (localInfo.mediaType === 'video' || displayUri.includes('/video/'))) {
+                displayUri = `${displayUri}/thumbnail`;
+              }
               
               if (displayUri) {
                 const fileInfo = await FileSystem.getInfoAsync(displayUri, { size: true });

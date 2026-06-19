@@ -115,6 +115,9 @@ export default function HomeScreen({ navigation, route }) {
     const [searchQuery, setSearchQuery] = useState('');
     const [searchResults, setSearchResults] = useState([]);
     const [isSearchLoading, setIsSearchLoading] = useState(false);
+    const [aiStatus, setAiStatus] = useState(null);
+    const aiPillOpacity = useRef(new Animated.Value(0)).current;
+    const aiPillTimer = useRef(null);
     
     const { debugMode, excludedAlbums } = useSettings();
 
@@ -335,7 +338,12 @@ export default function HomeScreen({ navigation, route }) {
     const safeUri = useCallback((uri) => {
         if (!uri) return null;
         if (uri.startsWith('http')) return uri;
-        if (uri.startsWith('content://')) return uri;
+        if (uri.startsWith('content://')) {
+            if (Platform.OS === 'android' && uri.includes('/video/')) {
+                return `${uri}/thumbnail`;
+            }
+            return uri;
+        }
         // iOS Photos framework URIs — must be passed as-is to the Image component
         if (uri.startsWith('ph://')) return uri;
         if (uri.startsWith('asset-library://')) return uri;
@@ -802,8 +810,25 @@ const formatSpeed = (bytesPerSec) => {
             }
         });
 
+        // AI processing status pill
+        const subAI = DeviceEventEmitter.addListener('ai_processing_status', (status) => {
+            setAiStatus(status);
+            if (status?.isProcessing) {
+                if (aiPillTimer.current) clearTimeout(aiPillTimer.current);
+                Animated.timing(aiPillOpacity, { toValue: 1, duration: 250, useNativeDriver: true }).start();
+            } else {
+                // Fade out after 2 seconds when done
+                aiPillTimer.current = setTimeout(() => {
+                    Animated.timing(aiPillOpacity, { toValue: 0, duration: 500, useNativeDriver: true }).start(() => {
+                        setAiStatus(null);
+                    });
+                }, 2000);
+            }
+        });
+
         return () => { 
             if (flushTimerRef.current) clearInterval(flushTimerRef.current);
+            if (aiPillTimer.current) clearTimeout(aiPillTimer.current);
             isMounted.current = false; 
             subscription.remove();
             memoryWarning.remove();
@@ -812,6 +837,7 @@ const formatSpeed = (bytesPerSec) => {
             subBackupState.remove();
             subBackupProgress.remove();
             subRemoteAssets.remove();
+            subAI.remove();
         };
     }, [loadAndSync]);
 
@@ -823,6 +849,17 @@ const formatSpeed = (bytesPerSec) => {
     useEffect(() => {
         GalleryStore.setAssets(assets);
     }, [assets]);
+
+    // TODO: REMOVE after UI verification — emits a fake AI status to test the pill
+    useEffect(() => {
+        const t1 = setTimeout(() => {
+            DeviceEventEmitter.emit('ai_processing_status', { isProcessing: true, current: 12, total: 348, message: '正在分析照片...' });
+        }, 2000);
+        const t2 = setTimeout(() => {
+            DeviceEventEmitter.emit('ai_processing_status', { isProcessing: false, current: 348, total: 348, message: '分析完成' });
+        }, 5000);
+        return () => { clearTimeout(t1); clearTimeout(t2); };
+    }, []);
 
     const loadAndSync = useCallback(async () => {
         if (assetsCountRef.current === 0) {
@@ -1405,6 +1442,24 @@ const formatSpeed = (bytesPerSec) => {
                     </View>
                 </View>
             </Modal>
+
+            {/* AI Processing Pill — Google Photos style, non-intrusive */}
+            {aiStatus && (
+                <Animated.View style={[styles.aiPill, { opacity: aiPillOpacity }]} pointerEvents="none">
+                    {aiStatus.isProcessing ? (
+                        <ActivityIndicator size="small" color="#fff" style={{ marginRight: 8 }} />
+                    ) : (
+                        <Text style={{ fontSize: 14, marginRight: 6 }}>✓</Text>
+                    )}
+                    <Text style={styles.aiPillText} numberOfLines={1}>
+                        {aiStatus.isProcessing && aiStatus.total > 0
+                            ? `分析照片 ${aiStatus.current}/${aiStatus.total}`
+                            : aiStatus.isProcessing
+                            ? (aiStatus.message || '正在分析照片...')
+                            : '分析完成'}
+                    </Text>
+                </Animated.View>
+            )}
         </View>
     );
 }
@@ -1437,6 +1492,29 @@ const styles = StyleSheet.create({
         fontSize: 14,
         color: '#666',
         marginTop: 2,
+    },
+    aiPill: {
+        position: 'absolute',
+        bottom: 16,
+        alignSelf: 'center',
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: 'rgba(30, 30, 30, 0.82)',
+        paddingHorizontal: 16,
+        paddingVertical: 9,
+        borderRadius: 24,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.25,
+        shadowRadius: 6,
+        elevation: 6,
+        maxWidth: '75%',
+    },
+    aiPillText: {
+        color: '#fff',
+        fontSize: 13,
+        fontWeight: '500',
+        letterSpacing: 0.1,
     },
     errorBanner: {
         flexDirection: 'row',

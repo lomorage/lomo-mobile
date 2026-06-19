@@ -225,24 +225,22 @@ class AssetDBService {
     if (!this.db) return;
     return await MetricsTracker.measure('AssetDBService_syncUploadedStatus', async () => {
       try {
-        await this.db.withExclusiveTransactionAsync(async () => {
-          // 1. Mark as uploaded if the hash exists in the remote assets (isLocal = 0)
-          await this.db.execAsync(`
-            UPDATE MediaAsset 
-            SET uploaded = 1 
-            WHERE isLocal = 1 
-              AND hash IN (SELECT hash FROM MediaAsset WHERE isLocal = 0);
-          `);
-          
-          // 2. Mark as NOT uploaded if the hash does not exist in remote assets
-          await this.db.execAsync(`
-            UPDATE MediaAsset 
-            SET uploaded = 0 
-            WHERE isLocal = 1 
-              AND hash IS NOT NULL
-              AND hash NOT IN (SELECT hash FROM MediaAsset WHERE isLocal = 0);
-          `);
-        });
+        // 1. Mark as uploaded if the hash exists in the remote assets (isLocal = 0)
+        await this.db.execAsync(`
+          UPDATE MediaAsset 
+          SET uploaded = 1 
+          WHERE isLocal = 1 
+            AND hash IN (SELECT hash FROM MediaAsset WHERE isLocal = 0);
+        `);
+        
+        // 2. Mark as NOT uploaded if the hash does not exist in remote assets
+        await this.db.execAsync(`
+          UPDATE MediaAsset 
+          SET uploaded = 0 
+          WHERE isLocal = 1 
+            AND hash IS NOT NULL
+            AND hash NOT IN (SELECT hash FROM MediaAsset WHERE isLocal = 0);
+        `);
         console.log('[AssetDBService] Successfully synced uploaded status within SQLite.');
       } catch (error) {
         console.error('[AssetDBService] Failed to sync uploaded status:', error);

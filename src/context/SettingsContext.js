@@ -205,6 +205,11 @@ export function SettingsProvider({ children }) {
             const newValue = !remoteAIProcessingEnabled;
             await SecureStore.setItemAsync('lomorage_remote_ai_processing', newValue.toString());
             setRemoteAIProcessingEnabled(newValue);
+            if (newValue && aiEnabled) {
+                // Immediately start syncing remote embeddings
+                const AIService = require('../services/AIService').default;
+                AIService.syncEmbeddings().catch(e => console.warn('[SettingsContext] Remote AI sync failed:', e.message));
+            }
         } catch (error) {
             console.error('Failed to update remote AI processing setting', error);
         }
@@ -217,9 +222,10 @@ export function SettingsProvider({ children }) {
             setAIWifiOnly(newValue);
             if (aiEnabled) {
                 const AIService = require('../services/AIService').default;
-                AIService.processLocalEmbeddings(30).then(() => {
-                    AIService.syncEmbeddings().catch(e => console.warn('[SettingsContext] AI sync failed:', e.message));
-                }).catch(e => console.warn(e));
+                (async () => {
+                    await AIService.processLocalEmbeddings(30);
+                    await AIService.syncEmbeddings();
+                })().catch(e => console.warn('[SettingsContext] AI sync failed:', e.message));
             }
         } catch (error) {
             console.error('Failed to update AI Wi-Fi only setting', error);
@@ -233,9 +239,10 @@ export function SettingsProvider({ children }) {
             setAIChargingOnly(newValue);
             if (aiEnabled) {
                 const AIService = require('../services/AIService').default;
-                AIService.processLocalEmbeddings(30).then(() => {
-                    AIService.syncEmbeddings().catch(e => console.warn('[SettingsContext] AI sync failed:', e.message));
-                }).catch(e => console.warn(e));
+                (async () => {
+                    await AIService.processLocalEmbeddings(30);
+                    await AIService.syncEmbeddings();
+                })().catch(e => console.warn('[SettingsContext] AI sync failed:', e.message));
             }
         } catch (error) {
             console.error('Failed to update AI charging only setting', error);
@@ -249,9 +256,10 @@ export function SettingsProvider({ children }) {
             setAiEnabled(newValue);
             if (newValue) {
                 const AIService = require('../services/AIService').default;
-                AIService.processLocalEmbeddings(30).then(() => {
-                    AIService.syncEmbeddings().catch(e => console.warn('[SettingsContext] AI sync failed:', e.message));
-                }).catch(e => console.warn(e));
+                (async () => {
+                    await AIService.processLocalEmbeddings(30);
+                    await AIService.syncEmbeddings();
+                })().catch(e => console.warn('[SettingsContext] AI sync failed:', e.message));
             }
         } catch (error) {
             console.error('Failed to update AI enabled setting', error);
