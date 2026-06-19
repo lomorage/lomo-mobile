@@ -335,11 +335,11 @@ export default function HomeScreen({ navigation, route }) {
     const localAssetsRef = useRef([]);
     const remoteAssetsListRef = useRef([]);
 
-    const safeUri = useCallback((uri) => {
+    const safeUri = useCallback((uri, mediaType) => {
         if (!uri) return null;
         if (uri.startsWith('http')) return uri;
         if (uri.startsWith('content://')) {
-            if (Platform.OS === 'android' && uri.includes('/video/')) {
+            if (Platform.OS === 'android' && (mediaType === 'video' || uri.includes('/video/'))) {
                 return `${uri}/thumbnail`;
             }
             return uri;
@@ -850,16 +850,7 @@ const formatSpeed = (bytesPerSec) => {
         GalleryStore.setAssets(assets);
     }, [assets]);
 
-    // TODO: REMOVE after UI verification — emits a fake AI status to test the pill
-    useEffect(() => {
-        const t1 = setTimeout(() => {
-            DeviceEventEmitter.emit('ai_processing_status', { isProcessing: true, current: 12, total: 348, message: '正在分析照片...' });
-        }, 2000);
-        const t2 = setTimeout(() => {
-            DeviceEventEmitter.emit('ai_processing_status', { isProcessing: false, current: 348, total: 348, message: '分析完成' });
-        }, 5000);
-        return () => { clearTimeout(t1); clearTimeout(t2); };
-    }, []);
+
 
     const loadAndSync = useCallback(async () => {
         if (assetsCountRef.current === 0) {
@@ -978,7 +969,7 @@ const formatSpeed = (bytesPerSec) => {
 
         let thumbnailUri = (asset.status === 'remote' && asset.hash)
             ? `${AuthService.getServerUrl()}/preview/${asset.hash}?width=320&height=-1&token=${AuthService.getToken()}`
-            : safeUri(asset.uri);
+            : safeUri(asset.uri, asset.mediaType);
 
         if (asset.status === 'remote' && asset.localCachePath) {
             thumbnailUri = asset.localCachePath;
@@ -1418,7 +1409,7 @@ const formatSpeed = (bytesPerSec) => {
                                 const statsText = [sizeStr, speedStr].filter(Boolean).join(' • ');
                                 return (
                                     <View key={asset.id} style={styles.activeUploadRow}>
-                                        <Image source={{ uri: safeUri(asset.uri) }} style={styles.activeUploadThumb} cachePolicy="disk" />
+                                        <Image source={{ uri: safeUri(asset.uri, asset.mediaType) }} style={styles.activeUploadThumb} cachePolicy="disk" />
                                         <View style={{ flex: 1, marginLeft: 12 }}>
                                             <Text style={styles.activeUploadName} numberOfLines={1}>{asset.filename || asset.id}</Text>
                                             {statsText ? (

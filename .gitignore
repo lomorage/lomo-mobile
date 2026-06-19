@@ -56,3 +56,6 @@ jest_output*.txt
 lomo-mobile.jks
 credentials.json
 upload_certificate.pem
+
+# SQLite databases
+*.db

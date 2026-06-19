@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { StyleSheet, View, Dimensions, TouchableOpacity, Text, FlatList, Alert, DeviceEventEmitter, Pressable, ActivityIndicator, Animated, Vibration, ScrollView, PanResponder } from 'react-native';
+import { StyleSheet, View, Dimensions, TouchableOpacity, Text, FlatList, Alert, DeviceEventEmitter, Pressable, ActivityIndicator, Animated, Vibration, ScrollView, PanResponder, Platform } from 'react-native';
 import { Image } from 'expo-image';
 import { ChevronLeft, CloudUpload, Trash2, Share, Heart, FolderMinus, Sparkles } from 'lucide-react-native';
 import * as Sharing from 'expo-sharing';
@@ -766,6 +766,8 @@ export default function AssetDetailScreen({ route, navigation }) {
                 // Fetch original asset for full screen viewing to avoid expensive server transcoding
                 staticImageUri = `${baseUrl}/asset/${item.hash}?token=${token}`;
             }
+        } else if (!isRemote && item.mediaType === 'video' && Platform.OS === 'android' && staticImageUri && staticImageUri.startsWith('content://')) {
+            staticImageUri = `${staticImageUri}/thumbnail`;
         }
         // Offline Cache overriding logic:
         if (item.status === 'remote' && item.localCachePath) {
