@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Dimensions
 import { Image } from 'expo-image';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { FlashList } from '@shopify/flash-list';
-import { Folder, Users, Image as ImageIcon, Plus } from 'lucide-react-native';
+import { Folder, Users, Image as ImageIcon, Plus, Copy } from 'lucide-react-native';
 import RemoteAlbumService from '../services/RemoteAlbumService';
 import NetworkQueue from '../services/NetworkQueue';
 
@@ -130,6 +130,25 @@ export default function AlbumsScreen() {
     };
 
     const renderItem = ({ item }) => {
+        if (item.type === 'smart-album') {
+            return (
+                <TouchableOpacity
+                    style={styles.listRow}
+                    onPress={() => navigation.navigate('Duplicates')}
+                >
+                    <View style={styles.coverContainer}>
+                        <View style={[styles.placeholderCover, { backgroundColor: '#FFF2E0' }]}>
+                            <Copy color="#FF9500" size={28} strokeWidth={1.5} />
+                        </View>
+                    </View>
+                    <View style={styles.infoContainer}>
+                        <Text style={styles.titleText} numberOfLines={1}>{item.data.name}</Text>
+                        <Text style={styles.subtitleText}>Smart Album</Text>
+                    </View>
+                </TouchableOpacity>
+            );
+        }
+
         const isFolder = item.type === 'folder';
         const data = item.data;
         
@@ -184,7 +203,17 @@ export default function AlbumsScreen() {
         );
     };
 
-    const items = collection ? collection.getItems() : [];
+    const rawItems = collection ? collection.getItems() : [];
+    const items = [
+        {
+            key: 'smart-duplicates',
+            type: 'smart-album',
+            data: {
+                name: 'Duplicates Cleanup',
+            }
+        },
+        ...rawItems
+    ];
 
     return (
         <View style={styles.container}>

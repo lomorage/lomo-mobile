@@ -414,5 +414,100 @@ class ExpoLomoHasherModule : Module() {
       
       floatArrayToBase64(embedding)
     }
+
+    AsyncFunction("generatePHashAsync") { imageUriString: String ->
+      val uri = Uri.parse(imageUriString)
+      val context = appContext.reactContext ?: throw Exception("React context not available")
+      
+      // Step 1: Decode only bounds to calculate scale factor
+      val options = BitmapFactory.Options().apply {
+          inJustDecodeBounds = true
+      }
+      context.contentResolver.openInputStream(uri).use { stream ->
+          BitmapFactory.decodeStream(stream, null, options)
+      }
+      
+      val width = options.outWidth
+      val height = options.outHeight
+      
+      var inSampleSize = 1
+      val targetSize = 128
+      if (width > targetSize || height > targetSize) {
+          val halfWidth = width / 2
+          val halfHeight = height / 2
+          while (halfWidth / inSampleSize >= targetSize && halfHeight / inSampleSize >= targetSize) {
+              inSampleSize *= 2
+          }
+      }
+      
+      val decodeOptions = BitmapFactory.Options().apply {
+          inSampleSize = inSampleSize
+      }
+      val bitmap = context.contentResolver.openInputStream(uri).use { stream ->
+          BitmapFactory.decodeStream(stream, null, decodeOptions)
+      } ?: throw Exception("Could not decode bitmap for: $imageUriString")
+      
+      // Step 2: Resize to 32x32
+      val scaled = Bitmap.createScaledBitmap(bitmap, 32, 32, true)
+      bitmap.recycle()
+      
+      // Step 3: Grayscale
+      val greyscale = Array(32) { DoubleArray(32) }
+      for (y in 0 until 32) {
+          for (x in 0 until 32) {
+              val pixel = scaled.getPixel(x, y)
+              val r = (pixel shr 16) and 0xff
+              val g = (pixel shr 8) and 0xff
+              val b = pixel and 0xff
+              greyscale[y][x] = (r + g + b) / 3.0
+          }
+      }
+      scaled.recycle()
+      
+      // Step 4: Compute DCT
+      val dct = Array(32) { DoubleArray(32) }
+      val N = 32
+      val c = DoubleArray(32) { 1.0 }
+      c[0] = 1.0 / Math.sqrt(2.0)
+      
+      for (u in 0 until 32) {
+          for (v in 0 until 32) {
+              var sum = 0.0
+              for (i in 0 until 32) {
+                  for (j in 0 until 32) {
+                      sum += Math.cos(((2 * i + 1.0) / (2.0 * N)) * u * Math.PI) * 
+                             Math.cos(((2 * j + 1.0) / (2.0 * N)) * v * Math.PI) * 
+                             greyscale[i][j]
+                  }
+              }
+              sum *= (c[u] * c[v]) / Math.sqrt(2.0 * N)
+              dct[u][v] = sum
+          }
+      }
+      
+      // Step 5: Calculate Average of 8x8 DCT (excluding first element)
+      var dctSum = 0.0
+      for (x in 0 until 8) {
+          for (y in 0 until 8) {
+              dctSum += dct[x][y]
+          }
+      }
+      dctSum -= dct[0][0]
+      val dctAverage = dctSum / 63.0
+      
+      // Step 6: Generate 64-bit hash
+      var result: Long = 0
+      var cnt = 0
+      for (row in 0 until 8) {
+          for (col in 0 until 8) {
+              if ((row != 0 || col != 0) && dct[row][col] > dctAverage) {
+                  result = result or (1L shl cnt)
+              }
+              cnt++
+          }
+      }
+      
+      java.lang.Long.toUnsignedString(result)
+    }
   }
 }

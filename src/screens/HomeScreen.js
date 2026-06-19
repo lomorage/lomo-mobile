@@ -119,6 +119,7 @@ export default function HomeScreen({ navigation, route }) {
     const { debugMode, excludedAlbums } = useSettings();
 
     const isMounted = useRef(true);
+    const isProgrammaticSearchRef = useRef(false);
     const appState = useRef(AppState.currentState);
 
     const listRef = useRef(null);
@@ -156,40 +157,65 @@ export default function HomeScreen({ navigation, route }) {
         if (searchImageId) {
             (async () => {
                 try {
+                    isProgrammaticSearchRef.current = true;
                     setIsSearching(true);
+                    isProgrammaticSearchRef.current = true;
                     setSearchQuery(`[相似照片: ${searchImageFilename || '加载中...'}]`);
                     setIsSearchLoading(true);
                     setSearchResults([]);
                     GalleryStore.setAssets([], 'search');
                     
-                    const vector = await AIService.getOrGenerateAssetEmbedding(searchImageId);
-                    if (vector) {
-                        setSearchQuery(`[相似照片: ${searchImageFilename || '图片'}]`);
-                        const results = await AIService.searchSimilarity(vector);
-                        const currentAssets = assetsRef.current || [];
-                        const mappedResults = results.map(res => {
-                            const matched = currentAssets.find(a => a.id === res.id || (res.hash && a.hash === res.hash));
-                            if (matched) {
-                                return { ...matched, score: res.score };
-                            }
-                            return {
-                                ...res,
-                                status: res.isLocal ? 'synced' : 'remote',
-                                uri: res.isLocal 
-                                    ? (Platform.OS === 'android' ? `content://media/external/images/media/${res.id}` : `ph://${res.id}`)
-                                    : `${AuthService.getServerUrl()}/preview/${res.hash}?width=320&height=-1&token=${AuthService.getToken()}`
-                            };
-                        });
-                        
-                        const topResults = mappedResults
-                            .sort((a, b) => b.score - a.score)
-                            .slice(0, 100);
+                    let results = [];
+                    let usedPHash = false;
 
-                        GalleryStore.setAssets(topResults, 'search');
-                        setSearchResults(topResults);
-                    } else {
-                        Alert.alert('提示', '无法计算此图片的特征向量，无法进行相似检索。');
+                    // 1. Try pHash first for finding near-duplicates / identical photos
+                    try {
+                        const phash = await AIService.getOrGenerateAssetPHash(searchImageId);
+                        if (phash && phash !== 'failed' && phash !== 'none') {
+                            console.log(`[HomeScreen] Performing pHash similarity search for asset ${searchImageId}...`);
+                            results = await AIService.searchSimilarityByPHash(phash, 10);
+                            usedPHash = true;
+                        }
+                    } catch (phashError) {
+                        console.warn('[HomeScreen] pHash similarity search failed, falling back to CLIP:', phashError);
                     }
+
+                    // 2. Fall back to CLIP embedding similarity search if pHash fails or returns no results
+                    if (!usedPHash || results.length === 0) {
+                        console.log(`[HomeScreen] Performing CLIP embedding similarity search fallback for asset ${searchImageId}...`);
+                        const vector = await AIService.getOrGenerateAssetEmbedding(searchImageId);
+                        if (vector) {
+                            results = await AIService.searchSimilarity(vector);
+                        } else if (!usedPHash) {
+                            Alert.alert('提示', '无法计算此图片的特征向量或指纹，无法进行相似检索。');
+                            setIsSearchLoading(false);
+                            return;
+                        }
+                    }
+
+                    isProgrammaticSearchRef.current = true;
+                    setSearchQuery(`[相似照片: ${searchImageFilename || '图片'}]`);
+                    const currentAssets = assetsRef.current || [];
+                    const mappedResults = results.map(res => {
+                        const matched = currentAssets.find(a => a.id === res.id || (res.hash && a.hash === res.hash));
+                        if (matched) {
+                            return { ...matched, score: res.score, isPHash: res.isPHash };
+                        }
+                        return {
+                            ...res,
+                            status: res.isLocal ? 'synced' : 'remote',
+                            uri: res.isLocal 
+                                ? (Platform.OS === 'android' ? `content://media/external/images/media/${res.id}` : `ph://${res.id}`)
+                                : `${AuthService.getServerUrl()}/preview/${res.hash}?width=320&height=-1&token=${AuthService.getToken()}`
+                        };
+                    });
+                    
+                    const topResults = mappedResults
+                        .sort((a, b) => b.score - a.score)
+                        .slice(0, 100);
+
+                    GalleryStore.setAssets(topResults, 'search');
+                    setSearchResults(topResults);
                 } catch (e) {
                     console.error('[HomeScreen] Image search error:', e);
                 } finally {
@@ -203,7 +229,9 @@ export default function HomeScreen({ navigation, route }) {
 
     // Handle clicking a Smart Category Tag
     const handleTagPress = async (tag) => {
+        isProgrammaticSearchRef.current = true;
         setIsSearching(true);
+        isProgrammaticSearchRef.current = true;
         setSearchQuery(tag.label);
         setIsSearchLoading(true);
         setSearchResults([]);
@@ -243,6 +271,16 @@ export default function HomeScreen({ navigation, route }) {
             setSearchResults([]);
             GalleryStore.setAssets([], 'search');
             setIsSearchLoading(false);
+            return;
+        }
+
+        if (isProgrammaticSearchRef.current) {
+            console.log('[HomeScreen] Skipping general search effect (programmatic query:', searchQuery, ')');
+            isProgrammaticSearchRef.current = false;
+            return;
+        }
+
+        if (searchQuery.startsWith('[')) {
             return;
         }
 
@@ -706,6 +744,12 @@ const formatSpeed = (bytesPerSec) => {
             }
             appState.current = nextAppState;
         });
+
+        // Clear expo-image memory cache when system signals low memory
+        const memoryWarning = AppState.addEventListener('memoryWarning', () => {
+            console.warn('[HomeScreen] Low memory warning — clearing image memory cache');
+            Image.clearMemoryCache?.();
+        });
         
         const subDelete = DeviceEventEmitter.addListener('assetDeleted', (deletedId) => {
             setAssets(prev => prev.filter(a => a.id !== deletedId));
@@ -762,6 +806,7 @@ const formatSpeed = (bytesPerSec) => {
             if (flushTimerRef.current) clearInterval(flushTimerRef.current);
             isMounted.current = false; 
             subscription.remove();
+            memoryWarning.remove();
             subDelete.remove();
             subUpdate.remove();
             subBackupState.remove();
@@ -911,7 +956,7 @@ const formatSpeed = (bytesPerSec) => {
                     source={{ uri: thumbnailUri }}
                     style={styles.image}
                     contentFit="cover"
-                    cachePolicy="memory-disk"
+                    cachePolicy="disk"
                     transition={0}
                     recyclingKey={asset.id ? String(asset.id) : null}
                     onLoadStart={() => {
@@ -958,7 +1003,9 @@ const formatSpeed = (bytesPerSec) => {
                 {asset.score !== undefined ? (
                     <View style={styles.scoreBadge}>
                         <Text style={styles.scoreText}>
-                            {Math.min(99, Math.max(50, Math.round(50 + (asset.score - 0.18) * 250)))}%匹配
+                            {asset.isPHash 
+                                ? `${Math.round(asset.score * 100)}%匹配` 
+                                : `${Math.min(99, Math.max(50, Math.round(50 + (asset.score - 0.18) * 250)))}%匹配`}
                         </Text>
                     </View>
                 ) : null}
@@ -979,6 +1026,7 @@ const formatSpeed = (bytesPerSec) => {
             prevProps.asset.hash !== nextProps.asset.hash ||
             prevProps.asset.uri !== nextProps.asset.uri ||
             prevProps.asset.score !== nextProps.asset.score ||
+            prevProps.asset.isPHash !== nextProps.asset.isPHash ||
             prevProps.source !== nextProps.source
         ) return false;
         if (prevProps.debugMode !== nextProps.debugMode) return false;
@@ -1025,7 +1073,8 @@ const formatSpeed = (bytesPerSec) => {
                 prevItems[i].status !== nextItems[i].status ||
                 prevItems[i].hash !== nextItems[i].hash ||
                 prevItems[i].uri !== nextItems[i].uri ||
-                prevItems[i].score !== nextItems[i].score) {
+                prevItems[i].score !== nextItems[i].score ||
+                prevItems[i].isPHash !== nextItems[i].isPHash) {
                 return false;
             }
         }
@@ -1236,6 +1285,7 @@ const formatSpeed = (bytesPerSec) => {
                         stickyHeaderIndices={stickyHeaderIndices}
                         getItemType={(item) => item.type}
                         estimatedItemSize={ITEM_SIZE}
+                        drawDistance={ITEM_SIZE * 6}
                         showsVerticalScrollIndicator={false}
                         scrollEventThrottle={16}
                         onScroll={(e) => {

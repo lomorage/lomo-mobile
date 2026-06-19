@@ -384,6 +384,47 @@ class MediaService {
       throw e;
     }
   }
+
+  async deleteLocalAssets(localIds) {
+    try {
+      const realIds = localIds.map(id => id.startsWith('local-') ? id.replace('local-', '') : id);
+      console.log(`[MediaService] Deleting local assets natively in bulk:`, realIds);
+      await MediaLibrary.deleteAssetsAsync(realIds);
+      return true;
+    } catch (error) {
+      console.error('[MediaService] Error deleting local assets:', error.message);
+      if (error.message && error.message.includes("didn't grant write permission")) {
+         throw new Error("System deletion was cancelled. Deletion requires you to explicitly tap 'Allow' in the popup.");
+      }
+      throw error;
+    }
+  }
+
+  async deleteRemoteAssets(items) {
+    try {
+      const serverUrl = AuthService.getServerUrl();
+      const token = AuthService.getToken();
+      
+      const payload = {
+        List: items.map(item => ({
+          ID: item.idOrHash,
+          Type: item.isHash ? 1 : 0
+        }))
+      };
+
+      console.log(`[MediaService] Deleting ${items.length} remote assets in bulk...`);
+      
+      const response = await axios.delete(`${serverUrl}/asset`, {
+        headers: { Authorization: `token=${token}` },
+        data: payload
+      });
+
+      return response.status === 200;
+    } catch (error) {
+      console.error('[MediaService] Error deleting remote assets in bulk:', error.message);
+      throw error;
+    }
+  }
 }
 
 export default new MediaService();

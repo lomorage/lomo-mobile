@@ -1,0 +1,883 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import { 
+    StyleSheet, 
+    View, 
+    Text, 
+    TouchableOpacity, 
+    ActivityIndicator, 
+    FlatList, 
+    Dimensions, 
+    Alert, 
+    Platform, 
+    Modal,
+    ScrollView
+} from 'react-native';
+import { Image } from 'expo-image';
+import { useNavigation } from '@react-navigation/native';
+import { ChevronLeft, Trash2, X, Check, Eye, Copy } from 'lucide-react-native';
+
+import AIService from '../services/AIService';
+import AssetDBService from '../services/AssetDBService';
+import MediaService from '../services/MediaService';
+
+const { width } = Dimensions.get('window');
+
+export default function DuplicatesScreen() {
+    const navigation = useNavigation();
+    const [loading, setLoading] = useState(true);
+    const [deleting, setDeleting] = useState(false);
+    const [groups, setGroups] = useState([]);
+    const [selectedMap, setSelectedMap] = useState({}); // id -> boolean
+    
+    // Compare modal state
+    const [compareGroup, setCompareGroup] = useState(null);
+    const [compareIndex, setCompareIndex] = useState(0);
+
+    const loadDuplicates = async () => {
+        setLoading(true);
+        try {
+            console.log('[DuplicatesScreen] Running duplicate detection algorithm...');
+            const result = await AIService.findDuplicateGroups();
+            setGroups(result);
+            
+            // Initialize selection map:
+            // For each group, group[0] is the highest quality (unselected by default)
+            // group[1...N] are lower quality duplicates (selected for deletion by default)
+            const initialMap = {};
+            result.forEach(group => {
+                group.slice(1).forEach(asset => {
+                    initialMap[asset.id] = true;
+                });
+            });
+            setSelectedMap(initialMap);
+        } catch (error) {
+            console.error('[DuplicatesScreen] Failed to load duplicates:', error);
+            Alert.alert('Error', 'Failed to load duplicates');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        const unsubscribe = navigation.addListener('focus', () => {
+            loadDuplicates();
+        });
+        return unsubscribe;
+    }, [navigation]);
+
+    // Toggle photo selection
+    const toggleSelect = (id) => {
+        setSelectedMap(prev => ({
+            ...prev,
+            [id]: !prev[id]
+        }));
+    };
+
+    // Ignore an entire group of duplicates
+    const handleIgnoreGroup = (group) => {
+        if (!group || group.length === 0) return;
+
+        // Capture IDs as primitives BEFORE the Alert opens, to avoid stale closure issues
+        const assetIds = group.map(a => a.id);
+        const firstId = group[0]?.id;
+
+        Alert.alert(
+            'Ignore Group',
+            'This group will not appear in the cleanup list again.',
+            [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                    text: 'Ignore',
+                    style: 'destructive',
+                    onPress: () => {
+                        // Optimistically remove from UI immediately using pre-captured primitives
+                        setGroups(prev => prev.filter(g => g[0]?.id !== firstId));
+                        setSelectedMap(prev => {
+                            const copy = { ...prev };
+                            assetIds.forEach(id => delete copy[id]);
+                            return copy;
+                        });
+                        // Persist to DB in background
+                        AssetDBService.ignoreAssetsForDuplicates(assetIds).catch(e => {
+                            console.error('[DuplicatesScreen] Failed to ignore group in DB:', e);
+                        });
+                    }
+                }
+            ]
+        );
+    };
+
+    // Calculate total size and count of selected items for deletion
+    let selectedCount = 0;
+    let selectedSize = 0; // bytes
+
+    groups.forEach(group => {
+        group.forEach(asset => {
+            if (selectedMap[asset.id]) {
+                selectedCount++;
+                selectedSize += asset.size || 0;
+            }
+        });
+    });
+
+    const formatSize = (bytes) => {
+        if (!bytes) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    };
+
+    // Perform bulk deletion of selected duplicates
+    const handleDeleteSelected = async () => {
+        if (selectedCount === 0) return;
+
+        Alert.alert(
+            'Confirm Deletion',
+            `Are you sure you want to delete the selected ${selectedCount} photos? This will free up ${formatSize(selectedSize)}.`,
+            [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                    text: 'Confirm Delete',
+                    style: 'destructive',
+                    onPress: async () => {
+                        setDeleting(true);
+                        try {
+                            const localIdsToDelete = [];
+                            const remoteItemsToDelete = [];
+                            const allIdsOrHashes = [];
+
+                            groups.forEach(group => {
+                                group.forEach(asset => {
+                                    if (selectedMap[asset.id]) {
+                                        allIdsOrHashes.push(asset.id);
+                                        if (asset.hash) allIdsOrHashes.push(asset.hash);
+
+                                        if (asset.isLocal) {
+                                            localIdsToDelete.push(asset.id);
+                                        } else {
+                                            remoteItemsToDelete.push({
+                                                idOrHash: asset.hash,
+                                                isHash: true
+                                            });
+                                        }
+                                    }
+                                });
+                            });
+
+                            // 1. Delete local assets first (will prompt OS confirmation dialog)
+                            if (localIdsToDelete.length > 0) {
+                                try {
+                                    await MediaService.deleteLocalAssets(localIdsToDelete);
+                                } catch (le) {
+                                    console.log('[DuplicatesScreen] Local deletion cancelled or failed:', le.message);
+                                    Alert.alert('Info', 'Permission denied or cancelled. Deletion aborted.');
+                                    setDeleting(false);
+                                    return;
+                                }
+                            }
+
+                            // 2. Delete remote assets in bulk from server
+                            if (remoteItemsToDelete.length > 0) {
+                                try {
+                                    await MediaService.deleteRemoteAssets(remoteItemsToDelete);
+                                } catch (re) {
+                                    console.warn('[DuplicatesScreen] Remote deletion failed:', re.message);
+                                }
+                            }
+
+                            // 3. Remove from local SQLite database in a single transaction
+                            await AssetDBService.deleteAssets(allIdsOrHashes);
+
+                            // 4. Reload duplicates list to reflect changes
+                            Alert.alert('Success', `Selected photos cleaned up successfully!`);
+                            loadDuplicates();
+                        } catch (err) {
+                            console.error('[DuplicatesScreen] Deletion error:', err);
+                            Alert.alert('Error', 'Error cleaning photos: ' + err.message);
+                        } finally {
+                            setDeleting(false);
+                        }
+                    }
+                }
+            ]
+        );
+    };
+
+    const renderGroupItem = ({ item: group, index: groupIndex }) => {
+        // Calculate saving size for duplicates inside this group
+        let groupSaving = 0;
+        group.forEach(asset => {
+            if (selectedMap[asset.id]) groupSaving += asset.size || 0;
+        });
+
+        const formatDate = (timestamp) => {
+            if (!timestamp) return 'Unknown Date';
+            const date = new Date(timestamp);
+            return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+        };
+
+        return (
+            <View style={styles.card}>
+                <View style={styles.cardHeader}>
+                    <View>
+                        <Text style={styles.cardTitle}>Group {groupIndex + 1} ({group.length} photos)</Text>
+                        <Text style={styles.cardSubtitle}>
+                            {formatDate(group[0]?.createTime)}
+                            {groupSaving > 0 ? ` • Save ${formatSize(groupSaving)}` : ''}
+                        </Text>
+                    </View>
+                    <TouchableOpacity 
+                        style={styles.ignoreButton} 
+                        onPress={() => handleIgnoreGroup(group)}
+                    >
+                        <Text style={styles.ignoreText}>Ignore</Text>
+                    </TouchableOpacity>
+                </View>
+
+                <ScrollView 
+                    horizontal 
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.scrollContainer}
+                >
+                    {group.map((asset, idx) => {
+                        const isBest = idx === 0;
+                        const isSelected = !!selectedMap[asset.id];
+                        
+                        return (
+                            <View key={asset.id} style={styles.photoContainer}>
+                                <TouchableOpacity 
+                                    activeOpacity={0.8}
+                                    style={styles.imageWrapper}
+                                    onPress={() => toggleSelect(asset.id)}
+                                >
+                                    <Image 
+                                        source={{ uri: asset.displayUri }} 
+                                        style={styles.thumbnail}
+                                        contentFit="cover"
+                                        cachePolicy="memory-disk"
+                                    />
+                                    
+                                    {/* Keep / Duplicate Badge */}
+                                    <View style={[styles.badge, isBest ? styles.badgeKeep : styles.badgeDup]}>
+                                        <Text style={[styles.badgeText, isBest ? styles.badgeTextKeep : styles.badgeTextDup]}>
+                                            {isBest ? 'Keep' : 'Duplicate'}
+                                        </Text>
+                                    </View>
+
+                                    {/* Selection Checkbox Overlay */}
+                                    <View style={[styles.checkbox, isSelected && styles.checkboxSelected]}>
+                                        {isSelected && <Check color="#fff" size={14} strokeWidth={3} />}
+                                    </View>
+                                </TouchableOpacity>
+
+                                {/* Photo info and comparison button */}
+                                <View style={styles.photoInfo}>
+                                    <Text style={styles.resolutionText}>
+                                        {asset.width && asset.height ? `${asset.width}x${asset.height}` : 'Unknown Res'}
+                                    </Text>
+                                    <Text style={styles.sizeText}>{formatSize(asset.size)}</Text>
+                                    <Text style={styles.storageType}>
+                                        {asset.isLocal ? 'Local' : 'Cloud'}
+                                    </Text>
+                                    
+                                    <TouchableOpacity 
+                                        style={styles.previewIconBtn}
+                                        onPress={() => {
+                                            setCompareGroup(group);
+                                            setCompareIndex(idx);
+                                        }}
+                                    >
+                                        <Eye color="#007AFF" size={14} />
+                                        <Text style={styles.previewText}>Compare</Text>
+                                    </TouchableOpacity>
+                                </View>
+                            </View>
+                        );
+                    })}
+                </ScrollView>
+            </View>
+        );
+    };
+
+    return (
+        <View style={styles.container}>
+            {/* Header */}
+            <View style={styles.header}>
+                <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()}>
+                    <ChevronLeft color="#007AFF" size={26} />
+                </TouchableOpacity>
+                <View style={styles.headerTitleContainer}>
+                    <Text style={styles.title}>Duplicates Cleanup</Text>
+                    {!loading && groups.length > 0 && (
+                        <Text style={styles.subtitle}>Found {groups.length} groups of duplicates</Text>
+                    )}
+                </View>
+                <View style={{ width: 40 }} />
+            </View>
+
+            {/* Content Body */}
+            {loading ? (
+                <View style={styles.centerContainer}>
+                    <ActivityIndicator size="large" color="#007AFF" />
+                    <Text style={styles.loadingText}>Scanning library for duplicates...</Text>
+                    <Text style={styles.loadingSubtext}>This may take a few seconds, clustering photos by perceptual hash...</Text>
+                </View>
+            ) : groups.length === 0 ? (
+                <View style={styles.centerContainer}>
+                    <View style={styles.emptyIconContainer}>
+                        <Copy color="#A2A2A2" size={60} strokeWidth={1.2} />
+                    </View>
+                    <Text style={styles.emptyText}>Your library is clean!</Text>
+                    <Text style={styles.emptySubtext}>No duplicates or highly similar photos found.</Text>
+                    <TouchableOpacity style={styles.reloadBtn} onPress={loadDuplicates}>
+                        <Text style={styles.reloadBtnText}>Rescan</Text>
+                    </TouchableOpacity>
+                </View>
+            ) : (
+                <FlatList
+                    data={groups}
+                    renderItem={renderGroupItem}
+                    keyExtractor={(item) => `group-${item[0]?.id || item[0]?.hash || Math.random()}`}
+                    contentContainerStyle={styles.listContent}
+                />
+            )}
+
+            {/* Sticky Action Footer */}
+            {!loading && groups.length > 0 && (
+                <View style={styles.footer}>
+                    <View style={styles.footerLeft}>
+                        <Text style={styles.footerCount}>Selected {selectedCount} photos</Text>
+                        <Text style={styles.footerSavings}>Save {formatSize(selectedSize)}</Text>
+                    </View>
+                    <TouchableOpacity 
+                        disabled={selectedCount === 0 || deleting}
+                        style={[styles.deleteBtn, selectedCount === 0 && styles.deleteBtnDisabled]}
+                        onPress={handleDeleteSelected}
+                    >
+                        {deleting ? (
+                            <ActivityIndicator color="#fff" size="small" />
+                        ) : (
+                            <>
+                                <Trash2 color="#fff" size={18} />
+                                <Text style={styles.deleteBtnText}>Clean Selected</Text>
+                            </>
+                        )}
+                    </TouchableOpacity>
+                </View>
+            )}
+
+            {/* Swipeable Horizontal Comparison Modal */}
+            {compareGroup && (
+                <Modal 
+                    visible={true} 
+                    transparent={true} 
+                    animationType="slide"
+                    onRequestClose={() => setCompareGroup(null)}
+                >
+                    <View style={styles.modalBg}>
+                        <View style={styles.modalHeader}>
+                            <View>
+                                <Text style={styles.modalTitle}>Compare Duplicates</Text>
+                                <Text style={styles.modalSubtitle}>
+                                    Photo {compareIndex + 1} of {compareGroup.length} (Swipe left/right to compare)
+                                </Text>
+                            </View>
+                            <TouchableOpacity 
+                                style={styles.modalCloseBtn}
+                                onPress={() => setCompareGroup(null)}
+                            >
+                                <X color="#fff" size={24} />
+                            </TouchableOpacity>
+                        </View>
+
+                        <View style={styles.modalSwiperContainer}>
+                            <FlatList
+                                horizontal
+                                pagingEnabled
+                                data={compareGroup}
+                                showsHorizontalScrollIndicator={false}
+                                keyExtractor={(item) => item.id}
+                                initialScrollIndex={compareIndex}
+                                getItemLayout={(data, index) => ({
+                                    length: width,
+                                    offset: width * index,
+                                    index
+                                })}
+                                onMomentumScrollEnd={(e) => {
+                                    const index = Math.round(e.nativeEvent.contentOffset.x / width);
+                                    setCompareIndex(index);
+                                }}
+                                renderItem={({ item, index }) => {
+                                    const isBest = index === 0;
+                                    const isSelected = !!selectedMap[item.id];
+                                    
+                                    return (
+                                        <View style={[styles.modalItemPage, { width }]}>
+                                            <View style={styles.modalImageWrapper}>
+                                                <Image 
+                                                    source={{ uri: item.displayUri }} 
+                                                    style={styles.modalImage}
+                                                    contentFit="contain"
+                                                />
+                                            </View>
+
+                                            {/* Details of current swiped item */}
+                                            <View style={styles.modalMetaCard}>
+                                                <View style={styles.modalMetaRow}>
+                                                    <View style={[styles.badge, isBest ? styles.badgeKeep : styles.badgeDup, { position: 'relative', top: 0, left: 0, alignSelf: 'flex-start', marginBottom: 12 }]}>
+                                                        <Text style={[styles.badgeText, isBest ? styles.badgeTextKeep : styles.badgeTextDup]}>
+                                                            {isBest ? 'Recommend Keep' : 'Duplicate'}
+                                                        </Text>
+                                                    </View>
+                                                    <Text style={styles.modalFilename} numberOfLines={1}>{item.filename || 'Photo Details'}</Text>
+                                                </View>
+
+                                                <View style={styles.modalSpecsRow}>
+                                                    <View style={styles.specColumn}>
+                                                        <Text style={styles.specLabel}>Resolution</Text>
+                                                        <Text style={styles.specValue}>
+                                                            {item.width && item.height ? `${item.width}x${item.height}` : 'Unknown'}
+                                                        </Text>
+                                                    </View>
+                                                    <View style={styles.specColumn}>
+                                                        <Text style={styles.specLabel}>File Size</Text>
+                                                        <Text style={styles.specValue}>{formatSize(item.size)}</Text>
+                                                    </View>
+                                                    <View style={styles.specColumn}>
+                                                        <Text style={styles.specLabel}>Location</Text>
+                                                        <Text style={styles.specValue}>{item.isLocal ? 'Local' : 'Cloud Only'}</Text>
+                                                    </View>
+                                                </View>
+
+                                                {/* Select button for current swiped item */}
+                                                <TouchableOpacity 
+                                                    style={[
+                                                        styles.modalSelectBtn, 
+                                                        isSelected ? styles.modalSelectBtnRemove : styles.modalSelectBtnKeep
+                                                    ]}
+                                                    onPress={() => toggleSelect(item.id)}
+                                                >
+                                                    <Text style={styles.modalSelectBtnText}>
+                                                        {isSelected ? 'Keep this photo (Deselect)' : 'Delete this photo (Select)'}
+                                                    </Text>
+                                                </TouchableOpacity>
+                                            </View>
+                                        </View>
+                                    );
+                                }}
+                            />
+                        </View>
+                    </View>
+                </Modal>
+            )}
+        </View>
+    );
+}
+
+const styles = StyleSheet.create({
+    container: {
+        flex: 1,
+        backgroundColor: '#F2F2F7',
+    },
+    header: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        paddingHorizontal: 16,
+        paddingTop: Platform.OS === 'ios' ? 44 : 20,
+        height: Platform.OS === 'ios' ? 100 : 76,
+        backgroundColor: '#fff',
+        borderBottomWidth: 1,
+        borderBottomColor: '#E5E5EA',
+    },
+    backBtn: {
+        width: 40,
+        height: 40,
+        justifyContent: 'center',
+    },
+    headerTitleContainer: {
+        alignItems: 'center',
+    },
+    title: {
+        fontSize: 17,
+        fontWeight: 'bold',
+        color: '#1C1C1E',
+    },
+    subtitle: {
+        fontSize: 12,
+        color: '#8E8E93',
+        marginTop: 2,
+    },
+    centerContainer: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+        paddingHorizontal: 32,
+    },
+    loadingText: {
+        fontSize: 16,
+        fontWeight: '600',
+        color: '#1C1C1E',
+        marginTop: 16,
+        textAlign: 'center',
+    },
+    loadingSubtext: {
+        fontSize: 13,
+        color: '#8E8E93',
+        marginTop: 8,
+        textAlign: 'center',
+    },
+    emptyIconContainer: {
+        width: 100,
+        height: 100,
+        borderRadius: 50,
+        backgroundColor: '#E5E5EA',
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginBottom: 20,
+    },
+    emptyText: {
+        fontSize: 18,
+        fontWeight: 'bold',
+        color: '#1C1C1E',
+        marginBottom: 8,
+        textAlign: 'center',
+    },
+    emptySubtext: {
+        fontSize: 14,
+        color: '#8E8E93',
+        textAlign: 'center',
+        marginBottom: 24,
+    },
+    reloadBtn: {
+        paddingHorizontal: 20,
+        paddingVertical: 10,
+        borderRadius: 20,
+        backgroundColor: '#007AFF',
+    },
+    reloadBtnText: {
+        color: '#fff',
+        fontWeight: 'bold',
+        fontSize: 14,
+    },
+    listContent: {
+        paddingVertical: 8,
+        paddingBottom: 110, // Avoid overlapping with action footer
+    },
+    card: {
+        backgroundColor: '#fff',
+        borderRadius: 16,
+        padding: 16,
+        marginHorizontal: 16,
+        marginVertical: 8,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.05,
+        shadowRadius: 8,
+        elevation: 2,
+    },
+    cardHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: 12,
+        borderBottomWidth: 1,
+        borderBottomColor: '#F2F2F7',
+        paddingBottom: 8,
+    },
+    cardTitle: {
+        fontSize: 15,
+        fontWeight: 'bold',
+        color: '#1C1C1E',
+    },
+    cardSubtitle: {
+        fontSize: 12,
+        color: '#8E8E93',
+        marginTop: 2,
+    },
+    ignoreButton: {
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+        borderRadius: 12,
+        backgroundColor: '#F2F2F7',
+    },
+    ignoreText: {
+        fontSize: 12,
+        color: '#8E8E93',
+        fontWeight: '500',
+    },
+    scrollContainer: {
+        paddingVertical: 4,
+    },
+    photoContainer: {
+        width: 130,
+        marginRight: 12,
+    },
+    imageWrapper: {
+        width: 130,
+        height: 130,
+        borderRadius: 12,
+        overflow: 'hidden',
+        position: 'relative',
+        backgroundColor: '#F2F2F7',
+    },
+    thumbnail: {
+        width: '100%',
+        height: '100%',
+    },
+    badge: {
+        position: 'absolute',
+        top: 6,
+        left: 6,
+        paddingHorizontal: 6,
+        paddingVertical: 3,
+        borderRadius: 6,
+    },
+    badgeKeep: {
+        backgroundColor: '#34C759',
+    },
+    badgeDup: {
+        backgroundColor: 'rgba(0,0,0,0.6)',
+    },
+    badgeText: {
+        fontSize: 9,
+        fontWeight: 'bold',
+    },
+    badgeTextKeep: {
+        color: '#fff',
+    },
+    badgeTextDup: {
+        color: '#FF9500',
+    },
+    checkbox: {
+        position: 'absolute',
+        bottom: 8,
+        right: 8,
+        width: 22,
+        height: 22,
+        borderRadius: 11,
+        borderWidth: 2,
+        borderColor: '#fff',
+        backgroundColor: 'rgba(0,0,0,0.3)',
+        justifyContent: 'center',
+        alignItems: 'center',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.2,
+        shadowRadius: 2,
+    },
+    checkboxSelected: {
+        backgroundColor: '#FF3B30',
+        borderColor: '#FF3B30',
+    },
+    photoInfo: {
+        marginTop: 8,
+        alignItems: 'center',
+    },
+    resolutionText: {
+        fontSize: 10,
+        color: '#8E8E93',
+        textAlign: 'center',
+    },
+    sizeText: {
+        fontSize: 11,
+        fontWeight: '600',
+        color: '#1C1C1E',
+        marginTop: 2,
+        textAlign: 'center',
+    },
+    storageType: {
+        fontSize: 9,
+        color: '#AEAEB2',
+        marginTop: 1,
+        textAlign: 'center',
+    },
+    previewIconBtn: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginTop: 6,
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+        borderRadius: 8,
+        backgroundColor: '#F2F2F7',
+    },
+    previewText: {
+        fontSize: 10,
+        color: '#007AFF',
+        marginLeft: 4,
+        fontWeight: '500',
+    },
+    footer: {
+        position: 'absolute',
+        bottom: 0,
+        left: 0,
+        right: 0,
+        height: 84,
+        backgroundColor: '#fff',
+        borderTopWidth: 1,
+        borderTopColor: '#E5E5EA',
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        paddingHorizontal: 20,
+        paddingBottom: Platform.OS === 'ios' ? 24 : 12,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: -3 },
+        shadowOpacity: 0.05,
+        shadowRadius: 5,
+        elevation: 10,
+    },
+    footerLeft: {
+        justifyContent: 'center',
+    },
+    footerCount: {
+        fontSize: 15,
+        fontWeight: 'bold',
+        color: '#1C1C1E',
+    },
+    footerSavings: {
+        fontSize: 12,
+        color: '#FF3B30',
+        marginTop: 2,
+        fontWeight: '500',
+    },
+    deleteBtn: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: '#FF3B30',
+        paddingHorizontal: 20,
+        height: 44,
+        borderRadius: 22,
+        shadowColor: '#FF3B30',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.2,
+        shadowRadius: 4,
+        elevation: 3,
+    },
+    deleteBtnDisabled: {
+        backgroundColor: '#E5E5EA',
+        shadowOpacity: 0,
+        elevation: 0,
+    },
+    deleteBtnText: {
+        color: '#fff',
+        fontWeight: 'bold',
+        fontSize: 14,
+        marginLeft: 6,
+    },
+    modalBg: {
+        flex: 1,
+        backgroundColor: 'rgba(0,0,0,0.96)',
+        paddingTop: Platform.OS === 'ios' ? 44 : 20,
+    },
+    modalHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        paddingHorizontal: 20,
+        height: 56,
+        borderBottomWidth: 1,
+        borderBottomColor: 'rgba(255,255,255,0.1)',
+        backgroundColor: 'rgba(0,0,0,0.3)',
+    },
+    modalTitle: {
+        color: '#fff',
+        fontSize: 16,
+        fontWeight: 'bold',
+    },
+    modalSubtitle: {
+        color: '#8E8E93',
+        fontSize: 11,
+        marginTop: 2,
+    },
+    modalCloseBtn: {
+        width: 44,
+        height: 44,
+        justifyContent: 'center',
+        alignItems: 'flex-end',
+    },
+    modalSwiperContainer: {
+        flex: 1,
+    },
+    modalItemPage: {
+        flex: 1,
+        justifyContent: 'space-between',
+    },
+    modalImageWrapper: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+        padding: 10,
+    },
+    modalImage: {
+        width: '100%',
+        height: '100%',
+    },
+    modalMetaCard: {
+        backgroundColor: 'rgba(28,28,30,0.95)',
+        borderTopWidth: 1,
+        borderTopColor: 'rgba(255,255,255,0.1)',
+        padding: 20,
+        paddingBottom: Platform.OS === 'ios' ? 34 : 20,
+    },
+    modalMetaRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        borderBottomWidth: 1,
+        borderBottomColor: 'rgba(255,255,255,0.08)',
+        paddingBottom: 10,
+        marginBottom: 12,
+    },
+    modalFilename: {
+        color: '#fff',
+        fontSize: 13,
+        fontWeight: '600',
+        flex: 1,
+        textAlign: 'right',
+        marginLeft: 16,
+    },
+    modalSpecsRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        marginBottom: 20,
+    },
+    specColumn: {
+        flex: 1,
+    },
+    specLabel: {
+        color: '#8E8E93',
+        fontSize: 10,
+        textTransform: 'uppercase',
+        marginBottom: 4,
+    },
+    specValue: {
+        color: '#fff',
+        fontSize: 13,
+        fontWeight: '600',
+    },
+    modalSelectBtn: {
+        height: 46,
+        borderRadius: 23,
+        justifyContent: 'center',
+        alignItems: 'center',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.3,
+        shadowRadius: 4,
+        elevation: 5,
+    },
+    modalSelectBtnKeep: {
+        backgroundColor: '#FF3B30',
+    },
+    modalSelectBtnRemove: {
+        backgroundColor: '#34C759',
+    },
+    modalSelectBtnText: {
+        color: '#fff',
+        fontSize: 14,
+        fontWeight: 'bold',
+    }
+});

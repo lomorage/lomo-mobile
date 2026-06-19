@@ -15,6 +15,9 @@ export function SettingsProvider({ children }) {
     const [excludedAlbums, setExcludedAlbums] = useState([]);
     const [remoteAIProcessingEnabled, setRemoteAIProcessingEnabled] = useState(false);
     const [searchThreshold, setSearchThreshold] = useState(0.25);
+    const [aiWifiOnly, setAIWifiOnly] = useState(true);
+    const [aiChargingOnly, setAIChargingOnly] = useState(true);
+    const [aiEnabled, setAiEnabled] = useState(true);
     const [isLoading, setIsLoading] = useState(true);
 
     useEffect(() => {
@@ -70,6 +73,18 @@ export function SettingsProvider({ children }) {
             const savedThreshold = await SecureStore.getItemAsync('lomorage_search_threshold');
             if (savedThreshold !== null) {
                 setSearchThreshold(parseFloat(savedThreshold));
+            }
+            const savedAIWifi = await SecureStore.getItemAsync('lomorage_ai_wifi_only');
+            if (savedAIWifi !== null) {
+                setAIWifiOnly(savedAIWifi === 'true');
+            }
+            const savedAICharging = await SecureStore.getItemAsync('lomorage_ai_charging_only');
+            if (savedAICharging !== null) {
+                setAIChargingOnly(savedAICharging === 'true');
+            }
+            const savedAIEnabled = await SecureStore.getItemAsync('lomorage_ai_enabled');
+            if (savedAIEnabled !== null) {
+                setAiEnabled(savedAIEnabled === 'true');
             }
         } catch (error) {
             console.error('Failed to load settings', error);
@@ -195,6 +210,54 @@ export function SettingsProvider({ children }) {
         }
     };
 
+    const toggleAIWifiOnly = async () => {
+        try {
+            const newValue = !aiWifiOnly;
+            await SecureStore.setItemAsync('lomorage_ai_wifi_only', newValue.toString());
+            setAIWifiOnly(newValue);
+            if (aiEnabled) {
+                const AIService = require('../services/AIService').default;
+                AIService.processLocalEmbeddings(30).then(() => {
+                    AIService.syncEmbeddings().catch(e => console.warn('[SettingsContext] AI sync failed:', e.message));
+                }).catch(e => console.warn(e));
+            }
+        } catch (error) {
+            console.error('Failed to update AI Wi-Fi only setting', error);
+        }
+    };
+
+    const toggleAIChargingOnly = async () => {
+        try {
+            const newValue = !aiChargingOnly;
+            await SecureStore.setItemAsync('lomorage_ai_charging_only', newValue.toString());
+            setAIChargingOnly(newValue);
+            if (aiEnabled) {
+                const AIService = require('../services/AIService').default;
+                AIService.processLocalEmbeddings(30).then(() => {
+                    AIService.syncEmbeddings().catch(e => console.warn('[SettingsContext] AI sync failed:', e.message));
+                }).catch(e => console.warn(e));
+            }
+        } catch (error) {
+            console.error('Failed to update AI charging only setting', error);
+        }
+    };
+
+    const toggleAIEnabled = async () => {
+        try {
+            const newValue = !aiEnabled;
+            await SecureStore.setItemAsync('lomorage_ai_enabled', newValue.toString());
+            setAiEnabled(newValue);
+            if (newValue) {
+                const AIService = require('../services/AIService').default;
+                AIService.processLocalEmbeddings(30).then(() => {
+                    AIService.syncEmbeddings().catch(e => console.warn('[SettingsContext] AI sync failed:', e.message));
+                }).catch(e => console.warn(e));
+            }
+        } catch (error) {
+            console.error('Failed to update AI enabled setting', error);
+        }
+    };
+
     const updateSearchThreshold = async (val) => {
         try {
             await SecureStore.setItemAsync('lomorage_search_threshold', val.toString());
@@ -240,6 +303,12 @@ export function SettingsProvider({ children }) {
             toggleRemoteAIProcessing,
             searchThreshold,
             updateSearchThreshold,
+            aiWifiOnly,
+            toggleAIWifiOnly,
+            aiChargingOnly,
+            toggleAIChargingOnly,
+            aiEnabled,
+            toggleAIEnabled,
             isLoading
         }}>
             {children}

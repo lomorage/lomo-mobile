@@ -7,6 +7,7 @@ import { useAuth } from '../context/AuthContext';
 import SyncService from '../services/SyncService';
 import AuthService from '../services/AuthService';
 import Logger from '../utils/logger';
+import AIService from '../services/AIService';
 import { Send, Folder, X, PlayCircle } from 'lucide-react-native';
 import * as MediaLibrary from 'expo-media-library';
 import { Image } from 'expo-image';
@@ -76,11 +77,20 @@ export default function SettingsScreen({ navigation }) {
         remoteAIProcessingEnabled,
         toggleRemoteAIProcessing,
         searchThreshold,
-        updateSearchThreshold
+        updateSearchThreshold,
+        aiWifiOnly,
+        toggleAIWifiOnly,
+        aiChargingOnly,
+        toggleAIChargingOnly,
+        aiEnabled,
+        toggleAIEnabled
     } = useSettings();
     const { logout } = useAuth();
     const [stats, setStats] = React.useState({ local: 0, remote: 0 });
     const [isScanning, setIsScanning] = React.useState(false);
+    const [isPHashIndexing, setIsPHashIndexing] = React.useState(false);
+    const [isCLIPIndexing, setIsCLIPIndexing] = React.useState(false);
+    const [aiStatus, setAiStatus] = React.useState({ isProcessing: false, current: 0, total: 0, message: 'Idle' });
     const [isExportingLogs, setIsExportingLogs] = React.useState(false);
     const [serverUrl, setServerUrl] = React.useState(AuthService.getServerUrl());
     const [localUrl, setLocalUrl] = React.useState(AuthService.getLocalUrl());
@@ -117,6 +127,9 @@ export default function SettingsScreen({ navigation }) {
         checkServerReachability();
         fetchServerVersion();
         
+        // Load initial status
+        setAiStatus(AIService.getProcessingStatus());
+
         const sub = DeviceEventEmitter.addListener('onServerUrlChanged', (newUrl) => {
             setServerUrl(newUrl);
             setLocalUrl(AuthService.getLocalUrl());
@@ -124,7 +137,14 @@ export default function SettingsScreen({ navigation }) {
             checkServerReachability(newUrl);
         });
 
-        return () => sub.remove();
+        const aiSub = DeviceEventEmitter.addListener('ai_processing_status', (status) => {
+            setAiStatus(status);
+        });
+
+        return () => {
+            sub.remove();
+            aiSub.remove();
+        };
     }, []);
 
     const fetchServerVersion = async () => {
@@ -420,41 +440,59 @@ export default function SettingsScreen({ navigation }) {
 
             <View style={styles.section}>
                 <Text style={styles.sectionTitle}>AI & Search Settings</Text>
-                
+
                 <View style={styles.settingRow}>
                     <View style={styles.settingTextContainer}>
-                        <Text style={styles.settingLabel}>Index Remote Photos Locally</Text>
-                        <Text style={styles.settingDescription}>Download remote photos' previews and extract embeddings locally when charging and on Wi-Fi (for photos without server embeddings).</Text>
+                        <Text style={styles.settingLabel}>Local AI Features</Text>
+                        <Text style={styles.settingDescription}>Enable on-device duplicate detection and semantic search. Uses offline machine learning models.</Text>
                     </View>
                     <Switch
-                        value={remoteAIProcessingEnabled}
-                        onValueChange={toggleRemoteAIProcessing}
+                        value={aiEnabled}
+                        onValueChange={toggleAIEnabled}
                         trackColor={{ false: '#d1d1d1', true: '#4CAF50' }}
                         thumbColor={'#fff'}
                     />
                 </View>
 
-                <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8 }]}>
-                    <View style={styles.settingTextContainer}>
-                        <Text style={styles.settingLabel}>Search Match Strictness</Text>
-                        <Text style={styles.settingDescription}>Adjust the similarity threshold. Higher values return fewer, more precise results.</Text>
-                    </View>
-                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                        <TouchableOpacity 
-                            onPress={() => updateSearchThreshold(Math.max(0.1, Math.round((searchThreshold - 0.02) * 100) / 100))}
-                            style={styles.stepperButton}
-                        >
-                            <Text style={styles.stepperText}>-</Text>
-                        </TouchableOpacity>
-                        <Text style={styles.stepperValue}>{searchThreshold.toFixed(2)}</Text>
-                        <TouchableOpacity 
-                            onPress={() => updateSearchThreshold(Math.min(0.5, Math.round((searchThreshold + 0.02) * 100) / 100))}
-                            style={styles.stepperButton}
-                        >
-                            <Text style={styles.stepperText}>+</Text>
-                        </TouchableOpacity>
-                    </View>
-                </View>
+                {aiEnabled && (
+                    <>
+                        <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8, paddingTop: 8 }]}>
+                            <View style={styles.settingTextContainer}>
+                                <Text style={styles.settingLabel}>AI Background Indexing Wi-Fi Only</Text>
+                                <Text style={styles.settingDescription}>Only run background feature extraction (phash/embeddings) when connected to a Wi-Fi network.</Text>
+                            </View>
+                            <Switch
+                                value={aiWifiOnly}
+                                onValueChange={toggleAIWifiOnly}
+                                trackColor={{ false: '#d1d1d1', true: '#4CAF50' }}
+                                thumbColor={'#fff'}
+                            />
+                        </View>
+
+                        <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8, paddingTop: 8 }]}>
+                            <View style={styles.settingTextContainer}>
+                                <Text style={styles.settingLabel}>AI Background Indexing Charging Only</Text>
+                                <Text style={styles.settingDescription}>Only run background feature extraction when the device is plugged in and charging to prevent battery drain.</Text>
+                            </View>
+                            <Switch
+                                value={aiChargingOnly}
+                                onValueChange={toggleAIChargingOnly}
+                                trackColor={{ false: '#d1d1d1', true: '#4CAF50' }}
+                                thumbColor={'#fff'}
+                            />
+                        </View>
+
+                        <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8, paddingTop: 8 }]}>
+                            <View style={styles.settingTextContainer}>
+                                <Text style={styles.settingLabel}>AI Background Indexer Status</Text>
+                                <Text style={styles.settingDescription}>{aiStatus.message}</Text>
+                            </View>
+                            {aiStatus.isProcessing && (
+                                <ActivityIndicator size="small" color="#007AFF" style={{ marginLeft: 8 }} />
+                            )}
+                        </View>
+                    </>
+                )}
             </View>
 
             <View style={styles.section}>
@@ -472,57 +510,240 @@ export default function SettingsScreen({ navigation }) {
                     />
                 </View>
 
-                <View style={styles.settingRow}>
-                    <View style={styles.settingTextContainer}>
-                        <Text style={styles.settingLabel}>Hash Concurrency</Text>
-                        <Text style={styles.settingDescription}>Parallel photo hashing. Higher is faster but uses more memory.</Text>
-                    </View>
-                    <View style={{flexDirection: 'row', alignItems: 'center'}}>
-                        <TouchableOpacity onPress={() => updateHashConcurrency(Math.max(1, hashConcurrency - 1))} style={styles.stepperButton}>
-                            <Text style={styles.stepperText}>-</Text>
-                        </TouchableOpacity>
-                        <Text style={styles.stepperValue}>{hashConcurrency}</Text>
-                        <TouchableOpacity onPress={() => updateHashConcurrency(Math.min(20, hashConcurrency + 1))} style={styles.stepperButton}>
-                            <Text style={styles.stepperText}>+</Text>
-                        </TouchableOpacity>
-                    </View>
-                </View>
+                {debugMode && (
+                    <>
+                        <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8, paddingTop: 8 }]}>
+                            <View style={styles.settingTextContainer}>
+                                <Text style={styles.settingLabel}>Search Match Strictness</Text>
+                                <Text style={styles.settingDescription}>Adjust the similarity threshold. Higher values return fewer, more precise results.</Text>
+                            </View>
+                            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                <TouchableOpacity 
+                                    onPress={() => updateSearchThreshold(Math.max(0.1, Math.round((searchThreshold - 0.02) * 100) / 100))}
+                                    style={styles.stepperButton}
+                                >
+                                    <Text style={styles.stepperText}>-</Text>
+                                </TouchableOpacity>
+                                <Text style={styles.stepperValue}>{searchThreshold.toFixed(2)}</Text>
+                                <TouchableOpacity 
+                                    onPress={() => updateSearchThreshold(Math.min(0.5, Math.round((searchThreshold + 0.02) * 100) / 100))}
+                                    style={styles.stepperButton}
+                                >
+                                    <Text style={styles.stepperText}>+</Text>
+                                </TouchableOpacity>
+                            </View>
+                        </View>
 
-                <View style={styles.settingRow}>
-                    <View style={styles.settingTextContainer}>
-                        <Text style={styles.settingLabel}>Adaptive Concurrency</Text>
-                        <Text style={styles.settingDescription}>Automatically use single-thread for large videos to prevent SD card thrashing, while keeping multi-thread for photos. Also auto-throttles on network errors.</Text>
-                    </View>
-                    <Switch
-                        value={adaptiveConcurrencyEnabled}
-                        onValueChange={toggleAdaptiveConcurrency}
-                        trackColor={{ false: '#d1d1d1', true: '#4CAF50' }}
-                        thumbColor={'#fff'}
-                    />
-                </View>
+                        <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8, paddingTop: 8 }]}>
+                            <View style={styles.settingTextContainer}>
+                                <Text style={styles.settingLabel}>Index Remote Photos Locally</Text>
+                                <Text style={styles.settingDescription}>Download remote photos' previews and extract embeddings locally when charging and on Wi-Fi (for photos without server embeddings).</Text>
+                            </View>
+                            <Switch
+                                value={remoteAIProcessingEnabled}
+                                onValueChange={toggleRemoteAIProcessing}
+                                trackColor={{ false: '#d1d1d1', true: '#4CAF50' }}
+                                thumbColor={'#fff'}
+                            />
+                        </View>
 
-                <View style={[styles.settingRow, { opacity: adaptiveConcurrencyEnabled ? 0.7 : 1 }]}>
-                    <View style={styles.settingTextContainer}>
-                        <Text style={styles.settingLabel}>Upload Concurrency</Text>
-                        <Text style={styles.settingDescription}>
-                            {adaptiveConcurrencyEnabled 
-                                ? 'Parallel uploads for photos (videos are auto-forced to 1).' 
-                                : 'Strict parallel uploads (warning: may crash RPi on videos).'}
-                        </Text>
-                    </View>
-                    <View style={{flexDirection: 'row', alignItems: 'center'}}>
-                        <TouchableOpacity onPress={() => updateUploadConcurrency(Math.max(1, uploadConcurrency - 1))} style={styles.stepperButton}>
-                            <Text style={styles.stepperText}>-</Text>
+                        <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8, paddingTop: 8 }]}>
+                            <View style={styles.settingTextContainer}>
+                                <Text style={styles.settingLabel}>Hash Concurrency</Text>
+                                <Text style={styles.settingDescription}>Parallel photo hashing. Higher is faster but uses more memory.</Text>
+                            </View>
+                            <View style={{flexDirection: 'row', alignItems: 'center'}}>
+                                <TouchableOpacity onPress={() => updateHashConcurrency(Math.max(1, hashConcurrency - 1))} style={styles.stepperButton}>
+                                    <Text style={styles.stepperText}>-</Text>
+                                </TouchableOpacity>
+                                <Text style={styles.stepperValue}>{hashConcurrency}</Text>
+                                <TouchableOpacity onPress={() => updateHashConcurrency(Math.min(20, hashConcurrency + 1))} style={styles.stepperButton}>
+                                    <Text style={styles.stepperText}>+</Text>
+                                </TouchableOpacity>
+                            </View>
+                        </View>
+
+                        <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8, paddingTop: 8 }]}>
+                            <View style={styles.settingTextContainer}>
+                                <Text style={styles.settingLabel}>Adaptive Concurrency</Text>
+                                <Text style={styles.settingDescription}>Automatically use single-thread for large videos to prevent SD card thrashing, while keeping multi-thread for photos. Also auto-throttles on network errors.</Text>
+                            </View>
+                            <Switch
+                                value={adaptiveConcurrencyEnabled}
+                                onValueChange={toggleAdaptiveConcurrency}
+                                trackColor={{ false: '#d1d1d1', true: '#4CAF50' }}
+                                thumbColor={'#fff'}
+                            />
+                        </View>
+
+                        <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8, paddingTop: 8, opacity: adaptiveConcurrencyEnabled ? 0.7 : 1 }]}>
+                            <View style={styles.settingTextContainer}>
+                                <Text style={styles.settingLabel}>Upload Concurrency</Text>
+                                <Text style={styles.settingDescription}>
+                                    {adaptiveConcurrencyEnabled 
+                                        ? 'Parallel uploads for photos (videos are auto-forced to 1).' 
+                                        : 'Strict parallel uploads (warning: may crash RPi on videos).'}
+                                </Text>
+                            </View>
+                            <View style={{flexDirection: 'row', alignItems: 'center'}}>
+                                <TouchableOpacity onPress={() => updateUploadConcurrency(Math.max(1, uploadConcurrency - 1))} style={styles.stepperButton}>
+                                    <Text style={styles.stepperText}>-</Text>
+                                </TouchableOpacity>
+                                <Text style={styles.stepperValue}>{uploadConcurrency}</Text>
+                                <TouchableOpacity onPress={() => updateUploadConcurrency(Math.min(10, uploadConcurrency + 1))} style={styles.stepperButton}>
+                                    <Text style={styles.stepperText}>+</Text>
+                                </TouchableOpacity>
+                            </View>
+                        </View>
+
+                        <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8, paddingTop: 8, flexDirection: 'column', alignItems: 'stretch' }]}>
+                            <View style={{ marginBottom: 10 }}>
+                                <Text style={styles.settingLabel}>Clear Duplicates Cache (pHash)</Text>
+                                <Text style={styles.settingDescription}>Instantly clear the duplicate photo cache. Re-indexing will run automatically in the background.</Text>
+                            </View>
+                            <TouchableOpacity
+                                disabled={isPHashIndexing}
+                                onPress={() => {
+                                    Alert.alert(
+                                        'Clear Duplicates Cache',
+                                        'Are you sure you want to clear the duplicate detection cache? This will instantly empty the duplicates album. Re-indexing will run automatically in the background.',
+                                        [
+                                            { text: 'Cancel', style: 'cancel' },
+                                            {
+                                                text: 'Confirm',
+                                                onPress: async () => {
+                                                    setIsPHashIndexing(true);
+                                                    try {
+                                                        console.log('[SettingsScreen] Clearing duplicate pHashes cache...');
+                                                        await AIService.forceRebuildPHash();
+                                                        setIsPHashIndexing(false);
+                                                        Alert.alert('Success', 'Duplicates cache cleared successfully! Recalculation is running in the background.');
+                                                    } catch (err) {
+                                                        setIsPHashIndexing(false);
+                                                        Alert.alert('Error', 'Failed to clear cache: ' + err.message);
+                                                    }
+                                                }
+                                            }
+                                        ]
+                                    );
+                                }}
+                                style={{ backgroundColor: isPHashIndexing ? '#999' : '#007AFF', paddingVertical: 10, borderRadius: 8, alignItems: 'center' }}
+                            >
+                                {isPHashIndexing ? (
+                                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                        <ActivityIndicator size="small" color="#fff" style={{ marginRight: 8 }} />
+                                        <Text style={{ color: '#fff', fontWeight: 'bold' }}>Clearing cache...</Text>
+                                    </View>
+                                ) : (
+                                    <Text style={{ color: '#fff', fontWeight: 'bold' }}>Clear Duplicates Cache</Text>
+                                )}
+                            </TouchableOpacity>
+                        </View>
+
+                        <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 12, paddingTop: 8, flexDirection: 'column', alignItems: 'stretch' }]}>
+                            <View style={{ marginBottom: 10 }}>
+                                <Text style={styles.settingLabel}>Clear Semantic Search Cache (CLIP)</Text>
+                                <Text style={styles.settingDescription}>Instantly clear the semantic search cache. Re-indexing will run automatically in the background when the device is idle.</Text>
+                            </View>
+                            <TouchableOpacity
+                                disabled={isCLIPIndexing}
+                                onPress={() => {
+                                    Alert.alert(
+                                        'Clear Semantic Cache',
+                                        'Are you sure you want to clear the semantic search cache? Re-indexing will run automatically in the background.',
+                                        [
+                                            { text: 'Cancel', style: 'cancel' },
+                                            {
+                                                text: 'Confirm',
+                                                onPress: async () => {
+                                                    setIsCLIPIndexing(true);
+                                                    try {
+                                                        console.log('[SettingsScreen] Clearing semantic search CLIP embeddings cache...');
+                                                        await AIService.forceRebuildCLIP();
+                                                        setIsCLIPIndexing(false);
+                                                        Alert.alert('Success', 'Semantic search cache cleared successfully! Recalculation is running in the background.');
+                                                    } catch (err) {
+                                                        setIsCLIPIndexing(false);
+                                                        Alert.alert('Error', 'Failed to clear cache: ' + err.message);
+                                                    }
+                                                }
+                                            }
+                                        ]
+                                    );
+                                }}
+                                style={{ backgroundColor: isCLIPIndexing ? '#999' : '#007AFF', paddingVertical: 10, borderRadius: 8, alignItems: 'center' }}
+                            >
+                                {isCLIPIndexing ? (
+                                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                        <ActivityIndicator size="small" color="#fff" style={{ marginRight: 8 }} />
+                                        <Text style={{ color: '#fff', fontWeight: 'bold' }}>Clearing cache...</Text>
+                                    </View>
+                                ) : (
+                                    <Text style={{ color: '#fff', fontWeight: 'bold' }}>Clear Semantic Cache</Text>
+                                )}
+                            </TouchableOpacity>
+                        </View>
+
+                        <TouchableOpacity 
+                            style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8, paddingTop: 8 }]}
+                            onPress={() => {
+                                Alert.alert(
+                                    "Clear Hash Cache",
+                                    "Wipes your local hashing history. Next scan will take much longer. Proceed?",
+                                    [
+                                        { text: "Cancel", style: "cancel" },
+                                        { 
+                                            text: "Clear", 
+                                            style: "destructive",
+                                            onPress: async () => {
+                                                await SyncService.clearLocalHashCache();
+                                                await loadStats();
+                                                Alert.alert("Success", "Local hash cache cleared.");
+                                            }
+                                        }
+                                    ]
+                                );
+                            }}
+                        >
+                            <View style={styles.settingTextContainer}>
+                                <Text style={styles.settingLabelDanger}>Local Hash Cache ({formatSize(stats.local)})</Text>
+                                <Text style={styles.settingDescription}>Wipes the local file hashing history. Forces a full re-scan of all media.</Text>
+                            </View>
+                            <Trash2 color="#ef4444" size={20} />
                         </TouchableOpacity>
-                        <Text style={styles.stepperValue}>{uploadConcurrency}</Text>
-                        <TouchableOpacity onPress={() => updateUploadConcurrency(Math.min(10, uploadConcurrency + 1))} style={styles.stepperButton}>
-                            <Text style={styles.stepperText}>+</Text>
+
+                        <TouchableOpacity 
+                            style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8, paddingTop: 8 }]}
+                            onPress={() => {
+                                Alert.alert(
+                                    "Clear Remote Cache",
+                                    "Wipes the remote asset list cache. Will be refetched from server on next sync.",
+                                    [
+                                        { text: "Cancel", style: "cancel" },
+                                        { 
+                                            text: "Clear", 
+                                            style: "destructive",
+                                            onPress: async () => {
+                                                await SyncService.clearRemoteTreeCache();
+                                                await loadStats();
+                                                Alert.alert("Success", "Remote tree cache cleared.");
+                                            }
+                                        }
+                                    ]
+                                );
+                            }}
+                        >
+                            <View style={styles.settingTextContainer}>
+                                <Text style={styles.settingLabelDanger}>Remote Asset Cache ({formatSize(stats.remote)})</Text>
+                                <Text style={styles.settingDescription}>Wipes the cached remote Merkle tree. Forces a full fetch from server.</Text>
+                            </View>
+                            <Trash2 color="#ef4444" size={20} />
                         </TouchableOpacity>
-                    </View>
-                </View>
+                    </>
+                )}
 
                 <TouchableOpacity 
-                    style={styles.settingRow}
+                    style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8, paddingTop: 8 }]}
                     onPress={handleExportLogs}
                     disabled={isExportingLogs}
                 >
@@ -536,62 +757,6 @@ export default function SettingsScreen({ navigation }) {
                         ? <ActivityIndicator size="small" color="#007AFF" /> 
                         : <Send color="#007AFF" size={20} />
                     }
-                </TouchableOpacity>
-
-                <TouchableOpacity 
-                    style={styles.settingRow}
-                    onPress={() => {
-                        Alert.alert(
-                            "Clear Hash Cache",
-                            "Wipes your local hashing history. Next scan will take much longer. Proceed?",
-                            [
-                                { text: "Cancel", style: "cancel" },
-                                { 
-                                    text: "Clear", 
-                                    style: "destructive",
-                                    onPress: async () => {
-                                        await SyncService.clearLocalHashCache();
-                                        await loadStats();
-                                        Alert.alert("Success", "Local hash cache cleared.");
-                                    }
-                                }
-                            ]
-                        );
-                    }}
-                >
-                    <View style={styles.settingTextContainer}>
-                        <Text style={styles.settingLabelDanger}>Local Hash Cache ({formatSize(stats.local)})</Text>
-                        <Text style={styles.settingDescription}>Wipes the local file hashing history. Forces a full re-scan of all media.</Text>
-                    </View>
-                    <Trash2 color="#ef4444" size={20} />
-                </TouchableOpacity>
-
-                <TouchableOpacity 
-                    style={styles.settingRow}
-                    onPress={() => {
-                        Alert.alert(
-                            "Clear Remote Cache",
-                            "Wipes the remote asset list cache. Will be refetched from server on next sync.",
-                            [
-                                { text: "Cancel", style: "cancel" },
-                                { 
-                                    text: "Clear", 
-                                    style: "destructive",
-                                    onPress: async () => {
-                                        await SyncService.clearRemoteTreeCache();
-                                        await loadStats();
-                                        Alert.alert("Success", "Remote tree cache cleared.");
-                                    }
-                                }
-                            ]
-                        );
-                    }}
-                >
-                    <View style={styles.settingTextContainer}>
-                        <Text style={styles.settingLabelDanger}>Remote Asset Cache ({formatSize(stats.remote)})</Text>
-                        <Text style={styles.settingDescription}>Wipes the cached remote Merkle tree. Forces a full fetch from server.</Text>
-                    </View>
-                    <Trash2 color="#ef4444" size={20} />
                 </TouchableOpacity>
             </View>
 

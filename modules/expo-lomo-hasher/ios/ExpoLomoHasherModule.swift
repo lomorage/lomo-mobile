@@ -612,6 +612,138 @@ public class ExpoLomoHasherModule: Module {
         }
       }
     }
+
+    AsyncFunction("generatePHashAsync") { (imageUriString: String, promise: Promise) in
+      DispatchQueue.global(qos: .userInitiated).async {
+        do {
+          let image: UIImage
+          if imageUriString.hasPrefix("ph://") {
+            guard let asset = self.getPHAsset(from: imageUriString) else {
+              promise.reject("ERR_ASSET_NOT_FOUND", "Asset not found: \(imageUriString)")
+              return
+            }
+            
+            let manager = PHImageManager.default()
+            let options = PHImageRequestOptions()
+            options.isSynchronous = true
+            options.isNetworkAccessAllowed = true
+            
+            var fetchedImage: UIImage?
+            manager.requestImage(for: asset, targetSize: CGSize(width: 128, height: 128), contentMode: .aspectFill, options: options) { img, _ in
+              fetchedImage = img
+            }
+            guard let img = fetchedImage else {
+              promise.reject("ERR_IMAGE_FETCH", "Failed to fetch image: \(imageUriString)")
+              return
+            }
+            image = img
+          } else {
+            let url: URL
+            if imageUriString.hasPrefix("file://") {
+              guard let parsed = URL(string: imageUriString) else {
+                promise.reject("INVALID_URI", "Invalid URI: \(imageUriString)")
+                return
+              }
+              url = parsed
+            } else {
+              url = URL(fileURLWithPath: imageUriString)
+            }
+            guard let data = try? Data(contentsOf: url), let img = UIImage(data: data) else {
+              promise.reject("ERR_IMAGE_LOAD", "Failed to load image from: \(imageUriString)")
+              return
+            }
+            image = img
+          }
+          
+          // 1. Resize to 32x32
+          let size = CGSize(width: 32, height: 32)
+          UIGraphicsBeginImageContextWithOptions(size, true, 1.0)
+          image.draw(in: CGRect(origin: .zero, size: size))
+          let scaledImage = UIGraphicsGetImageFromCurrentImageContext()
+          UIGraphicsEndImageContext()
+          
+          guard let scaled = scaledImage, let cgImage = scaled.cgImage else {
+            promise.reject("ERR_IMAGE_RESIZE", "Failed to resize image")
+            return
+          }
+          
+          // 2. Extract grayscale pixels
+          let width = 32
+          let height = 32
+          var rawBytes = [UInt8](repeating: 0, count: width * height * 4)
+          let context = CGContext(
+            data: &rawBytes,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+          )
+          context?.draw(cgImage, in: CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)))
+          
+          var greyscale = [[Double]](repeating: [Double](repeating: 0.0, count: 32), count: 32)
+          for y in 0..<32 {
+            for x in 0..<32 {
+              let offset = (y * width + x) * 4
+              let r = Double(rawBytes[offset])
+              let g = Double(rawBytes[offset + 1])
+              let b = Double(rawBytes[offset + 2])
+              greyscale[y][x] = (r + g + b) / 3.0
+            }
+          }
+          
+          // 3. Compute DCT
+          var dct = [[Double]](repeating: [Double](repeating: 0.0, count: 32), count: 32)
+          var c = [Double](repeating: 1.0, count: 32)
+          c[0] = 1.0 / sqrt(2.0)
+          
+          let N = 32.0
+          let pi = Double.pi
+          
+          for u in 0..<32 {
+            for v in 0..<32 {
+              var sum = 0.0
+              for i in 0..<32 {
+                for j in 0..<32 {
+                  sum += cos(((2.0 * Double(i) + 1.0) / (2.0 * N)) * Double(u) * pi) *
+                         cos(((2.0 * Double(j) + 1.0) / (2.0 * N)) * Double(v) * pi) *
+                         greyscale[i][j]
+                }
+              }
+              sum *= (c[u] * c[v]) / sqrt(2.0 * N)
+              dct[u][v] = sum
+            }
+          }
+          
+          // 4. Average 8x8 coefficients
+          var dctSum = 0.0
+          for x in 0..<8 {
+            for y in 0..<8 {
+              dctSum += dct[x][y]
+            }
+          }
+          dctSum -= dct[0][0]
+          let dctAverage = dctSum / 63.0
+          
+          // 5. Generate 64-bit hash
+          var result: UInt64 = 0
+          var cnt = 0
+          for row in 0..<8 {
+            for col in 0..<8 {
+              if (row != 0 || col != 0) && dct[row][col] > dctAverage {
+                result |= (UInt64(1) << cnt)
+              }
+              cnt += 1
+            }
+          }
+          
+          promise.resolve(String(result))
+        } catch {
+          promise.reject("ERR_PHASH_FAILED", error.localizedDescription)
+        }
+      }
+    }
   }
 
   /// Extracts the local identifier and fetches a PHAsset.

@@ -6,6 +6,20 @@ class AssetDBService {
   constructor() {
     this.dbName = 'lomoAssets.db';
     this.db = null;
+    this.writePromise = Promise.resolve(); // Promise chain to serialize all database writes
+  }
+
+  // Promise-based mutex lock for serializing writes sequentially
+  async executeWrite(callback) {
+    const nextPromise = this.writePromise.then(async () => {
+      try {
+        return await callback();
+      } catch (err) {
+        throw err;
+      }
+    });
+    this.writePromise = nextPromise.catch(() => {}); // Catch errors to prevent lock chain from breaking
+    return nextPromise;
   }
 
   async init() {
@@ -15,6 +29,18 @@ class AssetDBService {
     this.initPromise = (async () => {
       try {
         this.db = await SQLite.openDatabaseAsync(this.dbName);
+        await this.db.execAsync('PRAGMA busy_timeout = 5000;');
+
+        // Add write serialization queue to prevent parallel writes from lock contentions
+        const originalRunAsync = this.db.runAsync.bind(this.db);
+        const originalExecAsync = this.db.execAsync.bind(this.db);
+        const originalWithExclusiveTransactionAsync = this.db.withExclusiveTransactionAsync.bind(this.db);
+        const originalWithTransactionAsync = this.db.withTransactionAsync.bind(this.db);
+
+        this.db.runAsync = (...args) => this.executeWrite(() => originalRunAsync(...args));
+        this.db.execAsync = (...args) => this.executeWrite(() => originalExecAsync(...args));
+        this.db.withExclusiveTransactionAsync = (...args) => this.executeWrite(() => originalWithExclusiveTransactionAsync(...args));
+        this.db.withTransactionAsync = (...args) => this.executeWrite(() => originalWithTransactionAsync(...args));
 
       // Create base table if not exists (Version 1)
       await this.db.execAsync(`
@@ -79,6 +105,31 @@ class AssetDBService {
         await this.db.execAsync('PRAGMA user_version = 4');
         currentVersion = 4;
         console.log('[AssetDBService] Database migrated to version 4 (Added CLIP Embedding support).');
+      }
+
+      if (currentVersion < 5) {
+        // Version 5: Add phash column for perceptual hashing similar photos
+        try { await this.db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN phash TEXT;`); } catch (e) {}
+        
+        await this.db.execAsync('PRAGMA user_version = 5');
+        currentVersion = 5;
+        console.log('[AssetDBService] Database migrated to version 5 (Added pHash support).');
+      }
+
+      if (currentVersion < 6) {
+        // Version 6: Add IgnoredDuplicate table for dismissing duplicate recommendations
+        try {
+          await this.db.execAsync(`
+            CREATE TABLE IF NOT EXISTS IgnoredDuplicate (
+              assetId TEXT PRIMARY KEY
+            );
+          `);
+        } catch (e) {
+          console.warn('[AssetDBService] Failed to create IgnoredDuplicate table:', e.message);
+        }
+        await this.db.execAsync('PRAGMA user_version = 6');
+        currentVersion = 6;
+        console.log('[AssetDBService] Database migrated to version 6 (Added IgnoredDuplicate support).');
       }
 
       // Smooth migration: if local_hash_cache_v2.json exists, migrate it to SQLite
@@ -638,6 +689,65 @@ class AssetDBService {
       );
     } catch (error) {
       console.error('[AssetDBService] Failed to delete asset from SQLite:', error);
+    }
+  }
+
+  // Get all assets with a valid phash for duplicate detection (excluding ignored ones)
+  async getAssetsWithPHash() {
+    if (!this.db) return [];
+    try {
+      const rows = await this.db.getAllAsync(`
+        SELECT id, hash, isLocal, filename, createTime, mediaType, phash, localCachePath, metadata 
+        FROM MediaAsset 
+        WHERE phash IS NOT NULL AND phash != "" AND phash != "failed" AND phash != "none"
+          AND id NOT IN (SELECT assetId FROM IgnoredDuplicate)
+          AND (hash IS NULL OR hash NOT IN (SELECT assetId FROM IgnoredDuplicate))
+        ORDER BY createTime DESC
+      `);
+      return rows;
+    } catch (error) {
+      console.error('[AssetDBService] Failed to get assets with phash:', error);
+      return [];
+    }
+  }
+
+  // Mark assets as ignored so they don't show up in duplicate list
+  async ignoreAssetsForDuplicates(assetIds) {
+    if (!this.db || !assetIds || assetIds.length === 0) return;
+    try {
+      await this.db.withExclusiveTransactionAsync(async () => {
+        const statement = await this.db.prepareAsync('INSERT OR IGNORE INTO IgnoredDuplicate (assetId) VALUES (?)');
+        try {
+          for (const id of assetIds) {
+            if (id) statement.executeSync(id);
+          }
+        } finally {
+          await statement.finalizeAsync();
+        }
+      });
+      console.log(`[AssetDBService] Ignored ${assetIds.length} assets for duplicates.`);
+    } catch (error) {
+      console.error('[AssetDBService] Failed to ignore assets for duplicates:', error);
+    }
+  }
+
+  // Bulk delete assets from SQLite database in a single transaction
+  async deleteAssets(idsOrHashes) {
+    if (!this.db || !idsOrHashes || idsOrHashes.length === 0) return;
+    try {
+      await this.db.withExclusiveTransactionAsync(async () => {
+        const statement = await this.db.prepareAsync('DELETE FROM MediaAsset WHERE id = ? OR hash = ?');
+        try {
+          for (const id of idsOrHashes) {
+            if (id) statement.executeSync(id, id);
+          }
+        } finally {
+          await statement.finalizeAsync();
+        }
+      });
+      console.log(`[AssetDBService] Bulk deleted ${idsOrHashes.length} assets from SQLite.`);
+    } catch (error) {
+      console.error('[AssetDBService] Failed to bulk delete assets from SQLite:', error);
     }
   }
 }

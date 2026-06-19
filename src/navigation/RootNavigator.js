@@ -15,6 +15,7 @@ import PhotoMapScreen from '../screens/PhotoMapScreen';
 import AlbumsScreen from '../screens/AlbumsScreen';
 import FolderDetailScreen from '../screens/FolderDetailScreen';
 import AlbumDetailScreen from '../screens/AlbumDetailScreen';
+import DuplicatesScreen from '../screens/DuplicatesScreen';
 import AuthService from '../services/AuthService';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 
@@ -146,6 +147,11 @@ function Navigation() {
                         <Stack.Screen 
                             name="PhotoMap" 
                             component={PhotoMapScreen} 
+                            options={{ headerShown: false }}
+                        />
+                        <Stack.Screen 
+                            name="Duplicates" 
+                            component={DuplicatesScreen} 
                             options={{ headerShown: false }}
                         />
                         <Stack.Screen 
