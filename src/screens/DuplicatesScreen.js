@@ -24,6 +24,7 @@ import AssetDBService from '../services/AssetDBService';
 import MediaService from '../services/MediaService';
 import AuthService from '../services/AuthService';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as Device from 'expo-device';
 import { useSettings } from '../context/SettingsContext';
 
 const { width } = Dimensions.get('window');
@@ -206,6 +207,7 @@ function CompareItemPage({ item, index, isSelected, onToggle, setModalMeta, isFo
     const [loading, setLoading] = useState(false);
     const [downloadedUri, setDownloadedUri] = useState(null);
     const [meta, setMeta] = useState({ width: 0, height: 0, size: 0 });
+    const [useOriginalVideo, setUseOriginalVideo] = useState(false);
 
     useEffect(() => {
         let cancelled = false;
@@ -246,16 +248,30 @@ function CompareItemPage({ item, index, isSelected, onToggle, setModalMeta, isFo
                     const remoteUrl = `${serverUrl}/asset/${item.hash}?token=${token}`;
                     
                     if (item.mediaType === 'video') {
+                        let videoUri = remoteUrl + '&ext=mp4';
+                        if (useOriginalVideo) {
+                            videoUri += '&orig=1';
+                        }
+                        
                         let fileSize = 0;
                         try {
-                            const headRes = await axios.head(remoteUrl);
+                            const headRes = await axios.head(videoUri);
                             fileSize = parseInt(headRes.headers['content-length'] || 0, 10);
                         } catch (e) {
                             console.warn('[CompareItemPage] HEAD request failed for video size');
                         }
+
+                        if (Platform.OS !== 'web' && Device.isDevice) {
+                            try {
+                                const convertToProxyURL = require('react-native-video-cache').default;
+                                videoUri = convertToProxyURL(videoUri);
+                            } catch (e) {
+                                console.warn('[CompareItemPage] Failed to resolve proxy synchronously:', e);
+                            }
+                        }
                         
                         if (cancelled) return;
-                        setDownloadedUri(remoteUrl);
+                        setDownloadedUri(videoUri);
                         setMeta({ width: 0, height: 0, size: fileSize });
                         setModalMeta(prev => ({
                             ...prev,
@@ -311,7 +327,7 @@ function CompareItemPage({ item, index, isSelected, onToggle, setModalMeta, isFo
             }
         })();
         return () => { cancelled = true; };
-    }, [item.id, item.hash, item.isLocal]);
+    }, [item.id, item.hash, item.isLocal, item.mediaType, useOriginalVideo]);
 
     const formatSizeLocal = (bytes) => {
         if (!bytes) return 'Unknown';
@@ -349,6 +365,22 @@ function CompareItemPage({ item, index, isSelected, onToggle, setModalMeta, isFo
                         contentFit="contain"
                         cachePolicy="memory-disk"
                     />
+                )}
+                
+                {/* HD/SD Toggle for remote videos */}
+                {!item.isLocal && item.mediaType === 'video' && (
+                    <TouchableOpacity 
+                        style={[
+                            styles.qualityToggle, 
+                            useOriginalVideo ? styles.qualityToggleActive : styles.qualityToggleInactive,
+                            { position: 'absolute', top: 20, right: 20 }
+                        ]}
+                        onPress={() => setUseOriginalVideo(!useOriginalVideo)}
+                    >
+                        <Text style={useOriginalVideo ? styles.qualityTextActive : styles.qualityTextInactive}>
+                            {useOriginalVideo ? 'HD' : 'SD'}
+                        </Text>
+                    </TouchableOpacity>
                 )}
             </View>
 
@@ -818,13 +850,42 @@ const styles = StyleSheet.create({
         textAlign: 'center',
     },
     emptyIconContainer: {
-        width: 100,
-        height: 100,
-        borderRadius: 50,
-        backgroundColor: '#E5E5EA',
+        width: 120,
+        height: 120,
+        borderRadius: 60,
+        backgroundColor: '#F5F5F5',
         justifyContent: 'center',
         alignItems: 'center',
-        marginBottom: 20,
+        marginBottom: 24,
+    },
+    qualityToggle: {
+        paddingHorizontal: 16,
+        paddingVertical: 6,
+        borderRadius: 16,
+        borderWidth: 1,
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.2,
+        shadowRadius: 2,
+        elevation: 3,
+    },
+    qualityToggleActive: {
+        backgroundColor: '#007AFF',
+        borderColor: '#007AFF',
+    },
+    qualityToggleInactive: {
+        backgroundColor: 'rgba(0,0,0,0.6)',
+        borderColor: 'rgba(255,255,255,0.3)',
+    },
+    qualityTextActive: {
+        fontSize: 12,
+        fontWeight: 'bold',
+        color: '#fff',
+    },
+    qualityTextInactive: {
+        fontSize: 12,
+        fontWeight: 'bold',
+        color: '#fff',
     },
     emptyText: {
         fontSize: 18,
