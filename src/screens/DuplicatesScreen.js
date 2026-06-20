@@ -431,7 +431,12 @@ export default function DuplicatesScreen() {
             setSelectedMap(initialMap);
         } catch (error) {
             console.error('[DuplicatesScreen] Failed to load duplicates:', error);
-            Alert.alert('Error', 'Failed to load duplicates');
+            Alert.alert(
+                'Oops', 
+                __DEV__ 
+                    ? `Failed to load duplicates: ${error.message}` 
+                    : 'We ran into a hiccup while finding duplicates. Please try again.'
+            );
         } finally {
             setLoading(false);
         }
@@ -545,7 +550,10 @@ export default function DuplicatesScreen() {
                                     await MediaService.deleteLocalAssets(localIdsToDelete);
                                 } catch (le) {
                                     console.log('[DuplicatesScreen] Local deletion cancelled or failed:', le.message);
-                                    Alert.alert('Info', 'Permission denied or cancelled. Deletion aborted.');
+                                    Alert.alert(
+                                        'Action Cancelled', 
+                                        'No photos were deleted because system permission was not granted.'
+                                    );
                                     setDeleting(false);
                                     return;
                                 }
@@ -569,7 +577,12 @@ export default function DuplicatesScreen() {
                             loadDuplicates();
                         } catch (err) {
                             console.error('[DuplicatesScreen] Deletion error:', err);
-                            Alert.alert('Error', 'Error cleaning photos: ' + err.message);
+                            Alert.alert(
+                                'Cleanup Incomplete', 
+                                __DEV__ 
+                                    ? `Error cleaning photos: ${err.message}` 
+                                    : 'We couldn\'t finish cleaning up all selected photos. Please check your connection and try again.'
+                            );
                         } finally {
                             setDeleting(false);
                         }
