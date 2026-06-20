@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { 
     StyleSheet, 
     View, 
@@ -15,7 +15,9 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { useNavigation } from '@react-navigation/native';
-import { ChevronLeft, Trash2, X, Check, Eye, Copy } from 'lucide-react-native';
+import { Eye, ChevronLeft, Trash2, Check, Copy, PlayCircle, X } from 'lucide-react-native';
+import { AssetVideoPlayer } from './AssetDetailScreen';
+import axios from 'axios';
 
 import AIService from '../services/AIService';
 import AssetDBService from '../services/AssetDBService';
@@ -36,10 +38,6 @@ function LazyLocalAsset({ assetId, style, onMetadata, ...rest }) {
                 const info = await MediaService.getAssetInfo(assetId);
                 if (cancelled || !info) return;
                 let resolvedUri = info.localUri || info.uri;
-                if (Platform.OS === 'android' && resolvedUri && resolvedUri.startsWith('content://') &&
-                    (info.mediaType === 'video' || resolvedUri.includes('/video/'))) {
-                    resolvedUri = `${resolvedUri}/thumbnail`;
-                }
                 setUri(resolvedUri);
                 if (onMetadata) {
                     let fileSize = 0;
@@ -58,7 +56,7 @@ function LazyLocalAsset({ assetId, style, onMetadata, ...rest }) {
 
 // Standalone card for one asset within a duplicate group.
 // Needed so that useState (for lazy metadata) follows React Hooks rules (no hooks in loops).
-function AssetCard({ asset, idx, isSelected, onToggle, onSize }) {
+const AssetCard = React.memo(function AssetCard({ asset, idx, isSelected, onToggle, onSize, globalMeta, onOpenCompare }) {
     const isBest = idx === 0;
     const [localMeta, setLocalMeta] = React.useState({ width: 0, height: 0, size: 0 });
 
@@ -72,53 +70,68 @@ function AssetCard({ asset, idx, isSelected, onToggle, onSize }) {
 
     return (
         <View style={styles.photoContainer}>
-            <TouchableOpacity
-                activeOpacity={0.8}
-                style={styles.imageWrapper}
-                onPress={() => onToggle(asset.id)}
-            >
-                {asset.isLocal && !asset.displayUri ? (
-                    <LazyLocalAsset
-                        assetId={asset.id}
-                        style={styles.thumbnail}
-                        contentFit="cover"
-                        cachePolicy="memory-disk"
-                        onMetadata={(uri, w, h, s) => {
-                            setLocalMeta({ width: w, height: h, size: s });
-                            if (onSize && s > 0) onSize(asset.id, s);
-                        }}
-                    />
-                ) : (
-                    <Image
-                        source={{ uri: asset.displayUri }}
-                        style={styles.thumbnail}
-                        contentFit="cover"
-                        cachePolicy="memory-disk"
-                    />
-                )}
+            <View style={{ position: 'relative' }}>
+                <TouchableOpacity
+                    activeOpacity={0.8}
+                    style={styles.imageWrapper}
+                    onPress={() => onOpenCompare()}
+                >
+                    {asset.isLocal && !asset.displayUri ? (
+                        <LazyLocalAsset
+                            assetId={asset.id}
+                            style={styles.thumbnail}
+                            contentFit="cover"
+                            cachePolicy="memory-disk"
+                            onMetadata={(uri, w, h, s) => {
+                                setLocalMeta({ width: w, height: h, size: s });
+                                if (onSize && s > 0) onSize(asset.id, s);
+                            }}
+                        />
+                    ) : (
+                        <Image
+                            source={{ uri: asset.displayUri }}
+                            style={styles.thumbnail}
+                            contentFit="cover"
+                            cachePolicy="memory-disk"
+                        />
+                    )}
 
-                {/* Keep / Duplicate Badge */}
-                <View style={[styles.badge, isBest ? styles.badgeKeep : styles.badgeDup]}>
-                    <Text style={[styles.badgeText, isBest ? styles.badgeTextKeep : styles.badgeTextDup]}>
-                        {isBest ? 'Keep' : 'Duplicate'}
-                    </Text>
-                </View>
+                    {/* Video Play Icon Overlay */}
+                    {asset.mediaType === 'video' && (
+                        <View style={styles.videoOverlay}>
+                            <PlayCircle color="#fff" size={32} />
+                        </View>
+                    )}
+
+                    {/* Keep / Duplicate Badge */}
+                    <View style={[styles.badge, isBest ? styles.badgeKeep : styles.badgeDup]}>
+                        <Text style={[styles.badgeText, isBest ? styles.badgeTextKeep : styles.badgeTextDup]}>
+                            {isBest ? 'Keep' : 'Duplicate'}
+                        </Text>
+                    </View>
+                </TouchableOpacity>
 
                 {/* Selection Checkbox Overlay */}
-                <View style={[styles.checkbox, isSelected && styles.checkboxSelected]}>
+                <TouchableOpacity 
+                    style={[styles.checkbox, isSelected && styles.checkboxSelected]}
+                    onPress={() => onToggle(asset.id)}
+                    hitSlop={{ top: 25, bottom: 25, left: 25, right: 25 }}
+                >
                     {isSelected && <Check color="#fff" size={14} strokeWidth={3} />}
-                </View>
-            </TouchableOpacity>
+                </TouchableOpacity>
+            </View>
 
             {/* Photo info */}
             <View style={styles.photoInfo}>
                 <Text style={styles.resolutionText}>
-                    {asset.isLocal
-                        ? (localMeta.width && localMeta.height ? `${localMeta.width}x${localMeta.height}` : '...')
-                        : ''}
+                    {(globalMeta?.width && globalMeta?.height) 
+                        ? `${globalMeta.width}x${globalMeta.height}` 
+                        : (localMeta.width && localMeta.height ? `${localMeta.width}x${localMeta.height}` : (asset.isLocal ? '...' : ''))}
                 </Text>
                 <Text style={styles.sizeText}>
-                    {asset.isLocal ? formatSizeLocal(localMeta.size) : ''}
+                    {globalMeta?.size 
+                        ? formatSizeLocal(globalMeta.size) 
+                        : (localMeta.size ? formatSizeLocal(localMeta.size) : '')}
                 </Text>
                 <Text style={styles.storageType}>
                     {asset.isLocal ? 'Local' : 'Cloud'}
@@ -126,11 +139,68 @@ function AssetCard({ asset, idx, isSelected, onToggle, onSize }) {
             </View>
         </View>
     );
-}
+}, (prevProps, nextProps) => {
+    return prevProps.isSelected === nextProps.isSelected &&
+           prevProps.globalMeta === nextProps.globalMeta &&
+           prevProps.asset.id === nextProps.asset.id;
+});
+
+// Memoized group container to prevent massive FlatList re-renders when selection changes
+const DuplicateGroup = React.memo(function DuplicateGroup({ group, groupIndex, selectedMap, modalMeta, toggleSelect, handleSize, handleIgnoreGroup, onOpenCompare }) {
+    const formatDate = (timestamp) => {
+        if (!timestamp) return 'Unknown Date';
+        const date = new Date(timestamp);
+        return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+    };
+
+    return (
+        <View style={styles.card}>
+            <View style={styles.cardHeader}>
+                <View>
+                    <Text style={styles.cardTitle}>Group {groupIndex + 1} ({group.length} photos)</Text>
+                    <Text style={styles.cardSubtitle}>
+                        {formatDate(group[0]?.createTime)}
+                    </Text>
+                </View>
+                <View style={styles.cardHeaderActions}>
+                    <TouchableOpacity
+                        style={styles.ignoreButton}
+                        onPress={() => handleIgnoreGroup(group)}
+                    >
+                        <Text style={styles.ignoreText}>Ignore</Text>
+                    </TouchableOpacity>
+                </View>
+            </View>
+
+            <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.scrollContainer}
+            >
+                {group.map((asset, idx) => (
+                    <AssetCard
+                        key={asset.id}
+                        asset={asset}
+                        idx={idx}
+                        isSelected={!!selectedMap[asset.id]}
+                        onToggle={toggleSelect}
+                        onSize={handleSize}
+                        globalMeta={modalMeta[asset.id]}
+                        onOpenCompare={() => onOpenCompare(group, idx)}
+                    />
+                ))}
+            </ScrollView>
+        </View>
+    );
+}, (prev, next) => {
+    const selectionChanged = prev.group.some(asset => !!prev.selectedMap[asset.id] !== !!next.selectedMap[asset.id]);
+    const metaChanged = prev.group.some(asset => prev.modalMeta[asset.id] !== next.modalMeta[asset.id]);
+    return !selectionChanged && !metaChanged && prev.group === next.group;
+});
 
 // Standalone page for one asset within the comparison swiper.
 // Encapsulates the loading/downloading state and metadata parsing for high-res/original photos.
-function CompareItemPage({ item, index, isSelected, onToggle, setModalMeta }) {
+function CompareItemPage({ item, index, isSelected, onToggle, setModalMeta, isFocused }) {
     const isBest = index === 0;
     const [loading, setLoading] = useState(false);
     const [downloadedUri, setDownloadedUri] = useState(null);
@@ -145,10 +215,6 @@ function CompareItemPage({ item, index, isSelected, onToggle, setModalMeta }) {
                     const info = await MediaService.getAssetInfo(item.id);
                     if (cancelled) return;
                     let resolvedUri = info.localUri || info.uri;
-                    if (Platform.OS === 'android' && resolvedUri && resolvedUri.startsWith('content://') &&
-                        (info.mediaType === 'video' || resolvedUri.includes('/video/'))) {
-                        resolvedUri = `${resolvedUri}/thumbnail`;
-                    }
                     setDownloadedUri(resolvedUri);
                     let fileSize = 0;
                     try {
@@ -178,48 +244,65 @@ function CompareItemPage({ item, index, isSelected, onToggle, setModalMeta }) {
                     const token = AuthService.getToken();
                     const remoteUrl = `${serverUrl}/asset/${item.hash}?token=${token}`;
                     
-                    const localPath = `${FileSystem.cacheDirectory}${item.hash}`;
-                    const fileInfo = await FileSystem.getInfoAsync(localPath, { size: true });
-                    
-                    let targetUri = localPath;
-                    let fileSize = 0;
-                    
-                    if (fileInfo.exists) {
-                        fileSize = fileInfo.size || 0;
-                    } else {
-                        console.log('[CompareItemPage] Downloading remote asset:', remoteUrl);
-                        const downloadResult = await FileSystem.downloadAsync(remoteUrl, localPath);
-                        targetUri = downloadResult.uri;
+                    if (item.mediaType === 'video') {
+                        let fileSize = 0;
                         try {
-                            const newInfo = await FileSystem.getInfoAsync(targetUri, { size: true });
-                            fileSize = newInfo?.size || 0;
-                        } catch (_) {
-                            fileSize = 0;
+                            const headRes = await axios.head(remoteUrl);
+                            fileSize = parseInt(headRes.headers['content-length'] || 0, 10);
+                        } catch (e) {
+                            console.warn('[CompareItemPage] HEAD request failed for video size');
                         }
-                    }
-                    
-                    if (cancelled) return;
-                    setDownloadedUri(targetUri);
-                    
-                    const { Image: RNImage } = require('react-native');
-                    RNImage.getSize(targetUri, (w, h) => {
+                        
                         if (cancelled) return;
-                        setMeta({ width: w, height: h, size: fileSize });
-                        setModalMeta(prev => ({
-                            ...prev,
-                            [item.id]: { width: w, height: h, size: fileSize }
-                        }));
-                        setLoading(false);
-                    }, (err) => {
-                        console.warn('[CompareItemPage] Failed to get image size:', err);
-                        if (cancelled) return;
+                        setDownloadedUri(remoteUrl);
                         setMeta({ width: 0, height: 0, size: fileSize });
                         setModalMeta(prev => ({
                             ...prev,
                             [item.id]: { width: 0, height: 0, size: fileSize }
                         }));
                         setLoading(false);
-                    });
+                    } else {
+                        const localPath = `${FileSystem.cacheDirectory}${item.hash}`;
+                        const fileInfo = await FileSystem.getInfoAsync(localPath, { size: true });
+                        let targetUri = localPath;
+                        let fileSize = 0;
+                        
+                        if (fileInfo.exists) {
+                            fileSize = fileInfo.size || 0;
+                        } else {
+                            const downloadResult = await FileSystem.downloadAsync(remoteUrl, localPath);
+                            targetUri = downloadResult.uri;
+                            try {
+                                const newInfo = await FileSystem.getInfoAsync(targetUri, { size: true });
+                                fileSize = newInfo?.size || 0;
+                            } catch (_) {
+                                fileSize = 0;
+                            }
+                        }
+                        
+                        if (cancelled) return;
+                        setDownloadedUri(targetUri);
+                        
+                        const { Image: RNImage } = require('react-native');
+                        RNImage.getSize(targetUri, (w, h) => {
+                            if (cancelled) return;
+                            setMeta({ width: w, height: h, size: fileSize });
+                            setModalMeta(prev => ({
+                                ...prev,
+                                [item.id]: { width: w, height: h, size: fileSize }
+                            }));
+                            setLoading(false);
+                        }, (err) => {
+                            console.warn('[CompareItemPage] Failed to get image size:', err);
+                            if (cancelled) return;
+                            setMeta({ width: 0, height: 0, size: fileSize });
+                            setModalMeta(prev => ({
+                                ...prev,
+                                [item.id]: { width: 0, height: 0, size: fileSize }
+                            }));
+                            setLoading(false);
+                        });
+                    }
                 } catch (e) {
                     console.error('[CompareItemPage] Remote download error:', e);
                     if (!cancelled) setLoading(false);
@@ -243,12 +326,21 @@ function CompareItemPage({ item, index, isSelected, onToggle, setModalMeta }) {
                 {loading ? (
                     <ActivityIndicator size="large" color="#fff" />
                 ) : downloadedUri ? (
-                    <Image
-                        source={{ uri: downloadedUri }}
-                        style={styles.modalImage}
-                        contentFit="contain"
-                        cachePolicy="memory-disk"
-                    />
+                    item.mediaType === 'video' ? (
+                        <AssetVideoPlayer
+                            uri={downloadedUri}
+                            style={styles.modalImage}
+                            shouldPlay={isFocused}
+                            nativeControls={true}
+                        />
+                    ) : (
+                        <Image
+                            source={{ uri: downloadedUri }}
+                            style={styles.modalImage}
+                            contentFit="contain"
+                            cachePolicy="memory-disk"
+                        />
+                    )
                 ) : (
                     <Image
                         source={{ uri: item.displayUri }}
@@ -353,51 +445,42 @@ export default function DuplicatesScreen() {
     }, [navigation]);
 
     // Toggle photo selection
-    const toggleSelect = (id) => {
+    const toggleSelect = useCallback((id) => {
         setSelectedMap(prev => ({
             ...prev,
             [id]: !prev[id]
         }));
-    };
+    }, []);
 
     const handleSize = useCallback((id, size) => {
         setSizesMap(prev => prev[id] === size ? prev : { ...prev, [id]: size });
     }, []);
 
     // Ignore an entire group of duplicates
-    const handleIgnoreGroup = (group) => {
+    const handleIgnoreGroup = useCallback((group) => {
         if (!group || group.length === 0) return;
-
-        // Capture IDs as primitives BEFORE the Alert opens, to avoid stale closure issues
-        const assetIds = group.map(a => a.id);
-        const firstId = group[0]?.id;
-
         Alert.alert(
             'Ignore Group',
-            'This group will not appear in the cleanup list again.',
+            'Are you sure you want to ignore this group? These photos will no longer be flagged as duplicates in the future.',
             [
                 { text: 'Cancel', style: 'cancel' },
-                {
-                    text: 'Ignore',
+                { 
+                    text: 'Ignore', 
                     style: 'destructive',
-                    onPress: () => {
-                        // Optimistically remove from UI immediately using pre-captured primitives
-                        setGroups(prev => prev.filter(g => g[0]?.id !== firstId));
-                        setSelectedMap(prev => {
-                            const copy = { ...prev };
-                            assetIds.forEach(id => delete copy[id]);
-                            return copy;
-                        });
-                        // Persist to DB in background
-                        AssetDBService.ignoreAssetsForDuplicates(assetIds).catch(e => {
-                            console.error('[DuplicatesScreen] Failed to ignore group in DB:', e);
-                        });
-                        AIService.clearDuplicateCache(); // Invalidate cache so it recalculates if re-entered
+                    onPress: async () => {
+                        try {
+                            const assetIds = group.map(a => a.id);
+                            await AssetDBService.ignoreAssetsForDuplicates(assetIds);
+                            AIService.clearDuplicateCache();
+                            loadDuplicates();
+                        } catch (e) {
+                            console.error('[DuplicatesScreen] Failed to ignore group:', e);
+                        }
                     }
                 }
             ]
         );
-    };
+    }, []);
 
     let selectedCount = 0;
     let selectedSize = 0; // bytes
@@ -406,7 +489,7 @@ export default function DuplicatesScreen() {
         group.forEach(asset => {
             if (selectedMap[asset.id]) {
                 selectedCount++;
-                selectedSize += sizesMap[asset.id] || asset.size || 0;
+                selectedSize += sizesMap[asset.id] || (modalMeta[asset.id] && modalMeta[asset.id].size) || asset.size || 0;
             }
         });
     });
@@ -496,61 +579,25 @@ export default function DuplicatesScreen() {
         );
     };
 
-    const renderGroupItem = ({ item: group, index: groupIndex }) => {
-        const formatDate = (timestamp) => {
-            if (!timestamp) return 'Unknown Date';
-            const date = new Date(timestamp);
-            return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-        };
+    const handleOpenCompare = useCallback((group, idx) => {
+        setCompareGroup(group);
+        setCompareIndex(idx);
+    }, []);
 
+    const renderGroupItem = useCallback(({ item: group, index: groupIndex }) => {
         return (
-            <View style={styles.card}>
-                <View style={styles.cardHeader}>
-                    <View>
-                        <Text style={styles.cardTitle}>Group {groupIndex + 1} ({group.length} photos)</Text>
-                        <Text style={styles.cardSubtitle}>
-                            {formatDate(group[0]?.createTime)}
-                        </Text>
-                    </View>
-                    <View style={styles.cardHeaderActions}>
-                        <TouchableOpacity
-                            style={styles.compareButton}
-                            onPress={() => {
-                                setCompareGroup(group);
-                                setCompareIndex(0);
-                            }}
-                        >
-                            <Eye color="#007AFF" size={14} />
-                            <Text style={styles.compareButtonText}>Compare</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            style={styles.ignoreButton}
-                            onPress={() => handleIgnoreGroup(group)}
-                        >
-                            <Text style={styles.ignoreText}>Ignore</Text>
-                        </TouchableOpacity>
-                    </View>
-                </View>
-
-                <ScrollView
-                    horizontal
-                    showsHorizontalScrollIndicator={false}
-                    contentContainerStyle={styles.scrollContainer}
-                >
-                    {group.map((asset, idx) => (
-                        <AssetCard
-                            key={asset.id}
-                            asset={asset}
-                            idx={idx}
-                            isSelected={!!selectedMap[asset.id]}
-                            onToggle={toggleSelect}
-                            onSize={handleSize}
-                        />
-                    ))}
-                </ScrollView>
-            </View>
+            <DuplicateGroup 
+                group={group}
+                groupIndex={groupIndex}
+                selectedMap={selectedMap}
+                modalMeta={modalMeta}
+                toggleSelect={toggleSelect}
+                handleSize={handleSize}
+                handleIgnoreGroup={handleIgnoreGroup}
+                onOpenCompare={handleOpenCompare}
+            />
         );
-    };
+    }, [selectedMap, modalMeta, toggleSelect, handleSize, handleIgnoreGroup, handleOpenCompare]);
 
     return (
         <View style={styles.container}>
@@ -667,6 +714,7 @@ export default function DuplicatesScreen() {
                                         isSelected={!!selectedMap[item.id]}
                                         onToggle={toggleSelect}
                                         setModalMeta={setModalMeta}
+                                        isFocused={index === compareIndex}
                                     />
                                 )}
                             />
@@ -1098,5 +1146,15 @@ const styles = StyleSheet.create({
         color: '#fff',
         fontSize: 14,
         fontWeight: 'bold',
-    }
+    },
+    videoOverlay: {
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        justifyContent: 'center',
+        alignItems: 'center',
+        backgroundColor: 'rgba(0,0,0,0.15)',
+    },
 });

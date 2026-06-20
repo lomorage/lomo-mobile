@@ -82,7 +82,7 @@ const LivePhotoIcon = ({ color = '#fff', size = 14 }) => {
     );
 };
 
-function AssetVideoPlayer({ uri, style, shouldPlay, nativeControls = false }) {
+export function AssetVideoPlayer({ uri, style, shouldPlay, nativeControls = false }) {
     const [isLoading, setIsLoading] = React.useState(false);
     const loadingTimerRef = React.useRef(null);
 
