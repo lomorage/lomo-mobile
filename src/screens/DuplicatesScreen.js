@@ -633,7 +633,11 @@ export default function DuplicatesScreen() {
                 <View style={styles.centerContainer}>
                     <ActivityIndicator size="large" color="#007AFF" />
                     <Text style={styles.loadingText}>Scanning library for duplicates...</Text>
-                    <Text style={styles.loadingSubtext}>This may take a few seconds, clustering photos by perceptual hash...</Text>
+                    <Text style={styles.loadingSubtext}>
+                        {__DEV__ 
+                            ? 'This may take a few seconds, clustering photos by perceptual hash...' 
+                            : 'This may take a few moments while we find similar photos for you...'}
+                    </Text>
                 </View>
             ) : groups.length === 0 ? (
                 <View style={styles.centerContainer}>
