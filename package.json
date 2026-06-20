@@ -1,6 +1,6 @@
 {
   "name": "lomo-mobile",
-  "version": "1.0.131",
+  "version": "1.0.133",
   "main": "index.js",
   "scripts": {
     "start": "expo start",

@@ -36,7 +36,8 @@ try {
       
       // Calculate a consistently increasing versionCode based on the version string
       // e.g., 1.0.133 -> 1 * 1000000 + 0 * 10000 + 133 = 1000133
-      newVersionCode = parseInt(parts[0], 10) * 1000000 + parseInt(parts[1], 10) * 10000 + parseInt(parts[2], 10);
+      const newParts = newVersion.split('.');
+      newVersionCode = parseInt(newParts[0], 10) * 1000000 + parseInt(newParts[1], 10) * 10000 + parseInt(newParts[2], 10);
 
       // Update android versionCode
       if (!appJson.expo.android) appJson.expo.android = {};
