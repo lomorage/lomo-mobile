@@ -1,6 +1,10 @@
 @echo off
 echo Starting Android Release Build...
 
+echo Bumping app version...
+call node bump-version.js
+if %errorlevel% neq 0 exit /b %errorlevel%
+
 echo Syncing native configurations (Prebuild)...
 call npx expo prebuild -p android
 if %errorlevel% neq 0 exit /b %errorlevel%

@@ -20,12 +20,14 @@ jest.mock('react-native', () => {
     },
     AppState: {
       addEventListener: jest.fn(),
+      currentState: 'active',
     }
   };
 });
 
 // Mock expo-battery
 jest.mock('expo-battery', () => ({
+  getBatteryLevelAsync: jest.fn().mockResolvedValue(1.0),
   getBatteryStateAsync: jest.fn(),
   addBatteryStateListener: jest.fn(() => ({ remove: jest.fn() })),
   BatteryState: {

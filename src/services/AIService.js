@@ -308,11 +308,11 @@ class AIService {
   }
 
   // 2. Synchronize embeddings with lomo-backend
-  async syncEmbeddings() {
+  async syncEmbeddings(force = false) {
     if (this.isSyncing) return;
     const savedAiEnabled = await SecureStore.getItemAsync('lomorage_ai_enabled');
     const aiEnabled = savedAiEnabled !== 'false';
-    if (!aiEnabled) {
+    if (!aiEnabled && !force) {
       console.log('[AIService] Skip embeddings sync: AI features disabled.');
       return;
     }
@@ -332,6 +332,21 @@ class AIService {
 
       // Part A: Upload local embeddings to server
       let hasMoreUploads = true;
+      const totalUploadsRow = await db.getFirstAsync(`
+        SELECT COUNT(*) as count 
+        FROM MediaAsset 
+        WHERE isLocal = 1 
+          AND uploaded = 1 
+          AND clipEmbedding IS NOT NULL 
+          AND clipEmbedding != "" 
+          AND clipEmbedding != "failed" 
+          AND hash NOT IN (
+            SELECT hash FROM MediaAsset WHERE isLocal = 0 AND clipEmbedding IS NOT NULL AND clipEmbedding != ""
+          )
+      `);
+      const totalUploads = totalUploadsRow?.count || 0;
+      let processedUploads = 0;
+
       while (hasMoreUploads) {
         const localPendingUpload = await db.getAllAsync(`
           SELECT id, hash, clipEmbedding 
@@ -355,6 +370,15 @@ class AIService {
         console.log(`[AIService] Uploading batch of ${localPendingUpload.length} local embeddings to server...`);
         for (const asset of localPendingUpload) {
           try {
+            processedUploads++;
+            this.status = {
+              isProcessing: true,
+              current: 0,
+              total: 0,
+              message: `正在上传照片特征 (${processedUploads}/${totalUploads})...`
+            };
+            DeviceEventEmitter.emit('ai_processing_status', this.status);
+
             const serverAssetId = await this.getServerAssetIdByHash(asset.hash);
             if (!serverAssetId) {
               console.log(`[AIService] Skipping upload for ${asset.hash}: server ID not synced yet.`);
@@ -394,28 +418,46 @@ class AIService {
       // Part B: Download remote embeddings and phash from server
       const savedRemoteAI = await SecureStore.getItemAsync('lomorage_remote_ai_processing');
       const remoteAIEnabled = savedRemoteAI === 'true';
-      if (!remoteAIEnabled) {
+      if (!remoteAIEnabled && !force) {
         console.log('[AIService] Skip remote embedding download: remote AI indexing disabled.');
       } else {
-      let hasMoreDownloads = true;
-      while (hasMoreDownloads) {
-        const remotePendingDownload = await db.getAllAsync(`
-          SELECT id, hash 
+        const totalDownloadRow = await db.getFirstAsync(`
+          SELECT COUNT(*) as count 
           FROM MediaAsset 
           WHERE isLocal = 0 
             AND ((clipEmbedding IS NULL OR clipEmbedding = "") OR (phash IS NULL OR phash = ""))
-          LIMIT 20
         `);
+        const totalDownloads = totalDownloadRow?.count || 0;
+        let processedDownloads = 0;
 
-        if (remotePendingDownload.length === 0) {
-          hasMoreDownloads = false;
-          break;
-        }
+        let hasMoreDownloads = true;
+        while (hasMoreDownloads) {
+          const remotePendingDownload = await db.getAllAsync(`
+            SELECT id, hash 
+            FROM MediaAsset 
+            WHERE isLocal = 0 
+              AND ((clipEmbedding IS NULL OR clipEmbedding = "") OR (phash IS NULL OR phash = ""))
+            LIMIT 20
+          `);
 
-        console.log(`[AIService] Syncing batch of ${remotePendingDownload.length} remote embeddings & phash from server...`);
-        for (const asset of remotePendingDownload) {
-          try {
-            const res = await axios.get(`${url}/asset/metadata/${asset.hash}`, {
+          if (remotePendingDownload.length === 0) {
+            hasMoreDownloads = false;
+            break;
+          }
+
+          console.log(`[AIService] Syncing batch of ${remotePendingDownload.length} remote embeddings & phash from server...`);
+          for (const asset of remotePendingDownload) {
+            try {
+              processedDownloads++;
+              this.status = {
+                isProcessing: true,
+                current: 0,
+                total: 0,
+                message: `正在同步远程照片特征 (${Math.min(processedDownloads, totalDownloads)}/${totalDownloads})...`
+              };
+              DeviceEventEmitter.emit('ai_processing_status', this.status);
+
+              const res = await axios.get(`${url}/asset/metadata/${asset.hash}`, {
               headers: { Authorization: `token=${token}` },
               timeout: 10000,
               skipAutoProbe: true
@@ -461,27 +503,47 @@ class AIService {
         await new Promise(resolve => setTimeout(resolve, 300));
       }
 
-      // Part C: Scheme B - Local extraction for remote photos (idle Wi-Fi/Charging only)
-      const savedRemoteAI = await SecureStore.getItemAsync('lomorage_remote_ai_processing');
-      const isRemoteAIEnabled = savedRemoteAI === 'true';
-      
-      if (isRemoteAIEnabled) {
-        const isIdle = await this.isIdleForAI();
+        // Part C: Scheme B - Local extraction for remote photos (idle Wi-Fi/Charging only)
+        const isIdle = force ? true : await this.isIdleForAI();
         if (!isIdle) {
           console.log('[AIService] Scheme B: Skip remote photos local indexing (device is not charging or not on Wi-Fi).');
         } else {
-          // Fetch remote assets that don't have embeddings on server (marked as 'none')
-          const remotePendingIndex = await db.getAllAsync(`
-            SELECT id, hash 
+          const totalRemoteRow = await db.getFirstAsync(`
+            SELECT COUNT(*) as count 
             FROM MediaAsset 
             WHERE isLocal = 0 
               AND clipEmbedding = "none"
-            LIMIT 10
           `);
+          const totalRemote = totalRemoteRow?.count || 0;
+          let processedRemote = 0;
 
-          if (remotePendingIndex.length > 0) {
+          let hasMoreRemoteIndex = true;
+          while (hasMoreRemoteIndex) {
+            // Fetch remote assets that don't have embeddings on server (marked as 'none')
+            const remotePendingIndex = await db.getAllAsync(`
+              SELECT id, hash 
+              FROM MediaAsset 
+              WHERE isLocal = 0 
+                AND clipEmbedding = "none"
+              LIMIT 10
+            `);
+
+            if (remotePendingIndex.length === 0) {
+              hasMoreRemoteIndex = false;
+              break;
+            }
+
             console.log(`[AIService] Scheme B: Indexing ${remotePendingIndex.length} remote photos locally...`);
             for (const asset of remotePendingIndex) {
+              processedRemote++;
+              this.status = {
+                isProcessing: true,
+                current: 0,
+                total: 0,
+                message: `正在提取远程照片特征 (${Math.min(processedRemote, totalRemote)}/${totalRemote})...`
+              };
+              DeviceEventEmitter.emit('ai_processing_status', this.status);
+
               const tempUri = `${FileSystem.cacheDirectory}${asset.hash}.jpg`;
               try {
                 // 1. Download preview image to local temporary file
@@ -533,12 +595,13 @@ class AIService {
           }
         }
       }
-      } // end else remoteAIEnabled
 
     } catch (error) {
       console.error('[AIService] Error in syncEmbeddings:', error);
     } finally {
       this.isSyncing = false;
+      this.status = { isProcessing: false, current: 0, total: 0, message: 'Idle' };
+      DeviceEventEmitter.emit('ai_processing_status', this.status);
       console.log('[AIService] Embeddings sync finished.');
     }
   }
@@ -1138,7 +1201,7 @@ class AIService {
         this.isPHashClearedInMemory = false;
         // Trigger extraction and sync immediately in the background asynchronously
         this.processLocalEmbeddings(50, true).then(() => {
-          this.syncEmbeddings().catch(e => console.warn('[AIService] Background syncEmbeddings for pHash failed:', e.message));
+          this.syncEmbeddings(true).catch(e => console.warn('[AIService] Background syncEmbeddings for pHash failed:', e.message));
         }).catch(e => {
           console.error('[AIService] Background processLocalEmbeddings for pHash failed:', e);
         });
@@ -1168,7 +1231,7 @@ class AIService {
         this.isCLIPClearedInMemory = false;
         // Trigger extraction and sync immediately in the background asynchronously
         this.processLocalEmbeddings(50, true).then(() => {
-          this.syncEmbeddings().catch(e => console.warn('[AIService] Background syncEmbeddings for CLIP failed:', e.message));
+          this.syncEmbeddings(true).catch(e => console.warn('[AIService] Background syncEmbeddings for CLIP failed:', e.message));
         }).catch(e => {
           console.error('[AIService] Background processLocalEmbeddings for CLIP failed:', e);
         });

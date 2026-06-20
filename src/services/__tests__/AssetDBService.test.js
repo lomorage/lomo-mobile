@@ -1,20 +1,46 @@
 import AssetDBService from '../AssetDBService';
 import * as SQLite from 'expo-sqlite';
 
+let mockDbInstance;
+let mockStatementInstance;
+const mockSpies = {
+  execAsync: null,
+  runAsync: null,
+  withExclusiveTransactionAsync: null,
+  withTransactionAsync: null,
+  getAllAsync: null,
+  getFirstAsync: null,
+  prepareAsync: null,
+};
+
 jest.mock('expo-sqlite', () => {
-  const mockStatement = {
-    executeAsync: jest.fn().mockResolvedValue({}),
-    finalizeAsync: jest.fn().mockResolvedValue({}),
-  };
-  const mockDb = {
-    execAsync: jest.fn().mockResolvedValue({}),
-    withExclusiveTransactionAsync: jest.fn(async (cb) => cb()),
-    prepareAsync: jest.fn().mockResolvedValue(mockStatement),
-    getAllAsync: jest.fn().mockResolvedValue([]),
-    getFirstAsync: jest.fn().mockResolvedValue(null),
-  };
   return {
-    openDatabaseAsync: jest.fn().mockResolvedValue(mockDb),
+    openDatabaseAsync: jest.fn().mockImplementation(() => {
+      mockStatementInstance = {
+        executeAsync: jest.fn().mockResolvedValue({}),
+        executeSync: jest.fn(),
+        finalizeAsync: jest.fn().mockResolvedValue({}),
+      };
+      mockDbInstance = {
+        execAsync: jest.fn().mockResolvedValue({}),
+        withExclusiveTransactionAsync: jest.fn(async (cb) => cb()),
+        withTransactionAsync: jest.fn(async (cb) => cb()),
+        prepareAsync: jest.fn().mockResolvedValue(mockStatementInstance),
+        getAllAsync: jest.fn().mockResolvedValue([]),
+        getFirstAsync: jest.fn().mockResolvedValue({ user_version: 0 }),
+        runAsync: jest.fn().mockResolvedValue({}),
+      };
+      
+      mockSpies.execAsync = mockDbInstance.execAsync;
+      mockSpies.runAsync = mockDbInstance.runAsync;
+      mockSpies.withExclusiveTransactionAsync = mockDbInstance.withExclusiveTransactionAsync;
+      mockSpies.withTransactionAsync = mockDbInstance.withTransactionAsync;
+      mockSpies.getAllAsync = mockDbInstance.getAllAsync;
+      mockSpies.getFirstAsync = mockDbInstance.getFirstAsync;
+      mockSpies.prepareAsync = mockDbInstance.prepareAsync;
+
+      return Promise.resolve(mockDbInstance);
+    }),
   };
 });
 
@@ -25,15 +51,16 @@ describe('AssetDBService', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
     AssetDBService.db = null; // Reset database state
+    AssetDBService.writePromise = Promise.resolve(); // Reset write queue to prevent hangs
     await AssetDBService.init();
-    mockDb = await SQLite.openDatabaseAsync();
-    mockStatement = await mockDb.prepareAsync();
+    mockDb = mockDbInstance;
+    mockStatement = mockStatementInstance;
   });
 
   test('init initializes database and executes table creation & migration', async () => {
     expect(SQLite.openDatabaseAsync).toHaveBeenCalledWith('lomoAssets.db');
-    expect(mockDb.execAsync).toHaveBeenCalledWith(expect.stringContaining('CREATE TABLE IF NOT EXISTS MediaAsset'));
-    expect(mockDb.execAsync).toHaveBeenCalledWith(expect.stringContaining('ALTER TABLE MediaAsset ADD COLUMN filename TEXT'));
+    expect(mockSpies.execAsync).toHaveBeenCalledWith(expect.stringContaining('CREATE TABLE IF NOT EXISTS MediaAsset'));
+    expect(mockSpies.execAsync).toHaveBeenCalledWith(expect.stringContaining('ALTER TABLE MediaAsset ADD COLUMN filename TEXT'));
   });
 
   test('insertLocalAssets inserts local assets successfully within transaction', async () => {
@@ -43,9 +70,9 @@ describe('AssetDBService', () => {
 
     await AssetDBService.insertLocalAssets(mockAssets);
 
-    expect(mockDb.withExclusiveTransactionAsync).toHaveBeenCalled();
-    expect(mockDb.prepareAsync).toHaveBeenCalledWith(expect.stringContaining('INSERT OR REPLACE INTO MediaAsset'));
-    expect(mockStatement.executeAsync).toHaveBeenCalledWith(
+    expect(mockSpies.withExclusiveTransactionAsync).toHaveBeenCalled();
+    expect(mockSpies.prepareAsync).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO MediaAsset'));
+    expect(mockStatement.executeSync).toHaveBeenCalledWith(
       '1',
       1,
       12.3,
@@ -56,19 +83,19 @@ describe('AssetDBService', () => {
     expect(mockStatement.finalizeAsync).toHaveBeenCalled();
   });
 
-  test('insertRemoteAssets inserts remote assets with filename and mediaType', async () => {
+  test('syncRemoteAssets inserts remote assets with filename and mediaType', async () => {
     const mockRemoteAssets = [
       { hash: 'h1', date: new Date('2024-01-01T12:00:00Z'), tag: 'pic.jpg' },
       { hash: 'h2', date: new Date('2024-02-01T12:00:00Z'), tag: 'movie.mp4' }
     ];
 
-    await AssetDBService.insertRemoteAssets(mockRemoteAssets);
+    await AssetDBService.syncRemoteAssets(mockRemoteAssets);
 
-    expect(mockDb.withExclusiveTransactionAsync).toHaveBeenCalled();
-    expect(mockDb.prepareAsync).toHaveBeenCalledWith(expect.stringContaining('INSERT OR IGNORE INTO MediaAsset'));
+    expect(mockSpies.withExclusiveTransactionAsync).toHaveBeenCalled();
+    expect(mockSpies.prepareAsync).toHaveBeenCalledWith(expect.stringContaining('INSERT OR IGNORE INTO MediaAsset'));
     
     // First remote asset (pic.jpg -> photo)
-    expect(mockStatement.executeAsync).toHaveBeenNthCalledWith(
+    expect(mockStatement.executeSync).toHaveBeenNthCalledWith(
       1,
       'h1',
       'h1',
@@ -78,7 +105,7 @@ describe('AssetDBService', () => {
     );
 
     // Second remote asset (movie.mp4 -> video)
-    expect(mockStatement.executeAsync).toHaveBeenNthCalledWith(
+    expect(mockStatement.executeSync).toHaveBeenNthCalledWith(
       2,
       'h2',
       'h2',
@@ -89,14 +116,14 @@ describe('AssetDBService', () => {
   });
 
   test('getRemoteAssets queries remote assets and maps them correctly', async () => {
-    mockDb.getAllAsync.mockResolvedValue([
+    mockSpies.getAllAsync.mockResolvedValue([
       { hash: 'h1', filename: 'pic.jpg', createTime: 123456, mediaType: 'photo' }
     ]);
 
     const result = await AssetDBService.getRemoteAssets();
 
-    expect(mockDb.getAllAsync).toHaveBeenCalledWith(
-      expect.stringContaining('SELECT hash, filename, createTime, mediaType FROM MediaAsset WHERE isLocal = 0')
+    expect(mockSpies.getAllAsync).toHaveBeenCalledWith(
+      expect.stringContaining('SELECT hash, filename, createTime, mediaType, isFavorite, localCachePath FROM MediaAsset WHERE isLocal = 0 ORDER BY createTime DESC')
     );
     expect(result).toEqual([
       {
@@ -104,17 +131,19 @@ describe('AssetDBService', () => {
         hash: 'h1',
         filename: 'pic.jpg',
         creationTime: 123456,
-        mediaType: 'photo'
+        mediaType: 'photo',
+        isFavorite: false,
+        localCachePath: undefined
       }
     ]);
   });
 
   test('getRemoteAssetsCount returns total count of remote assets', async () => {
-    mockDb.getFirstAsync.mockResolvedValue({ count: 42 });
+    mockSpies.getFirstAsync.mockResolvedValue({ count: 42 });
 
     const count = await AssetDBService.getRemoteAssetsCount();
 
-    expect(mockDb.getFirstAsync).toHaveBeenCalledWith(
+    expect(mockSpies.getFirstAsync).toHaveBeenCalledWith(
       expect.stringContaining('SELECT COUNT(*) as count FROM MediaAsset WHERE isLocal = 0')
     );
     expect(count).toBe(42);
@@ -127,8 +156,8 @@ describe('AssetDBService', () => {
 
     await AssetDBService.updateRemoteAssetFilenames(updates);
 
-    expect(mockDb.withExclusiveTransactionAsync).toHaveBeenCalled();
-    expect(mockDb.prepareAsync).toHaveBeenCalledWith(expect.stringContaining('UPDATE MediaAsset SET filename = ?, mediaType = ? WHERE id = ?'));
+    expect(mockSpies.withExclusiveTransactionAsync).toHaveBeenCalled();
+    expect(mockSpies.prepareAsync).toHaveBeenCalledWith(expect.stringContaining('UPDATE MediaAsset SET filename = ?, mediaType = ? WHERE id = ?'));
     expect(mockStatement.executeAsync).toHaveBeenCalledWith(
       'healed.jpg',
       'photo',
@@ -137,14 +166,14 @@ describe('AssetDBService', () => {
   });
 
   test('getLocalAssetsWithoutGeo returns local assets without geo details', async () => {
-    mockDb.getAllAsync.mockResolvedValue([
+    mockSpies.getAllAsync.mockResolvedValue([
       { id: '1' },
       { id: '2' }
     ]);
 
     const result = await AssetDBService.getLocalAssetsWithoutGeo(10);
 
-    expect(mockDb.getAllAsync).toHaveBeenCalledWith(
+    expect(mockSpies.getAllAsync).toHaveBeenCalledWith(
       expect.stringContaining('SELECT id FROM MediaAsset WHERE isLocal = 1 AND hasGeo = 0 LIMIT ?'),
       [10]
     );

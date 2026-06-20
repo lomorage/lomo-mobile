@@ -226,7 +226,13 @@ class AssetMerkleRoot extends MerkleNode {
     assetNode.setTag(assetId);
     assetNode.setDate(date);
     
-    dayNode.children.push(assetNode); // O(1) push instead of O(N) splice
+    // Keep children ordered by hash (Asset level)
+    const index = dayNode.children.findIndex(c => c.hash > normalizedHash);
+    if (index === -1) {
+      dayNode.children.push(assetNode);
+    } else {
+      dayNode.children.splice(index, 0, assetNode);
+    }
     assetNode.parentNode = dayNode;
     this.assetsMap.set(normalizedHash, assetNode);
     

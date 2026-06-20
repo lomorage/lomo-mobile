@@ -208,7 +208,7 @@ export function SettingsProvider({ children }) {
             if (newValue && aiEnabled) {
                 // Immediately start syncing remote embeddings
                 const AIService = require('../services/AIService').default;
-                AIService.syncEmbeddings().catch(e => console.warn('[SettingsContext] Remote AI sync failed:', e.message));
+                AIService.syncEmbeddings(true).catch(e => console.warn('[SettingsContext] Remote AI sync failed:', e.message));
             }
         } catch (error) {
             console.error('Failed to update remote AI processing setting', error);

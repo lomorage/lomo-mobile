@@ -22,14 +22,31 @@ try {
   fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
   console.log(`\u2714 Updated package.json`);
 
+  let newVersionCode = 1;
+
   // 4. Update app.json
   const appJsonPath = path.join(__dirname, 'app.json');
   if (fs.existsSync(appJsonPath)) {
     const appJson = JSON.parse(fs.readFileSync(appJsonPath, 'utf8'));
-    if (appJson.expo && appJson.expo.version) {
-      appJson.expo.version = newVersion;
+    if (appJson.expo) {
+      if (appJson.expo.version) {
+        appJson.expo.version = newVersion;
+      }
+      
+      // Calculate a consistently increasing versionCode based on the version string
+      // e.g., 1.0.133 -> 1 * 1000000 + 0 * 10000 + 133 = 1000133
+      newVersionCode = parseInt(parts[0], 10) * 1000000 + parseInt(parts[1], 10) * 10000 + parseInt(parts[2], 10);
+
+      // Update android versionCode
+      if (!appJson.expo.android) appJson.expo.android = {};
+      appJson.expo.android.versionCode = newVersionCode;
+      
+      // Update ios buildNumber
+      if (!appJson.expo.ios) appJson.expo.ios = {};
+      appJson.expo.ios.buildNumber = String(parseInt(appJson.expo.ios.buildNumber || '2', 10) + 1);
+      
       fs.writeFileSync(appJsonPath, JSON.stringify(appJson, null, 2) + '\n');
-      console.log(`\u2714 Updated app.json`);
+      console.log(`\u2714 Updated app.json (android versionCode: ${newVersionCode}, ios buildNumber: ${appJson.expo.ios.buildNumber})`);
     }
   }
 
@@ -38,12 +55,8 @@ try {
   if (fs.existsSync(buildGradlePath)) {
     let buildGradle = fs.readFileSync(buildGradlePath, 'utf8');
     
-    let newVersionCode = 1;
     // Update versionCode
-    buildGradle = buildGradle.replace(/versionCode\s+(\d+)/, (match, p1) => {
-      newVersionCode = parseInt(p1, 10) + 1;
-      return `versionCode ${newVersionCode}`;
-    });
+    buildGradle = buildGradle.replace(/versionCode\s+(\d+)/, `versionCode ${newVersionCode}`);
     
     // Update versionName
     buildGradle = buildGradle.replace(/versionName\s+".*"/, `versionName "${newVersion}"`);

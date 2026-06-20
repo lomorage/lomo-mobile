@@ -358,7 +358,10 @@ class AssetDBService {
                 const id = asset.hash;
                 let createTime = 0;
                 if (asset.date) {
-                  createTime = new Date(asset.date).getTime();
+                  const parsedTime = new Date(asset.date).getTime();
+                  if (!isNaN(parsedTime)) {
+                    createTime = parsedTime;
+                  }
                 }
                 const filename = asset.tag || asset.filename || '';
                 const mType = isVideoExtension(filename) ? 'video' : 'photo';

@@ -27,6 +27,8 @@ jest.mock('expo-crypto', () => ({
 
 jest.mock('../AssetDBService', () => ({
   init: jest.fn().mockResolvedValue(),
+  syncRemoteAssets: jest.fn().mockResolvedValue(),
+  syncUploadedStatus: jest.fn().mockResolvedValue(),
   insertRemoteAssets: jest.fn().mockResolvedValue(),
   getRemoteAssetsWithoutGeo: jest.fn().mockResolvedValue([]),
   getLocalAssetsWithoutGeo: jest.fn().mockResolvedValue([]),
@@ -35,6 +37,8 @@ jest.mock('../AssetDBService', () => ({
   getRemoteAssets: jest.fn().mockResolvedValue([]),
   getRemoteAssetsCount: jest.fn().mockResolvedValue(0),
   updateRemoteAssetFilenames: jest.fn().mockResolvedValue(),
+  getLocalHashesMap: jest.fn().mockResolvedValue({}),
+  updateAssetHash: jest.fn().mockResolvedValue(),
 }));
 
 jest.mock('axios');
@@ -58,6 +62,8 @@ describe('SyncService Incremental Remote Sync', () => {
       headers: { Authorization: 'token=test-token' },
       timeout: 30000,
       skipAutoProbe: true,
+      priority: 4,
+      groupId: 'SyncService',
     });
     expect(result).toEqual({ Hash: 'root_hash', Years: [] });
   });
@@ -118,7 +124,7 @@ describe('SyncService Incremental Remote Sync', () => {
       if (url.endsWith('/assets/merkletree')) {
         return Promise.resolve({ data: monthLevelData });
       }
-      if (url.endsWith('/assets/merkletree/2024/2')) {
+      if (url.includes('/assets/merkletree/2024/2')) {
         return Promise.resolve({ data: month2DetailData });
       }
       return Promise.reject(new Error('Unexpected URL'));
@@ -136,7 +142,7 @@ describe('SyncService Incremental Remote Sync', () => {
 
     // Verify AssetDBService interaction
     expect(AssetDBService.init).toHaveBeenCalled();
-    expect(AssetDBService.insertRemoteAssets).toHaveBeenCalled();
+    expect(AssetDBService.syncRemoteAssets).toHaveBeenCalled();
 
     // Verify only changed month detail was fetched
     expect(axios.get).toHaveBeenCalledTimes(2); // 1 overview + 1 month-level fetch
@@ -167,7 +173,7 @@ describe('SyncService Incremental Remote Sync', () => {
       if (url.endsWith('/assets/merkletree')) {
         return Promise.resolve({ data: monthLevelData });
       }
-      if (url.endsWith('/assets/merkletree/2024/1')) {
+      if (url.includes('/assets/merkletree/2024/1')) {
         return Promise.reject(new Error('Network error on month fetch'));
       }
       return Promise.reject(new Error('Unexpected URL'));
@@ -201,8 +207,8 @@ describe('SyncService Incremental Remote Sync', () => {
       // Verify that it checked the remote count
       expect(AssetDBService.getRemoteAssetsCount).toHaveBeenCalled();
       // Verify that it bulk inserted remote assets from tree into SQLite
-      expect(AssetDBService.insertRemoteAssets).toHaveBeenCalled();
-      expect(AssetDBService.insertRemoteAssets.mock.calls[0][0].length).toBe(1);
+      expect(AssetDBService.syncRemoteAssets).toHaveBeenCalled();
+      expect(AssetDBService.syncRemoteAssets.mock.calls[0][0].length).toBe(1);
       // Verify that it emitted the update event
       expect(mockEmit).toHaveBeenCalledWith('remoteAssetsUpdated');
     } finally {
