@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { 
     StyleSheet, 
     View, 
@@ -414,23 +414,34 @@ export default function DuplicatesScreen() {
     const [compareIndex, setCompareIndex] = useState(0);
     const [modalMeta, setModalMeta] = useState({});
 
+    const groupsRef = useRef([]);
+
+    // Keep groupsRef in sync with groups state
+    useEffect(() => {
+        groupsRef.current = groups;
+    }, [groups]);
+
     const loadDuplicates = async (forceRescan = false) => {
-        setLoading(true);
+        // Prevent loading spinner flash if we already have groups in memory and not forcing rescan
+        if (groupsRef.current.length === 0 || forceRescan) {
+            setLoading(true);
+        }
         try {
             console.log(`[DuplicatesScreen] Running duplicate detection algorithm (force=${forceRescan})...`);
             const result = await AIService.findDuplicateGroups(forceRescan);
             setGroups(result);
             
-            // Initialize selection map:
-            // For each group, group[0] is the highest quality (unselected by default)
-            // group[1...N] are lower quality duplicates (selected for deletion by default)
-            const initialMap = {};
-            result.forEach(group => {
-                group.slice(1).forEach(asset => {
-                    initialMap[asset.id] = true;
+            // Initialize selection map ONLY if forcing a rescan or if we didn't have groups before.
+            // This prevents the user's selection from resetting when they switch tabs and come back.
+            if (forceRescan || groupsRef.current.length === 0) {
+                const initialMap = {};
+                result.forEach(group => {
+                    group.slice(1).forEach(asset => {
+                        initialMap[asset.id] = true;
+                    });
                 });
-            });
-            setSelectedMap(initialMap);
+                setSelectedMap(initialMap);
+            }
         } catch (error) {
             console.error('[DuplicatesScreen] Failed to load duplicates:', error);
             Alert.alert(
@@ -492,7 +503,7 @@ export default function DuplicatesScreen() {
                         AssetDBService.ignoreAssetsForDuplicates(assetIds).catch(e => {
                             console.error('[DuplicatesScreen] Failed to ignore group in DB:', e);
                         });
-                        AIService.clearDuplicateCache(); // Invalidate cache so it recalculates if re-entered
+                        AIService.removeDuplicateGroupFromCache(assetIds); // Update memory cache without clearing it
                     }
                 }
             ]

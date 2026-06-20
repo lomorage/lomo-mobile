@@ -66,6 +66,15 @@ class AIService {
     this.duplicateGroupsCacheTime = 0;
   }
 
+  removeDuplicateGroupFromCache(assetIds) {
+    if (!this.duplicateGroupsCache) return;
+    const idsSet = new Set(assetIds);
+    this.duplicateGroupsCache = this.duplicateGroupsCache.filter(group => {
+      // If the first item of the group is in the ignored set, remove the entire group from cache
+      return !idsSet.has(group[0]?.id);
+    });
+  }
+
   getProcessingStatus() {
     return this.status;
   }
