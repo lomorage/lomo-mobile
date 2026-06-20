@@ -57,6 +57,13 @@ class AIService {
     this.status = { isProcessing: false, current: 0, total: 0, message: 'Idle' };
     this.isPHashClearedInMemory = false;
     this.isCLIPClearedInMemory = false;
+    this.duplicateGroupsCache = null;
+    this.duplicateGroupsCacheTime = 0;
+  }
+
+  clearDuplicateCache() {
+    this.duplicateGroupsCache = null;
+    this.duplicateGroupsCacheTime = 0;
   }
 
   getProcessingStatus() {
@@ -905,23 +912,38 @@ class AIService {
 
       let results;
       if (isImageSearch) {
-        // For image-to-image search, use finalThreshold directly (no adaptive relative subtraction because maxScore of self-match is 1.0)
+        // For image-to-image search, use finalThreshold directly
         results = allCandidates.filter(c => c.score >= finalThreshold);
       } else {
-        // For text search, calculate adaptive threshold based on maximum similarity score
-        const floorThreshold = Math.max(0.12, finalThreshold - 0.06);
+        // For text search, calculate adaptive threshold but enforce a strict absolute minimum.
+        // CLIP models generally output random noise correlations below 0.225.
+        // If maxScore is low (no true matches exist), we MUST return empty rather than lowering the threshold to garbage levels.
+        const ABSOLUTE_MIN_SCORE = 0.225;
+        const floorThreshold = Math.max(ABSOLUTE_MIN_SCORE, finalThreshold - 0.05);
         const adaptiveThreshold = Math.max(floorThreshold, maxScore - 0.04);
         results = allCandidates.filter(c => c.score >= adaptiveThreshold);
       }
 
       // Sort by score descending
       results.sort((a, b) => b.score - a.score);
-      console.log(`[AIService] Search maxScore=${maxScore.toFixed(4)}, matches=${results.length} for "${searchQuery}".`);
-      results.slice(0, 5).forEach((r, idx) => {
+
+      // Deduplicate results by hash (prefer local over remote)
+      const uniqueResults = [];
+      const seenHashes = new Set();
+      for (const r of results) {
+        const h = r.hash || r.id.toString();
+        if (!seenHashes.has(h)) {
+          seenHashes.add(h);
+          uniqueResults.push(r);
+        }
+      }
+
+      console.log(`[AIService] Search maxScore=${maxScore.toFixed(4)}, matches=${uniqueResults.length} for "${searchQuery}".`);
+      uniqueResults.slice(0, 5).forEach((r, idx) => {
         console.log(`  #${idx + 1}: filename=${r.filename}, score=${r.score.toFixed(4)}, isLocal=${r.isLocal}`);
       });
 
-      return results.slice(0, limit);
+      return uniqueResults.slice(0, limit);
     } catch (error) {
       console.error('[AIService] Search similarity failed:', error);
       return [];
@@ -1107,12 +1129,24 @@ class AIService {
 
       // Sort by score descending (smaller Hamming distance first)
       results.sort((a, b) => b.score - a.score);
-      console.log(`[AIService] pHash search found ${results.length} matching similar photos (threshold <= ${threshold}).`);
-      results.slice(0, 5).forEach((r, idx) => {
+
+      // Deduplicate by hash
+      const uniqueResults = [];
+      const seenHashes = new Set();
+      for (const r of results) {
+        const h = r.hash || r.id.toString();
+        if (!seenHashes.has(h)) {
+          seenHashes.add(h);
+          uniqueResults.push(r);
+        }
+      }
+
+      console.log(`[AIService] pHash search found ${uniqueResults.length} matching similar photos (threshold <= ${threshold}).`);
+      uniqueResults.slice(0, 5).forEach((r, idx) => {
         console.log(`  #${idx + 1}: filename=${r.filename}, score=${r.score.toFixed(4)} (distance=${Math.round((1.0 - r.score) * 64)})`);
       });
 
-      return results.slice(0, limit);
+      return uniqueResults.slice(0, limit);
     } catch (error) {
       console.error('[AIService] Search similarity by phash failed:', error);
       return [];
@@ -1121,8 +1155,17 @@ class AIService {
 
   // Find duplicate groups using pHash Hamming distance <= 10.
   // Returns an array of groups, each containing detailed asset objects sorted by quality (highest first).
-  async findDuplicateGroups() {
+  async findDuplicateGroups(forceRescan = false) {
     try {
+      if (forceRescan) {
+        this.clearDuplicateCache();
+      }
+      const now = Date.now();
+      if (this.duplicateGroupsCache && (now - this.duplicateGroupsCacheTime < 300000)) {
+        console.log('[AIService] Returning cached duplicate groups');
+        return this.duplicateGroupsCache;
+      }
+
       console.time('[AIService] duplicate_scan_total');
       if (this.isPHashClearedInMemory) {
         console.log('[AIService] pHash cache cleared flag is active, returning empty duplicate groups.');
@@ -1245,6 +1288,7 @@ class AIService {
       // This avoids hundreds of MediaService.getAssetInfo / axios.head calls that were causing the long wait.
       const url = AuthService.getServerUrl();
       const token = AuthService.getToken();
+      const ignoredHashes = await AssetDBService.getIgnoredDuplicateHashes();
       const enrichedClusters = clusters.map(cluster => {
         const sorted = [...cluster].sort((a, b) => {
           // Local beats remote
@@ -1253,7 +1297,18 @@ class AIService {
           // Newer createTime first
           return (b.createTime || 0) - (a.createTime || 0);
         });
-        return sorted.map(asset => {
+
+        const filteredCluster = [];
+        const seenIds = new Set();
+        for (const asset of sorted) {
+          const idOrHash = asset.hash || asset.id.toString();
+          if (!ignoredHashes.includes(idOrHash) && !seenIds.has(asset.id)) {
+            seenIds.add(asset.id);
+            filteredCluster.push(asset);
+          }
+        }
+
+        return filteredCluster.map(asset => {
           let displayUri = null;
           if (asset.isLocal === 1) {
             // Will be resolved lazily by the UI when the user views the asset
@@ -1279,8 +1334,13 @@ class AIService {
         });
       });
 
+      // Filter out clusters that have less than 2 items after deduplication
+      const finalClusters = enrichedClusters.filter(c => c.length > 1);
+
+      this.duplicateGroupsCache = finalClusters;
+      this.duplicateGroupsCacheTime = Date.now();
       console.timeEnd('[AIService] duplicate_scan_total');
-      return enrichedClusters;
+      return finalClusters;
     } catch (error) {
       console.timeEnd('[AIService] duplicate_scan_total');
       console.error('[AIService] Failed in findDuplicateGroups:', error);

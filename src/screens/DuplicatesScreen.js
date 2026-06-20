@@ -12,6 +12,7 @@ import {
     Modal,
     ScrollView
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { useNavigation } from '@react-navigation/native';
 import { ChevronLeft, Trash2, X, Check, Eye, Copy } from 'lucide-react-native';
@@ -303,6 +304,7 @@ function CompareItemPage({ item, index, isSelected, onToggle, setModalMeta }) {
 }
 
 export default function DuplicatesScreen() {
+    const insets = useSafeAreaInsets();
     const navigation = useNavigation();
     const [loading, setLoading] = useState(true);
     const [deleting, setDeleting] = useState(false);
@@ -314,11 +316,11 @@ export default function DuplicatesScreen() {
     const [compareIndex, setCompareIndex] = useState(0);
     const [modalMeta, setModalMeta] = useState({});
 
-    const loadDuplicates = async () => {
+    const loadDuplicates = async (forceRescan = false) => {
         setLoading(true);
         try {
-            console.log('[DuplicatesScreen] Running duplicate detection algorithm...');
-            const result = await AIService.findDuplicateGroups();
+            console.log(`[DuplicatesScreen] Running duplicate detection algorithm (force=${forceRescan})...`);
+            const result = await AIService.findDuplicateGroups(forceRescan);
             setGroups(result);
             
             // Initialize selection map:
@@ -382,6 +384,7 @@ export default function DuplicatesScreen() {
                         AssetDBService.ignoreAssetsForDuplicates(assetIds).catch(e => {
                             console.error('[DuplicatesScreen] Failed to ignore group in DB:', e);
                         });
+                        AIService.clearDuplicateCache(); // Invalidate cache so it recalculates if re-entered
                     }
                 }
             ]
@@ -471,6 +474,7 @@ export default function DuplicatesScreen() {
                             await AssetDBService.deleteAssets(allIdsOrHashes);
 
                             // 4. Reload duplicates list to reflect changes
+                            AIService.clearDuplicateCache();
                             Alert.alert('Success', `Selected photos cleaned up successfully!`);
                             loadDuplicates();
                         } catch (err) {
@@ -543,7 +547,7 @@ export default function DuplicatesScreen() {
     return (
         <View style={styles.container}>
             {/* Header */}
-            <View style={styles.header}>
+            <View style={[styles.header, { height: 56 }]}>
                 <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()}>
                     <ChevronLeft color="#007AFF" size={26} />
                 </TouchableOpacity>
@@ -570,7 +574,7 @@ export default function DuplicatesScreen() {
                     </View>
                     <Text style={styles.emptyText}>Your library is clean!</Text>
                     <Text style={styles.emptySubtext}>No duplicates or highly similar photos found.</Text>
-                    <TouchableOpacity style={styles.reloadBtn} onPress={loadDuplicates}>
+                    <TouchableOpacity style={styles.reloadBtn} onPress={() => loadDuplicates(true)}>
                         <Text style={styles.reloadBtnText}>Rescan</Text>
                     </TouchableOpacity>
                 </View>
@@ -615,7 +619,7 @@ export default function DuplicatesScreen() {
                     animationType="slide"
                     onRequestClose={() => setCompareGroup(null)}
                 >
-                    <View style={styles.modalBg}>
+                    <View style={[styles.modalBg, { paddingTop: Math.max(insets.top, 0) }]}>
                         <View style={styles.modalHeader}>
                             <View>
                                 <Text style={styles.modalTitle}>Compare Duplicates</Text>
@@ -676,8 +680,6 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'space-between',
         paddingHorizontal: 16,
-        paddingTop: Platform.OS === 'ios' ? 44 : 20,
-        height: Platform.OS === 'ios' ? 100 : 76,
         backgroundColor: '#fff',
         borderBottomWidth: 1,
         borderBottomColor: '#E5E5EA',
@@ -980,7 +982,6 @@ const styles = StyleSheet.create({
     modalBg: {
         flex: 1,
         backgroundColor: 'rgba(0,0,0,0.96)',
-        paddingTop: Platform.OS === 'ios' ? 44 : 20,
     },
     modalHeader: {
         flexDirection: 'row',
