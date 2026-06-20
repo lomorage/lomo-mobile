@@ -1288,7 +1288,6 @@ class AIService {
       // This avoids hundreds of MediaService.getAssetInfo / axios.head calls that were causing the long wait.
       const url = AuthService.getServerUrl();
       const token = AuthService.getToken();
-      const ignoredHashes = await AssetDBService.getIgnoredDuplicateHashes();
       const enrichedClusters = clusters.map(cluster => {
         const sorted = [...cluster].sort((a, b) => {
           // Local beats remote
@@ -1301,8 +1300,7 @@ class AIService {
         const filteredCluster = [];
         const seenIds = new Set();
         for (const asset of sorted) {
-          const idOrHash = asset.hash || asset.id.toString();
-          if (!ignoredHashes.includes(idOrHash) && !seenIds.has(asset.id)) {
+          if (!seenIds.has(asset.id)) {
             seenIds.add(asset.id);
             filteredCluster.push(asset);
           }
