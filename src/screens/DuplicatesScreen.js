@@ -19,8 +19,288 @@ import { ChevronLeft, Trash2, X, Check, Eye, Copy } from 'lucide-react-native';
 import AIService from '../services/AIService';
 import AssetDBService from '../services/AssetDBService';
 import MediaService from '../services/MediaService';
+import AuthService from '../services/AuthService';
+import * as FileSystem from 'expo-file-system/legacy';
 
 const { width } = Dimensions.get('window');
+
+// Lazily resolves the local URI + size/dimensions for a local asset on first render.
+// onMetadata(uri, width, height, size) is called once info is available.
+function LazyLocalAsset({ assetId, style, onMetadata, ...rest }) {
+    const [uri, setUri] = React.useState(null);
+    React.useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const info = await MediaService.getAssetInfo(assetId);
+                if (cancelled || !info) return;
+                let resolvedUri = info.localUri || info.uri;
+                if (Platform.OS === 'android' && resolvedUri && resolvedUri.startsWith('content://') &&
+                    (info.mediaType === 'video' || resolvedUri.includes('/video/'))) {
+                    resolvedUri = `${resolvedUri}/thumbnail`;
+                }
+                setUri(resolvedUri);
+                if (onMetadata) {
+                    let fileSize = 0;
+                    try {
+                        const fileInfo = await FileSystem.getInfoAsync(resolvedUri, { size: true });
+                        fileSize = fileInfo?.size || 0;
+                    } catch (_) {}
+                    onMetadata(resolvedUri, info.width || 0, info.height || 0, fileSize);
+                }
+            } catch (_) {}
+        })();
+        return () => { cancelled = true; };
+    }, [assetId]);
+    return <Image source={{ uri }} style={style} {...rest} />;
+}
+
+// Standalone card for one asset within a duplicate group.
+// Needed so that useState (for lazy metadata) follows React Hooks rules (no hooks in loops).
+function AssetCard({ asset, idx, isSelected, onToggle }) {
+    const isBest = idx === 0;
+    const [localMeta, setLocalMeta] = React.useState({ width: 0, height: 0, size: 0 });
+
+    const formatSizeLocal = (bytes) => {
+        if (!bytes) return '';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    };
+
+    return (
+        <View style={styles.photoContainer}>
+            <TouchableOpacity
+                activeOpacity={0.8}
+                style={styles.imageWrapper}
+                onPress={() => onToggle(asset.id)}
+            >
+                {asset.isLocal && !asset.displayUri ? (
+                    <LazyLocalAsset
+                        assetId={asset.id}
+                        style={styles.thumbnail}
+                        contentFit="cover"
+                        cachePolicy="memory-disk"
+                        onMetadata={(uri, w, h, s) => setLocalMeta({ width: w, height: h, size: s })}
+                    />
+                ) : (
+                    <Image
+                        source={{ uri: asset.displayUri }}
+                        style={styles.thumbnail}
+                        contentFit="cover"
+                        cachePolicy="memory-disk"
+                    />
+                )}
+
+                {/* Keep / Duplicate Badge */}
+                <View style={[styles.badge, isBest ? styles.badgeKeep : styles.badgeDup]}>
+                    <Text style={[styles.badgeText, isBest ? styles.badgeTextKeep : styles.badgeTextDup]}>
+                        {isBest ? 'Keep' : 'Duplicate'}
+                    </Text>
+                </View>
+
+                {/* Selection Checkbox Overlay */}
+                <View style={[styles.checkbox, isSelected && styles.checkboxSelected]}>
+                    {isSelected && <Check color="#fff" size={14} strokeWidth={3} />}
+                </View>
+            </TouchableOpacity>
+
+            {/* Photo info */}
+            <View style={styles.photoInfo}>
+                <Text style={styles.resolutionText}>
+                    {asset.isLocal
+                        ? (localMeta.width && localMeta.height ? `${localMeta.width}x${localMeta.height}` : '...')
+                        : ''}
+                </Text>
+                <Text style={styles.sizeText}>
+                    {asset.isLocal ? formatSizeLocal(localMeta.size) : ''}
+                </Text>
+                <Text style={styles.storageType}>
+                    {asset.isLocal ? 'Local' : 'Cloud'}
+                </Text>
+            </View>
+        </View>
+    );
+}
+
+// Standalone page for one asset within the comparison swiper.
+// Encapsulates the loading/downloading state and metadata parsing for high-res/original photos.
+function CompareItemPage({ item, index, isSelected, onToggle, setModalMeta }) {
+    const isBest = index === 0;
+    const [loading, setLoading] = useState(false);
+    const [downloadedUri, setDownloadedUri] = useState(null);
+    const [meta, setMeta] = useState({ width: 0, height: 0, size: 0 });
+
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            if (item.isLocal) {
+                setLoading(true);
+                try {
+                    const info = await MediaService.getAssetInfo(item.id);
+                    if (cancelled) return;
+                    let resolvedUri = info.localUri || info.uri;
+                    if (Platform.OS === 'android' && resolvedUri && resolvedUri.startsWith('content://') &&
+                        (info.mediaType === 'video' || resolvedUri.includes('/video/'))) {
+                        resolvedUri = `${resolvedUri}/thumbnail`;
+                    }
+                    setDownloadedUri(resolvedUri);
+                    let fileSize = 0;
+                    try {
+                        const fileInfo = await FileSystem.getInfoAsync(resolvedUri, { size: true });
+                        fileSize = fileInfo?.size || 0;
+                    } catch (_) {}
+                    if (!cancelled) {
+                        setMeta({
+                            width: info.width || 0,
+                            height: info.height || 0,
+                            size: fileSize
+                        });
+                        setModalMeta(prev => ({
+                            ...prev,
+                            [item.id]: { width: info.width || 0, height: info.height || 0, size: fileSize }
+                        }));
+                    }
+                } catch (e) {
+                    console.error('[CompareItemPage] Local metadata error:', e);
+                } finally {
+                    if (!cancelled) setLoading(false);
+                }
+            } else {
+                setLoading(true);
+                try {
+                    const serverUrl = AuthService.getServerUrl();
+                    const token = AuthService.getToken();
+                    const remoteUrl = `${serverUrl}/asset/${item.hash}?token=${token}`;
+                    
+                    const localPath = `${FileSystem.cacheDirectory}${item.hash}`;
+                    const fileInfo = await FileSystem.getInfoAsync(localPath, { size: true });
+                    
+                    let targetUri = localPath;
+                    let fileSize = 0;
+                    
+                    if (fileInfo.exists) {
+                        fileSize = fileInfo.size || 0;
+                    } else {
+                        console.log('[CompareItemPage] Downloading remote asset:', remoteUrl);
+                        const downloadResult = await FileSystem.downloadAsync(remoteUrl, localPath);
+                        targetUri = downloadResult.uri;
+                        try {
+                            const newInfo = await FileSystem.getInfoAsync(targetUri, { size: true });
+                            fileSize = newInfo?.size || 0;
+                        } catch (_) {
+                            fileSize = 0;
+                        }
+                    }
+                    
+                    if (cancelled) return;
+                    setDownloadedUri(targetUri);
+                    
+                    const { Image: RNImage } = require('react-native');
+                    RNImage.getSize(targetUri, (w, h) => {
+                        if (cancelled) return;
+                        setMeta({ width: w, height: h, size: fileSize });
+                        setModalMeta(prev => ({
+                            ...prev,
+                            [item.id]: { width: w, height: h, size: fileSize }
+                        }));
+                        setLoading(false);
+                    }, (err) => {
+                        console.warn('[CompareItemPage] Failed to get image size:', err);
+                        if (cancelled) return;
+                        setMeta({ width: 0, height: 0, size: fileSize });
+                        setModalMeta(prev => ({
+                            ...prev,
+                            [item.id]: { width: 0, height: 0, size: fileSize }
+                        }));
+                        setLoading(false);
+                    });
+                } catch (e) {
+                    console.error('[CompareItemPage] Remote download error:', e);
+                    if (!cancelled) setLoading(false);
+                }
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [item.id, item.hash, item.isLocal]);
+
+    const formatSizeLocal = (bytes) => {
+        if (!bytes) return 'Unknown';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    };
+
+    return (
+        <View style={[styles.modalItemPage, { width }]}>
+            <View style={styles.modalImageWrapper}>
+                {loading ? (
+                    <ActivityIndicator size="large" color="#fff" />
+                ) : downloadedUri ? (
+                    <Image
+                        source={{ uri: downloadedUri }}
+                        style={styles.modalImage}
+                        contentFit="contain"
+                        cachePolicy="memory-disk"
+                    />
+                ) : (
+                    <Image
+                        source={{ uri: item.displayUri }}
+                        style={styles.modalImage}
+                        contentFit="contain"
+                        cachePolicy="memory-disk"
+                    />
+                )}
+            </View>
+
+            {/* Details of current swiped item */}
+            <View style={styles.modalMetaCard}>
+                <View style={styles.modalMetaRow}>
+                    <View style={[styles.badge, isBest ? styles.badgeKeep : styles.badgeDup, { position: 'relative', top: 0, left: 0, alignSelf: 'flex-start', marginBottom: 12 }]}>
+                        <Text style={[styles.badgeText, isBest ? styles.badgeTextKeep : styles.badgeTextDup]}>
+                            {isBest ? 'Recommend Keep' : 'Duplicate'}
+                        </Text>
+                    </View>
+                    <Text style={styles.modalFilename} numberOfLines={1}>{item.filename || 'Photo Details'}</Text>
+                </View>
+
+                <View style={styles.modalSpecsRow}>
+                    <View style={styles.specColumn}>
+                        <Text style={styles.specLabel}>Resolution</Text>
+                        <Text style={styles.specValue}>
+                            {meta.width && meta.height ? `${meta.width}x${meta.height}` : '...'}
+                        </Text>
+                    </View>
+                    <View style={styles.specColumn}>
+                        <Text style={styles.specLabel}>File Size</Text>
+                        <Text style={styles.specValue}>
+                            {meta.size ? formatSizeLocal(meta.size) : '...'}
+                        </Text>
+                    </View>
+                    <View style={styles.specColumn}>
+                        <Text style={styles.specLabel}>Location</Text>
+                        <Text style={styles.specValue}>{item.isLocal ? 'Local' : 'Cloud Only'}</Text>
+                    </View>
+                </View>
+
+                {/* Select button for current swiped item */}
+                <TouchableOpacity 
+                    style={[
+                        styles.modalSelectBtn, 
+                        isSelected ? styles.modalSelectBtnRemove : styles.modalSelectBtnKeep
+                    ]}
+                    onPress={() => onToggle(item.id)}
+                >
+                    <Text style={styles.modalSelectBtnText}>
+                        {isSelected ? 'Keep this photo (Deselect)' : 'Delete this photo (Select)'}
+                    </Text>
+                </TouchableOpacity>
+            </View>
+        </View>
+    );
+}
 
 export default function DuplicatesScreen() {
     const navigation = useNavigation();
@@ -32,6 +312,7 @@ export default function DuplicatesScreen() {
     // Compare modal state
     const [compareGroup, setCompareGroup] = useState(null);
     const [compareIndex, setCompareIndex] = useState(0);
+    const [modalMeta, setModalMeta] = useState({});
 
     const loadDuplicates = async () => {
         setLoading(true);
@@ -205,12 +486,6 @@ export default function DuplicatesScreen() {
     };
 
     const renderGroupItem = ({ item: group, index: groupIndex }) => {
-        // Calculate saving size for duplicates inside this group
-        let groupSaving = 0;
-        group.forEach(asset => {
-            if (selectedMap[asset.id]) groupSaving += asset.size || 0;
-        });
-
         const formatDate = (timestamp) => {
             if (!timestamp) return 'Unknown Date';
             const date = new Date(timestamp);
@@ -224,77 +499,42 @@ export default function DuplicatesScreen() {
                         <Text style={styles.cardTitle}>Group {groupIndex + 1} ({group.length} photos)</Text>
                         <Text style={styles.cardSubtitle}>
                             {formatDate(group[0]?.createTime)}
-                            {groupSaving > 0 ? ` • Save ${formatSize(groupSaving)}` : ''}
                         </Text>
                     </View>
-                    <TouchableOpacity 
-                        style={styles.ignoreButton} 
-                        onPress={() => handleIgnoreGroup(group)}
-                    >
-                        <Text style={styles.ignoreText}>Ignore</Text>
-                    </TouchableOpacity>
+                    <View style={styles.cardHeaderActions}>
+                        <TouchableOpacity
+                            style={styles.compareButton}
+                            onPress={() => {
+                                setCompareGroup(group);
+                                setCompareIndex(0);
+                            }}
+                        >
+                            <Eye color="#007AFF" size={14} />
+                            <Text style={styles.compareButtonText}>Compare</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                            style={styles.ignoreButton}
+                            onPress={() => handleIgnoreGroup(group)}
+                        >
+                            <Text style={styles.ignoreText}>Ignore</Text>
+                        </TouchableOpacity>
+                    </View>
                 </View>
 
-                <ScrollView 
-                    horizontal 
+                <ScrollView
+                    horizontal
                     showsHorizontalScrollIndicator={false}
                     contentContainerStyle={styles.scrollContainer}
                 >
-                    {group.map((asset, idx) => {
-                        const isBest = idx === 0;
-                        const isSelected = !!selectedMap[asset.id];
-                        
-                        return (
-                            <View key={asset.id} style={styles.photoContainer}>
-                                <TouchableOpacity 
-                                    activeOpacity={0.8}
-                                    style={styles.imageWrapper}
-                                    onPress={() => toggleSelect(asset.id)}
-                                >
-                                    <Image 
-                                        source={{ uri: asset.displayUri }} 
-                                        style={styles.thumbnail}
-                                        contentFit="cover"
-                                        cachePolicy="memory-disk"
-                                    />
-                                    
-                                    {/* Keep / Duplicate Badge */}
-                                    <View style={[styles.badge, isBest ? styles.badgeKeep : styles.badgeDup]}>
-                                        <Text style={[styles.badgeText, isBest ? styles.badgeTextKeep : styles.badgeTextDup]}>
-                                            {isBest ? 'Keep' : 'Duplicate'}
-                                        </Text>
-                                    </View>
-
-                                    {/* Selection Checkbox Overlay */}
-                                    <View style={[styles.checkbox, isSelected && styles.checkboxSelected]}>
-                                        {isSelected && <Check color="#fff" size={14} strokeWidth={3} />}
-                                    </View>
-                                </TouchableOpacity>
-
-                                {/* Photo info and comparison button */}
-                                <View style={styles.photoInfo}>
-                                    <Text style={styles.resolutionText}>
-                                        {asset.width && asset.height ? `${asset.width}x${asset.height}` : 'Unknown Res'}
-                                    </Text>
-                                    <Text style={styles.sizeText}>{formatSize(asset.size)}</Text>
-                                    <Text style={styles.storageType}>
-                                        {asset.isLocal ? 'Local' : 'Cloud'}
-                                    </Text>
-                                    
-                                    <TouchableOpacity 
-                                        style={styles.previewIconBtn}
-                                        onPress={() => {
-                                            setCompareGroup(group);
-                                            setCompareIndex(idx);
-                                        }}
-                                    >
-                                        <Eye color="#007AFF" size={14} />
-                                        <Text style={styles.previewText}>Compare</Text>
-                                    </TouchableOpacity>
-                                </View>
-                            </View>
-                        );
-                    })}
+                    {group.map((asset, idx) => (
+                        <AssetCard
+                            key={asset.id}
+                            asset={asset}
+                            idx={idx}
+                            isSelected={!!selectedMap[asset.id]}
+                            onToggle={toggleSelect}
+                        />
+                    ))}
                 </ScrollView>
             </View>
         );
@@ -408,64 +648,15 @@ export default function DuplicatesScreen() {
                                     const index = Math.round(e.nativeEvent.contentOffset.x / width);
                                     setCompareIndex(index);
                                 }}
-                                renderItem={({ item, index }) => {
-                                    const isBest = index === 0;
-                                    const isSelected = !!selectedMap[item.id];
-                                    
-                                    return (
-                                        <View style={[styles.modalItemPage, { width }]}>
-                                            <View style={styles.modalImageWrapper}>
-                                                <Image 
-                                                    source={{ uri: item.displayUri }} 
-                                                    style={styles.modalImage}
-                                                    contentFit="contain"
-                                                />
-                                            </View>
-
-                                            {/* Details of current swiped item */}
-                                            <View style={styles.modalMetaCard}>
-                                                <View style={styles.modalMetaRow}>
-                                                    <View style={[styles.badge, isBest ? styles.badgeKeep : styles.badgeDup, { position: 'relative', top: 0, left: 0, alignSelf: 'flex-start', marginBottom: 12 }]}>
-                                                        <Text style={[styles.badgeText, isBest ? styles.badgeTextKeep : styles.badgeTextDup]}>
-                                                            {isBest ? 'Recommend Keep' : 'Duplicate'}
-                                                        </Text>
-                                                    </View>
-                                                    <Text style={styles.modalFilename} numberOfLines={1}>{item.filename || 'Photo Details'}</Text>
-                                                </View>
-
-                                                <View style={styles.modalSpecsRow}>
-                                                    <View style={styles.specColumn}>
-                                                        <Text style={styles.specLabel}>Resolution</Text>
-                                                        <Text style={styles.specValue}>
-                                                            {item.width && item.height ? `${item.width}x${item.height}` : 'Unknown'}
-                                                        </Text>
-                                                    </View>
-                                                    <View style={styles.specColumn}>
-                                                        <Text style={styles.specLabel}>File Size</Text>
-                                                        <Text style={styles.specValue}>{formatSize(item.size)}</Text>
-                                                    </View>
-                                                    <View style={styles.specColumn}>
-                                                        <Text style={styles.specLabel}>Location</Text>
-                                                        <Text style={styles.specValue}>{item.isLocal ? 'Local' : 'Cloud Only'}</Text>
-                                                    </View>
-                                                </View>
-
-                                                {/* Select button for current swiped item */}
-                                                <TouchableOpacity 
-                                                    style={[
-                                                        styles.modalSelectBtn, 
-                                                        isSelected ? styles.modalSelectBtnRemove : styles.modalSelectBtnKeep
-                                                    ]}
-                                                    onPress={() => toggleSelect(item.id)}
-                                                >
-                                                    <Text style={styles.modalSelectBtnText}>
-                                                        {isSelected ? 'Keep this photo (Deselect)' : 'Delete this photo (Select)'}
-                                                    </Text>
-                                                </TouchableOpacity>
-                                            </View>
-                                        </View>
-                                    );
-                                }}
+                                renderItem={({ item, index }) => (
+                                    <CompareItemPage
+                                        item={item}
+                                        index={index}
+                                        isSelected={!!selectedMap[item.id]}
+                                        onToggle={toggleSelect}
+                                        setModalMeta={setModalMeta}
+                                    />
+                                )}
                             />
                         </View>
                     </View>
@@ -595,6 +786,25 @@ const styles = StyleSheet.create({
         fontSize: 12,
         color: '#8E8E93',
         marginTop: 2,
+    },
+    cardHeaderActions: {
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
+    compareButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: '#E5F2FF',
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        borderRadius: 12,
+        marginRight: 8,
+    },
+    compareButtonText: {
+        fontSize: 12,
+        color: '#007AFF',
+        fontWeight: '600',
+        marginLeft: 4,
     },
     ignoreButton: {
         paddingHorizontal: 12,

@@ -27,23 +27,25 @@ class AssetDBService {
     if (this.initPromise) return this.initPromise;
     
     this.initPromise = (async () => {
+      let db = null;
       try {
-        this.db = await SQLite.openDatabaseAsync(this.dbName);
-        await this.db.execAsync('PRAGMA busy_timeout = 5000;');
+        db = await SQLite.openDatabaseAsync(this.dbName);
+        await db.execAsync('PRAGMA busy_timeout = 30000;');
+        await db.execAsync('PRAGMA journal_mode = WAL;');
 
         // Add write serialization queue to prevent parallel writes from lock contentions
-        const originalRunAsync = this.db.runAsync.bind(this.db);
-        const originalExecAsync = this.db.execAsync.bind(this.db);
-        const originalWithExclusiveTransactionAsync = this.db.withExclusiveTransactionAsync.bind(this.db);
-        const originalWithTransactionAsync = this.db.withTransactionAsync.bind(this.db);
+        const originalRunAsync = db.runAsync.bind(db);
+        const originalExecAsync = db.execAsync.bind(db);
+        const originalWithExclusiveTransactionAsync = db.withExclusiveTransactionAsync.bind(db);
+        const originalWithTransactionAsync = db.withTransactionAsync.bind(db);
 
-        this.db.runAsync = (...args) => this.executeWrite(() => originalRunAsync(...args));
-        this.db.execAsync = (...args) => this.executeWrite(() => originalExecAsync(...args));
-        this.db.withExclusiveTransactionAsync = (...args) => this.executeWrite(() => originalWithExclusiveTransactionAsync(...args));
-        this.db.withTransactionAsync = (...args) => this.executeWrite(() => originalWithTransactionAsync(...args));
+        db.runAsync = (...args) => this.executeWrite(() => originalRunAsync(...args));
+        db.execAsync = (...args) => this.executeWrite(() => originalExecAsync(...args));
+        db.withExclusiveTransactionAsync = (...args) => this.executeWrite(() => originalWithExclusiveTransactionAsync(...args));
+        db.withTransactionAsync = (...args) => this.executeWrite(() => originalWithTransactionAsync(...args));
 
       // Create base table if not exists (Version 1)
-      await this.db.execAsync(`
+      await db.execAsync(`
         CREATE TABLE IF NOT EXISTS MediaAsset (
           id TEXT PRIMARY KEY,
           hash TEXT,
@@ -55,63 +57,69 @@ class AssetDBService {
           mediaType TEXT,
           filename TEXT,
           isFavorite INTEGER DEFAULT 0,
-          localCachePath TEXT
+          localCachePath TEXT,
+          phash TEXT,
+          clipEmbedding TEXT
         );
-        CREATE INDEX IF NOT EXISTS idx_isLocal_hasGeo ON MediaAsset(isLocal, hasGeo);
-        CREATE INDEX IF NOT EXISTS idx_hasGeo ON MediaAsset(hasGeo);
       `);
+      await db.execAsync('CREATE INDEX IF NOT EXISTS idx_isLocal_hasGeo ON MediaAsset(isLocal, hasGeo);');
+      await db.execAsync('CREATE INDEX IF NOT EXISTS idx_hasGeo ON MediaAsset(hasGeo);');
+      await db.execAsync('CREATE INDEX IF NOT EXISTS idx_hash ON MediaAsset(hash);');
+      await db.execAsync('CREATE INDEX IF NOT EXISTS idx_isLocal ON MediaAsset(isLocal);');
+      await db.execAsync('CREATE INDEX IF NOT EXISTS idx_phash ON MediaAsset(phash);');
+      await db.execAsync('CREATE INDEX IF NOT EXISTS idx_clipEmbedding ON MediaAsset(clipEmbedding);');
 
       // Handle versioned migrations
-      const { user_version } = await this.db.getFirstAsync('PRAGMA user_version');
+      const { user_version } = await db.getFirstAsync('PRAGMA user_version');
       let currentVersion = user_version;
 
       if (currentVersion < 1) {
         // Fallback for legacy databases that were created before versioning
-        try { await this.db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN filename TEXT;`); } catch (e) {}
-        try { await this.db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN mediaType TEXT;`); } catch (e) {}
-        await this.db.execAsync('PRAGMA user_version = 1');
+        try { await db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN filename TEXT;`); } catch (e) {}
+        try { await db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN mediaType TEXT;`); } catch (e) {}
+        await db.execAsync('PRAGMA user_version = 1');
         currentVersion = 1;
       }
 
       if (currentVersion < 2) {
         // Version 2: Add hashModificationTime, uploaded, and AI metadata columns
-        try { await this.db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN hashModificationTime INTEGER;`); } catch (e) {}
-        try { await this.db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN uploaded INTEGER DEFAULT 0;`); } catch (e) {}
-        try { await this.db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN metadata TEXT DEFAULT '';`); } catch (e) {}
-        try { await this.db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN classifyVersion INTEGER;`); } catch (e) {}
-        try { await this.db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN textVersion INTEGER;`); } catch (e) {}
-        try { await this.db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN faceRecVersion INTEGER;`); } catch (e) {}
+        try { await db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN hashModificationTime INTEGER;`); } catch (e) {}
+        try { await db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN uploaded INTEGER DEFAULT 0;`); } catch (e) {}
+        try { await db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN metadata TEXT DEFAULT '';`); } catch (e) {}
+        try { await db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN classifyVersion INTEGER;`); } catch (e) {}
+        try { await db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN textVersion INTEGER;`); } catch (e) {}
+        try { await db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN faceRecVersion INTEGER;`); } catch (e) {}
         
-        await this.db.execAsync('PRAGMA user_version = 2');
+        await db.execAsync('PRAGMA user_version = 2');
         currentVersion = 2;
         console.log('[AssetDBService] Database migrated to version 2.');
       }
 
       if (currentVersion < 3) {
         // Version 3: Add isFavorite and localCachePath columns for offline viewing
-        try { await this.db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN isFavorite INTEGER DEFAULT 0;`); } catch (e) {}
-        try { await this.db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN localCachePath TEXT;`); } catch (e) {}
+        try { await db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN isFavorite INTEGER DEFAULT 0;`); } catch (e) {}
+        try { await db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN localCachePath TEXT;`); } catch (e) {}
         
-        await this.db.execAsync('PRAGMA user_version = 3');
+        await db.execAsync('PRAGMA user_version = 3');
         currentVersion = 3;
         console.log('[AssetDBService] Database migrated to version 3 (Added Favorites support).');
       }
 
       if (currentVersion < 4) {
         // Version 4: Add clipEmbeddingVersion and clipEmbedding columns for AI search
-        try { await this.db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN clipEmbeddingVersion INTEGER;`); } catch (e) {}
-        try { await this.db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN clipEmbedding TEXT;`); } catch (e) {}
+        try { await db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN clipEmbeddingVersion INTEGER;`); } catch (e) {}
+        try { await db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN clipEmbedding TEXT;`); } catch (e) {}
         
-        await this.db.execAsync('PRAGMA user_version = 4');
+        await db.execAsync('PRAGMA user_version = 4');
         currentVersion = 4;
         console.log('[AssetDBService] Database migrated to version 4 (Added CLIP Embedding support).');
       }
 
       if (currentVersion < 5) {
         // Version 5: Add phash column for perceptual hashing similar photos
-        try { await this.db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN phash TEXT;`); } catch (e) {}
+        try { await db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN phash TEXT;`); } catch (e) {}
         
-        await this.db.execAsync('PRAGMA user_version = 5');
+        await db.execAsync('PRAGMA user_version = 5');
         currentVersion = 5;
         console.log('[AssetDBService] Database migrated to version 5 (Added pHash support).');
       }
@@ -119,7 +127,7 @@ class AssetDBService {
       if (currentVersion < 6) {
         // Version 6: Add IgnoredDuplicate table for dismissing duplicate recommendations
         try {
-          await this.db.execAsync(`
+          await db.execAsync(`
             CREATE TABLE IF NOT EXISTS IgnoredDuplicate (
               assetId TEXT PRIMARY KEY
             );
@@ -127,16 +135,52 @@ class AssetDBService {
         } catch (e) {
           console.warn('[AssetDBService] Failed to create IgnoredDuplicate table:', e.message);
         }
-        await this.db.execAsync('PRAGMA user_version = 6');
+        await db.execAsync('PRAGMA user_version = 6');
         currentVersion = 6;
         console.log('[AssetDBService] Database migrated to version 6 (Added IgnoredDuplicate support).');
       }
 
-      // Smooth migration: if local_hash_cache_v2.json exists, migrate it to SQLite
-      await this.migrateLocalHashCache();
+      if (currentVersion < 7) {
+        // Version 7: Add index on hash and index on isLocal for fast lookups/updates
+        try {
+          await db.execAsync('CREATE INDEX IF NOT EXISTS idx_hash ON MediaAsset(hash);');
+          await db.execAsync('CREATE INDEX IF NOT EXISTS idx_isLocal ON MediaAsset(isLocal);');
+        } catch (e) {
+          console.warn('[AssetDBService] Failed to create idx_hash or idx_isLocal indexes:', e.message);
+        }
+        await db.execAsync('PRAGMA user_version = 7');
+        currentVersion = 7;
+        console.log('[AssetDBService] Database migrated to version 7 (Added hash and isLocal indexes).');
+      }
 
+      if (currentVersion < 8) {
+        // Version 8: Add indexes on phash and clipEmbedding for fast background indexing queries
+        try {
+          await db.execAsync('CREATE INDEX IF NOT EXISTS idx_phash ON MediaAsset(phash);');
+          await db.execAsync('CREATE INDEX IF NOT EXISTS idx_clipEmbedding ON MediaAsset(clipEmbedding);');
+        } catch (e) {
+          console.warn('[AssetDBService] Failed to create idx_phash or idx_clipEmbedding indexes:', e.message);
+        }
+        await db.execAsync('PRAGMA user_version = 8');
+        currentVersion = 8;
+        console.log('[AssetDBService] Database migrated to version 8 (Added phash and clipEmbedding indexes).');
+      }
+
+      // Smooth migration: if local_hash_cache_v2.json exists, migrate it to SQLite
+      await this.migrateLocalHashCache(db);
+
+      this.db = db;
       console.log(`[AssetDBService] Database initialized successfully (v${currentVersion}).`);
       } catch (error) {
+        this.db = null;
+        if (db) {
+          try {
+            await db.closeAsync();
+            console.log('[AssetDBService] Closed database connection after failed initialization.');
+          } catch (closeError) {
+            console.error('[AssetDBService] Failed to close database after initialization failure:', closeError);
+          }
+        }
         console.error('[AssetDBService] Failed to initialize DB:', error);
         throw error;
       } finally {
@@ -146,7 +190,7 @@ class AssetDBService {
     return this.initPromise;
   }
 
-  async migrateLocalHashCache() {
+  async migrateLocalHashCache(db) {
     try {
       const docDir = FileSystem.documentDirectory;
       if (!docDir) return;
@@ -160,25 +204,29 @@ class AssetDBService {
         const entries = Object.entries(cache);
         
         if (entries.length > 0) {
-          await this.db.withExclusiveTransactionAsync(async () => {
-            const statement = await this.db.prepareAsync(`
-              UPDATE MediaAsset 
-              SET hash = ?, hashModificationTime = ? 
-              WHERE id = ? AND isLocal = 1
-            `);
-            try {
-              let count = 0;
-              for (const [id, value] of entries) {
-                if (value && value.hash && value.modificationTime) {
-                  statement.executeSync(value.hash, value.modificationTime, id);
-                  count++;
-                  if (count % 500 === 0) await new Promise(resolve => setTimeout(resolve, 5));
+          const chunkSize = 100;
+          for (let i = 0; i < entries.length; i += chunkSize) {
+            const chunk = entries.slice(i, i + chunkSize);
+            await db.withExclusiveTransactionAsync(async () => {
+              const statement = await db.prepareAsync(`
+                UPDATE MediaAsset 
+                SET hash = ?, hashModificationTime = ? 
+                WHERE id = ? AND isLocal = 1
+              `);
+              try {
+                for (const [id, value] of chunk) {
+                  if (value && value.hash && value.modificationTime) {
+                    statement.executeSync(value.hash, value.modificationTime, id);
+                  }
                 }
+              } finally {
+                await statement.finalizeAsync();
               }
-            } finally {
-              await statement.finalizeAsync();
+            });
+            if (i + chunkSize < entries.length) {
+              await new Promise(resolve => setTimeout(resolve, 5));
             }
-          });
+          }
           console.log(`[AssetDBService] Successfully migrated ${entries.length} hashes to DB.`);
         }
         
@@ -248,6 +296,50 @@ class AssetDBService {
     });
   }
 
+  // Batch save perceptual hashes (pHashes) in a single transaction
+  async saveAssetPHashesBatch(updates) {
+    if (!this.db || !updates || updates.length === 0) return;
+    try {
+      await this.db.withExclusiveTransactionAsync(async () => {
+        const statement = await this.db.prepareAsync(
+          'UPDATE MediaAsset SET phash = ? WHERE id = ? OR hash = ?'
+        );
+        try {
+          for (const update of updates) {
+            statement.executeSync(update.phash, update.idOrHash, update.idOrHash);
+          }
+        } finally {
+          await statement.finalizeAsync();
+        }
+      });
+      console.log(`[AssetDBService] Batch saved ${updates.length} pHashes.`);
+    } catch (error) {
+      console.error('[AssetDBService] Failed to batch save pHashes:', error);
+    }
+  }
+
+  // Batch save embeddings in a single transaction
+  async saveAssetEmbeddingsBatch(updates) {
+    if (!this.db || !updates || updates.length === 0) return;
+    try {
+      await this.db.withExclusiveTransactionAsync(async () => {
+        const statement = await this.db.prepareAsync(
+          'UPDATE MediaAsset SET clipEmbedding = ?, clipEmbeddingVersion = ? WHERE id = ? OR hash = ?'
+        );
+        try {
+          for (const update of updates) {
+            statement.executeSync(update.embedding, update.version, update.idOrHash, update.idOrHash);
+          }
+        } finally {
+          await statement.finalizeAsync();
+        }
+      });
+      console.log(`[AssetDBService] Batch saved ${updates.length} embeddings.`);
+    } catch (error) {
+      console.error('[AssetDBService] Failed to batch save embeddings:', error);
+    }
+  }
+
   // Insert or update local assets.
   // We use ON CONFLICT DO UPDATE so we don't duplicate or overwrite existing hashes/metadata.
   async insertLocalAssets(assets) {
@@ -255,45 +347,47 @@ class AssetDBService {
 
     return await MetricsTracker.measure('AssetDBService_insertLocalAssets', async () => {
       try {
-        // Using a transaction for batch insert
-        await this.db.withExclusiveTransactionAsync(async () => {
-          const statement = await this.db.prepareAsync(`
-            INSERT INTO MediaAsset 
-            (id, isLocal, hasGeo, latitude, longitude, createTime, mediaType) 
-            VALUES (?, 1, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-              hasGeo = excluded.hasGeo,
-              latitude = excluded.latitude,
-              longitude = excluded.longitude,
-              createTime = excluded.createTime,
-              mediaType = excluded.mediaType
-          `);
-          
-          try {
-            let counter = 0;
-            for (const asset of assets) {
-              // If the asset has location data, we mark hasGeo = 1
-              const hasGeo = (asset.location && asset.location.latitude) ? 1 : 0;
-              const lat = asset.location?.latitude || 0.0;
-              const lon = asset.location?.longitude || 0.0;
-              
-              statement.executeSync(
-                asset.id,
-                hasGeo,
-                lat,
-                lon,
-                asset.creationTime || 0,
-                asset.mediaType || 'photo'
-              );
-
-              if (++counter % 500 === 0) {
-                  await new Promise(resolve => setTimeout(resolve, 5));
+        const chunkSize = 100;
+        for (let i = 0; i < assets.length; i += chunkSize) {
+          const chunk = assets.slice(i, i + chunkSize);
+          await this.db.withExclusiveTransactionAsync(async () => {
+            const statement = await this.db.prepareAsync(`
+              INSERT INTO MediaAsset 
+              (id, isLocal, hasGeo, latitude, longitude, createTime, mediaType) 
+              VALUES (?, 1, ?, ?, ?, ?, ?)
+              ON CONFLICT(id) DO UPDATE SET
+                hasGeo = excluded.hasGeo,
+                latitude = excluded.latitude,
+                longitude = excluded.longitude,
+                createTime = excluded.createTime,
+                mediaType = excluded.mediaType
+            `);
+            
+            try {
+              for (const asset of chunk) {
+                // If the asset has location data, we mark hasGeo = 1
+                const hasGeo = (asset.location && asset.location.latitude) ? 1 : 0;
+                const lat = asset.location?.latitude || 0.0;
+                const lon = asset.location?.longitude || 0.0;
+                
+                statement.executeSync(
+                  asset.id,
+                  hasGeo,
+                  lat,
+                  lon,
+                  asset.creationTime || 0,
+                  asset.mediaType || 'photo'
+                );
               }
+            } finally {
+              await statement.finalizeAsync();
             }
-          } finally {
-            await statement.finalizeAsync();
+          });
+          
+          if (i + chunkSize < assets.length) {
+            await new Promise(resolve => setTimeout(resolve, 5));
           }
-        });
+        }
         console.log(`[AssetDBService] Inserted ${assets.length} local assets.`);
       } catch (error) {
         console.error('[AssetDBService] Failed to insert local assets:', error);
@@ -329,58 +423,65 @@ class AssetDBService {
 
         if (idsToDelete.length > 0) {
           console.log(`[AssetDBService] Deleting ${idsToDelete.length} stale remote assets...`);
-          await this.db.withExclusiveTransactionAsync(async () => {
-            const statement = await this.db.prepareAsync('DELETE FROM MediaAsset WHERE id = ? AND isLocal = 0');
-            try {
-              let counter = 0;
-              for (const id of idsToDelete) {
-                statement.executeSync(id);
-                if (++counter % 500 === 0) await new Promise(resolve => setTimeout(resolve, 5));
+          const chunkSize = 500;
+          for (let i = 0; i < idsToDelete.length; i += chunkSize) {
+            const chunk = idsToDelete.slice(i, i + chunkSize);
+            await this.db.withExclusiveTransactionAsync(async () => {
+              const statement = await this.db.prepareAsync('DELETE FROM MediaAsset WHERE id = ? AND isLocal = 0');
+              try {
+                for (const id of chunk) {
+                  statement.executeSync(id);
+                }
+              } finally {
+                await statement.finalizeAsync();
               }
-            } finally {
-              await statement.finalizeAsync();
+            });
+            if (i + chunkSize < idsToDelete.length) {
+              await new Promise(resolve => setTimeout(resolve, 5));
             }
-          });
+          }
         }
 
         if (newAssets.length > 0) {
           console.log(`[AssetDBService] Inserting ${newAssets.length} new remote assets out of ${assets.length}...`);
-          await this.db.withExclusiveTransactionAsync(async () => {
-            const statement = await this.db.prepareAsync(`
-              INSERT OR IGNORE INTO MediaAsset 
-              (id, hash, isLocal, hasGeo, latitude, longitude, createTime, mediaType, filename) 
-              VALUES (?, ?, 0, 0, 0.0, 0.0, ?, ?, ?)
-            `);
-            
-            try {
-              let counter = 0;
-              for (const asset of newAssets) {
-                const id = asset.hash;
-                let createTime = 0;
-                if (asset.date) {
-                  const parsedTime = new Date(asset.date).getTime();
-                  if (!isNaN(parsedTime)) {
-                    createTime = parsedTime;
+          const chunkSize = 500;
+          for (let i = 0; i < newAssets.length; i += chunkSize) {
+            const chunk = newAssets.slice(i, i + chunkSize);
+            await this.db.withExclusiveTransactionAsync(async () => {
+              const statement = await this.db.prepareAsync(`
+                INSERT OR IGNORE INTO MediaAsset 
+                (id, hash, isLocal, hasGeo, latitude, longitude, createTime, mediaType, filename) 
+                VALUES (?, ?, 0, 0, 0.0, 0.0, ?, ?, ?)
+              `);
+              
+              try {
+                for (const asset of chunk) {
+                  const id = asset.hash;
+                  let createTime = 0;
+                  if (asset.date) {
+                    const parsedTime = new Date(asset.date).getTime();
+                    if (!isNaN(parsedTime)) {
+                      createTime = parsedTime;
+                    }
                   }
+                  const filename = asset.tag || asset.filename || '';
+                  const mType = isVideoExtension(filename) ? 'video' : 'photo';
+                  statement.executeSync(
+                    id,
+                    asset.hash,
+                    createTime,
+                    mType,
+                    filename
+                  );
                 }
-                const filename = asset.tag || asset.filename || '';
-                const mType = isVideoExtension(filename) ? 'video' : 'photo';
-                statement.executeSync(
-                  id,
-                  asset.hash,
-                  createTime,
-                  mType,
-                  filename
-                );
-
-                if (++counter % 500 === 0) {
-                    await new Promise(resolve => setTimeout(resolve, 5));
-                }
+              } finally {
+                await statement.finalizeAsync();
               }
-            } finally {
-              await statement.finalizeAsync();
+            });
+            if (i + chunkSize < newAssets.length) {
+              await new Promise(resolve => setTimeout(resolve, 5));
             }
-          });
+          }
           console.log(`[AssetDBService] Inserted ${newAssets.length} remote assets.`);
         }
       } catch (error) {
@@ -425,22 +526,29 @@ class AssetDBService {
     if (!this.db || !updates || updates.length === 0) return;
 
     try {
-      await this.db.withExclusiveTransactionAsync(async () => {
-        const statement = await this.db.prepareAsync(`
-          UPDATE MediaAsset SET hasGeo = 1, latitude = ?, longitude = ? WHERE id = ?
-        `);
-        try {
-          for (const update of updates) {
-            await statement.executeAsync(
-              update.latitude || 0.0,
-              update.longitude || 0.0,
-              update.id
-            );
+      const chunkSize = 100;
+      for (let i = 0; i < updates.length; i += chunkSize) {
+        const chunk = updates.slice(i, i + chunkSize);
+        await this.db.withExclusiveTransactionAsync(async () => {
+          const statement = await this.db.prepareAsync(`
+            UPDATE MediaAsset SET hasGeo = 1, latitude = ?, longitude = ? WHERE id = ?
+          `);
+          try {
+            for (const update of chunk) {
+              statement.executeSync(
+                update.latitude || 0.0,
+                update.longitude || 0.0,
+                update.id
+              );
+            }
+          } finally {
+            await statement.finalizeAsync();
           }
-        } finally {
-          await statement.finalizeAsync();
+        });
+        if (i + chunkSize < updates.length) {
+          await new Promise(resolve => setTimeout(resolve, 5));
         }
-      });
+      }
       console.log(`[AssetDBService] Updated geo for ${updates.length} assets.`);
     } catch (error) {
       console.error('[AssetDBService] Failed to update assets geo:', error);
@@ -453,18 +561,25 @@ class AssetDBService {
     if (!this.db || !ids || ids.length === 0) return;
 
     try {
-      await this.db.withExclusiveTransactionAsync(async () => {
-        const statement = await this.db.prepareAsync(`
-          UPDATE MediaAsset SET hasGeo = 1 WHERE id = ?
-        `);
-        try {
-          for (const id of ids) {
-            await statement.executeAsync(id);
+      const chunkSize = 100;
+      for (let i = 0; i < ids.length; i += chunkSize) {
+        const chunk = ids.slice(i, i + chunkSize);
+        await this.db.withExclusiveTransactionAsync(async () => {
+          const statement = await this.db.prepareAsync(`
+            UPDATE MediaAsset SET hasGeo = 1 WHERE id = ?
+          `);
+          try {
+            for (const id of chunk) {
+              statement.executeSync(id);
+            }
+          } finally {
+            await statement.finalizeAsync();
           }
-        } finally {
-          await statement.finalizeAsync();
+        });
+        if (i + chunkSize < ids.length) {
+          await new Promise(resolve => setTimeout(resolve, 5));
         }
-      });
+      }
     } catch (error) {
       console.error('[AssetDBService] Failed to mark assets geo processed:', error);
     }
@@ -562,22 +677,29 @@ class AssetDBService {
     if (!this.db || !updates || updates.length === 0) return;
 
     try {
-      await this.db.withExclusiveTransactionAsync(async () => {
-        const statement = await this.db.prepareAsync(`
-          UPDATE MediaAsset SET filename = ?, mediaType = ? WHERE id = ?
-         `);
-         try {
-           for (const update of updates) {
-             await statement.executeAsync(
-               update.filename,
-               update.mediaType,
-               update.hash
-             );
-           }
-         } finally {
-           await statement.finalizeAsync();
-         }
-      });
+      const chunkSize = 500;
+      for (let i = 0; i < updates.length; i += chunkSize) {
+        const chunk = updates.slice(i, i + chunkSize);
+        await this.db.withExclusiveTransactionAsync(async () => {
+          const statement = await this.db.prepareAsync(`
+            UPDATE MediaAsset SET filename = ?, mediaType = ? WHERE id = ?
+          `);
+          try {
+            for (const update of chunk) {
+              statement.executeSync(
+                update.filename,
+                update.mediaType,
+                update.hash
+              );
+            }
+          } finally {
+            await statement.finalizeAsync();
+          }
+        });
+        if (i + chunkSize < updates.length) {
+          await new Promise(resolve => setTimeout(resolve, 5));
+        }
+      }
       console.log(`[AssetDBService] Healed filenames for ${updates.length} remote assets.`);
     } catch (error) {
       console.error('[AssetDBService] Failed to update remote asset filenames:', error);
@@ -716,16 +838,23 @@ class AssetDBService {
   async ignoreAssetsForDuplicates(assetIds) {
     if (!this.db || !assetIds || assetIds.length === 0) return;
     try {
-      await this.db.withExclusiveTransactionAsync(async () => {
-        const statement = await this.db.prepareAsync('INSERT OR IGNORE INTO IgnoredDuplicate (assetId) VALUES (?)');
-        try {
-          for (const id of assetIds) {
-            if (id) statement.executeSync(id);
+      const chunkSize = 100;
+      for (let i = 0; i < assetIds.length; i += chunkSize) {
+        const chunk = assetIds.slice(i, i + chunkSize);
+        await this.db.withExclusiveTransactionAsync(async () => {
+          const statement = await this.db.prepareAsync('INSERT OR IGNORE INTO IgnoredDuplicate (assetId) VALUES (?)');
+          try {
+            for (const id of chunk) {
+              if (id) statement.executeSync(id);
+            }
+          } finally {
+            await statement.finalizeAsync();
           }
-        } finally {
-          await statement.finalizeAsync();
+        });
+        if (i + chunkSize < assetIds.length) {
+          await new Promise(resolve => setTimeout(resolve, 5));
         }
-      });
+      }
       console.log(`[AssetDBService] Ignored ${assetIds.length} assets for duplicates.`);
     } catch (error) {
       console.error('[AssetDBService] Failed to ignore assets for duplicates:', error);
@@ -736,16 +865,23 @@ class AssetDBService {
   async deleteAssets(idsOrHashes) {
     if (!this.db || !idsOrHashes || idsOrHashes.length === 0) return;
     try {
-      await this.db.withExclusiveTransactionAsync(async () => {
-        const statement = await this.db.prepareAsync('DELETE FROM MediaAsset WHERE id = ? OR hash = ?');
-        try {
-          for (const id of idsOrHashes) {
-            if (id) statement.executeSync(id, id);
+      const chunkSize = 100;
+      for (let i = 0; i < idsOrHashes.length; i += chunkSize) {
+        const chunk = idsOrHashes.slice(i, i + chunkSize);
+        await this.db.withExclusiveTransactionAsync(async () => {
+          const statement = await this.db.prepareAsync('DELETE FROM MediaAsset WHERE id = ? OR hash = ?');
+          try {
+            for (const id of chunk) {
+              if (id) statement.executeSync(id, id);
+            }
+          } finally {
+            await statement.finalizeAsync();
           }
-        } finally {
-          await statement.finalizeAsync();
+        });
+        if (i + chunkSize < idsOrHashes.length) {
+          await new Promise(resolve => setTimeout(resolve, 5));
         }
-      });
+      }
       console.log(`[AssetDBService] Bulk deleted ${idsOrHashes.length} assets from SQLite.`);
     } catch (error) {
       console.error('[AssetDBService] Failed to bulk delete assets from SQLite:', error);

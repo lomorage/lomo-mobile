@@ -534,6 +534,9 @@ class AIService {
           }
 
           console.log(`[AIService] Syncing batch of ${remotePendingDownload.length} remote embeddings & phash from server...`);
+          const pHashUpdates = [];
+          const embeddingUpdates = [];
+
           for (const asset of remotePendingDownload) {
             try {
               processedDownloads++;
@@ -546,48 +549,71 @@ class AIService {
               DeviceEventEmitter.emit('ai_processing_status', this.status);
 
               const res = await axios.get(`${url}/asset/metadata/${asset.hash}`, {
-              headers: { Authorization: `token=${token}` },
-              timeout: 10000,
-              skipAutoProbe: true
-            });
-            const data = res.data;
-            let foundEmbedding = false;
-            let foundPHash = false;
-            
-            if (data && data.Metadatas) {
-              for (const meta of data.Metadatas) {
-                if (meta.Name === 'shared.phash.fingerprint' || meta.Name === 'ios.phash.fingerprint' || meta.Name === 'android.phash.fingerprint') {
-                  if (meta.Value && meta.Value.length > 0) {
-                    await this.saveAssetPHash(asset.hash, meta.Value);
-                    foundPHash = true;
-                    console.log(`[AIService] Synced phash ${meta.Value} from server for remote asset ${asset.hash}`);
+                headers: { Authorization: `token=${token}` },
+                timeout: 10000,
+                skipAutoProbe: true
+              });
+              const data = res.data;
+              let foundEmbedding = false;
+              let foundPHash = false;
+              let pHashVal = 'none';
+              let embeddingVal = 'none';
+              
+              if (data && data.Metadatas) {
+                for (const meta of data.Metadatas) {
+                  if (meta.Name === 'shared.phash.fingerprint' || meta.Name === 'ios.phash.fingerprint' || meta.Name === 'android.phash.fingerprint') {
+                    if (meta.Value && meta.Value.length > 0) {
+                      pHashVal = meta.Value;
+                      foundPHash = true;
+                    }
                   }
-                }
-                if (meta.Name && meta.Name.endsWith('.similarity.clip.embedding')) {
-                  if (meta.Value && meta.Value.length > 100) {
-                    await this.saveAssetEmbedding(asset.hash, meta.Value, 1);
-                    foundEmbedding = true;
-                    console.log(`[AIService] Synced embedding from server for remote asset ${asset.hash}`);
+                  if (meta.Name && meta.Name.endsWith('.similarity.clip.embedding')) {
+                    if (meta.Value && meta.Value.length > 100) {
+                      embeddingVal = meta.Value;
+                      foundEmbedding = true;
+                    }
                   }
                 }
               }
-            }
 
-            if (!foundEmbedding) {
-              await this.saveAssetEmbedding(asset.hash, 'none', 1);
-            }
-            if (!foundPHash) {
-              await this.saveAssetPHash(asset.hash, 'none');
-            }
-          } catch (e) {
-            if (e.response && e.response.status === 404) {
-              await this.saveAssetEmbedding(asset.hash, 'none', 1);
-              await this.saveAssetPHash(asset.hash, 'none');
-            } else {
-              console.warn(`[AIService] Failed to get metadata for remote asset ${asset.hash}:`, e.message);
+              pHashUpdates.push({ idOrHash: asset.hash, phash: pHashVal });
+              embeddingUpdates.push({ idOrHash: asset.hash, embedding: embeddingVal, version: foundEmbedding ? 1 : 1 });
+            } catch (e) {
+              if (e.response && e.response.status === 404) {
+                pHashUpdates.push({ idOrHash: asset.hash, phash: 'none' });
+                embeddingUpdates.push({ idOrHash: asset.hash, embedding: 'none', version: 1 });
+              } else {
+                console.warn(`[AIService] Failed to get metadata for remote asset ${asset.hash}:`, e.message);
+              }
             }
           }
-        }
+
+          // Execute batch database writes
+          if (pHashUpdates.length > 0) {
+            await AssetDBService.saveAssetPHashesBatch(pHashUpdates);
+          }
+          if (embeddingUpdates.length > 0) {
+            await AssetDBService.saveAssetEmbeddingsBatch(embeddingUpdates);
+
+            // Sync with in-memory vector cache
+            for (const update of embeddingUpdates) {
+              if (update.embedding && update.embedding !== 'failed' && update.embedding !== 'none') {
+                try {
+                  const row = await db.getFirstAsync('SELECT id FROM MediaAsset WHERE id = ? OR hash = ?', [update.idOrHash, update.idOrHash]);
+                  if (row && row.id) {
+                    this.vectorCache.set(row.id, base64ToFloat32Array(update.embedding));
+                  }
+                } catch (_) {}
+              } else {
+                try {
+                  const row = await db.getFirstAsync('SELECT id FROM MediaAsset WHERE id = ? OR hash = ?', [update.idOrHash, update.idOrHash]);
+                  if (row && row.id) {
+                    this.vectorCache.delete(row.id);
+                  }
+                } catch (_) {}
+              }
+            }
+          }
         await new Promise(resolve => setTimeout(resolve, 300));
       }
 
@@ -1097,194 +1123,166 @@ class AIService {
   // Returns an array of groups, each containing detailed asset objects sorted by quality (highest first).
   async findDuplicateGroups() {
     try {
+      console.time('[AIService] duplicate_scan_total');
       if (this.isPHashClearedInMemory) {
         console.log('[AIService] pHash cache cleared flag is active, returning empty duplicate groups.');
         return [];
       }
       // 1. Get all assets with phash from SQLite
       const assets = await AssetDBService.getAssetsWithPHash();
+      console.log(`[AIService] DB fetch completed. Total assets with pHash: ${assets.length}`);
       if (assets.length === 0) return [];
 
-      // 2. Parse phash into BigInts for fast bitwise XOR
-      const parsedAssets = [];
+      // 1.5 Deduplicate local/remote synced pairs by Hash
+      const uniqueByHash = new Map();
       for (const a of assets) {
+        if (a.hash && uniqueByHash.has(a.hash)) {
+          // Prefer local asset if both exist
+          if (a.isLocal === 1) {
+            uniqueByHash.set(a.hash, a);
+          }
+        } else if (a.hash) {
+          uniqueByHash.set(a.hash, a);
+        } else {
+          // No hash, just use ID
+          uniqueByHash.set(a.id, a);
+        }
+      }
+      const deduplicatedAssets = Array.from(uniqueByHash.values());
+      console.log(`[AIService] Hash deduplication completed. Unique assets by hash: ${deduplicatedAssets.length}`);
+
+      // 2. Parse phash into BigInts and Pre-group identical exact matches
+      const exactGroupsMap = new Map();
+      for (const a of deduplicatedAssets) {
         try {
           if (a.phash) {
-            parsedAssets.push({
-              ...a,
-              phashBig: BigInt(a.phash)
-            });
+            const phashBig = BigInt(a.phash);
+            const pLow = Number(phashBig & 0xffffffffn) | 0;
+            const pHigh = Number((phashBig >> 32n) & 0xffffffffn) | 0;
+            if (!exactGroupsMap.has(a.phash)) {
+              exactGroupsMap.set(a.phash, { pLow, pHigh, items: [] });
+            }
+            exactGroupsMap.get(a.phash).items.push({ ...a });
           }
         } catch (e) {
           console.warn(`[AIService] Invalid phash BigInt for asset ${a.id}:`, a.phash);
         }
       }
 
+      const uniquePhashGroups = Array.from(exactGroupsMap.values());
+      console.log(`[AIService] Exact phash grouping completed. Unique phash groups: ${uniquePhashGroups.length}`);
+      if (uniquePhashGroups.length === 0) return [];
+
       // 3. Fast popcount helper (computes hamming distance of 64-bit BigInts in ~50ns)
-      const popcountBigInt64 = (x) => {
-        const low = Number(x & 0xffffffffn);
-        const high = Number((x >> 32n) & 0xffffffffn);
-        const countBits = (v) => {
-          v = v - ((v >> 1) & 0x55555555);
-          v = (v & 0x33333333) + ((v >> 2) & 0x33333333);
-          return (((v + (v >> 4)) & 0x0F0F0F0F) * 0x01010101) >> 24;
-        };
-        return countBits(low) + countBits(high);
+      // 3. Fast popcount helper for 32-bit ints
+      const countBits = (v) => {
+        v = v - ((v >>> 1) & 0x55555555);
+        v = (v & 0x33333333) + ((v >>> 2) & 0x33333333);
+        return (((v + (v >>> 4)) & 0x0F0F0F0F) * 0x01010101) >>> 24;
       };
 
       // 4. Greedy clustering loop (Hamming distance <= 6)
       const clusters = [];
       const visited = new Set();
+      console.time('[AIService] greedy_clustering');
 
-      for (let i = 0; i < parsedAssets.length; i++) {
-        const assetA = parsedAssets[i];
-        if (visited.has(assetA.id)) continue;
+      const len = uniquePhashGroups.length;
+      const pLowArr = new Int32Array(len);
+      const pHighArr = new Int32Array(len);
+      for(let i=0; i<len; i++) {
+        pLowArr[i] = uniquePhashGroups[i].pLow;
+        pHighArr[i] = uniquePhashGroups[i].pHigh;
+      }
 
-        const cluster = [assetA];
-        for (let j = i + 1; j < parsedAssets.length; j++) {
-          const assetB = parsedAssets[j];
-          if (visited.has(assetB.id)) continue;
+      for (let i = 0; i < len; i++) {
+        // Yield to event loop to prevent UI freezing
+        if (i > 0 && i % 500 === 0) {
+          await new Promise(resolve => setTimeout(resolve, 0));
+        }
 
-          const dist = popcountBigInt64(assetA.phashBig ^ assetB.phashBig);
-          if (dist <= 6) {
-            console.log(`[AIService] Match: ${assetA.filename} (${assetA.phash}) <-> ${assetB.filename} (${assetB.phash}), distance = ${dist}`);
-            cluster.push(assetB);
-            visited.add(assetB.id);
+        const groupA = uniquePhashGroups[i];
+        const representativeId = groupA.items[0].id;
+        
+        if (visited.has(representativeId)) continue;
+
+        let cluster = [...groupA.items];
+        const pLowA = pLowArr[i];
+        const pHighA = pHighArr[i];
+        
+        for (let j = i + 1; j < len; j++) {
+          let vLow = pLowA ^ pLowArr[j];
+          vLow = vLow - ((vLow >>> 1) & 0x55555555);
+          vLow = (vLow & 0x33333333) + ((vLow >>> 2) & 0x33333333);
+          const cLow = (((vLow + (vLow >>> 4)) & 0x0F0F0F0F) * 0x01010101) >>> 24;
+          
+          if (cLow > 6) continue;
+
+          let vHigh = pHighA ^ pHighArr[j];
+          vHigh = vHigh - ((vHigh >>> 1) & 0x55555555);
+          vHigh = (vHigh & 0x33333333) + ((vHigh >>> 2) & 0x33333333);
+          const cHigh = (((vHigh + (vHigh >>> 4)) & 0x0F0F0F0F) * 0x01010101) >>> 24;
+
+          if (cLow + cHigh <= 6) {
+            const groupB = uniquePhashGroups[j];
+            const repBId = groupB.items[0].id;
+            if (visited.has(repBId)) continue;
+
+            cluster = cluster.concat(groupB.items);
+            visited.add(repBId);
           }
         }
 
         if (cluster.length > 1) {
-          visited.add(assetA.id);
+          visited.add(representativeId);
           clusters.push(cluster);
         }
       }
+      console.timeEnd('[AIService] greedy_clustering');
+      console.log(`[AIService] Greedy clustering completed. Clusters found: ${clusters.length}`);
 
-      // 5. Enrich cluster assets with metadata (size, width, height) to sort by quality
+      // 5. Build result clusters - use data already in SQLite, skip expensive network/filesystem calls.
+      // Sort heuristic: prefer local assets (isLocal=1) over remote, then newer createTime first.
+      // This avoids hundreds of MediaService.getAssetInfo / axios.head calls that were causing the long wait.
       const url = AuthService.getServerUrl();
       const token = AuthService.getToken();
-      const db = AssetDBService.db;
-
-      // Collect all raw assets to enrich them in parallel
-      const assetsToEnrich = [];
-      for (let clusterIndex = 0; clusterIndex < clusters.length; clusterIndex++) {
-        const rawCluster = clusters[clusterIndex];
-        for (let assetIndex = 0; assetIndex < rawCluster.length; assetIndex++) {
-          assetsToEnrich.push({
-            asset: rawCluster[assetIndex],
-            clusterIndex
-          });
-        }
-      }
-
-      const enrichmentPromises = assetsToEnrich.map(async (item) => {
-        const asset = item.asset;
-        let width = 0;
-        let height = 0;
-        let size = 0;
-        let displayUri = null;
-
-        if (asset.isLocal) {
-          try {
-            const localInfo = await MediaService.getAssetInfo(asset.id);
-            if (localInfo) {
-              width = localInfo.width || 0;
-              height = localInfo.height || 0;
-              displayUri = localInfo.localUri || localInfo.uri;
-              if (Platform.OS === 'android' && displayUri && displayUri.startsWith('content://') && (localInfo.mediaType === 'video' || displayUri.includes('/video/'))) {
-                displayUri = `${displayUri}/thumbnail`;
-              }
-              
-              if (displayUri) {
-                const fileInfo = await FileSystem.getInfoAsync(displayUri, { size: true });
-                size = fileInfo?.size || 0;
-              }
-            }
-          } catch (e) {
-            console.warn(`[AIService] Failed to get local asset info for duplicate check:`, e.message);
-          }
-        } else {
-          if (asset.localCachePath) {
+      const enrichedClusters = clusters.map(cluster => {
+        const sorted = [...cluster].sort((a, b) => {
+          // Local beats remote
+          const localDiff = (b.isLocal === 1 ? 1 : 0) - (a.isLocal === 1 ? 1 : 0);
+          if (localDiff !== 0) return localDiff;
+          // Newer createTime first
+          return (b.createTime || 0) - (a.createTime || 0);
+        });
+        return sorted.map(asset => {
+          let displayUri = null;
+          if (asset.isLocal === 1) {
+            // Will be resolved lazily by the UI when the user views the asset
+            displayUri = null;
+          } else if (asset.localCachePath) {
             displayUri = asset.localCachePath;
           } else {
             displayUri = `${url}/preview/${asset.hash}?width=320&height=-1&token=${token}`;
           }
-
-          // 1. Try checking the DB-cached metadata field first (which we SELECT in getAssetsWithPHash)
-          let dbCached = false;
-          if (asset.metadata) {
-            try {
-              const metaObj = JSON.parse(asset.metadata);
-              width = metaObj?.width || 0;
-              height = metaObj?.height || 0;
-              size = metaObj?.size || 0;
-              if (size > 0) {
-                dbCached = true;
-              }
-            } catch (e) {
-              console.warn('[AIService] Failed to parse cached metadata:', e.message);
-            }
-          }
-
-          // 2. If size not cached in SQLite metadata column, fetch it via fast axios HEAD and write back
-          if (!dbCached) {
-            try {
-              const headRes = await axios.head(`${url}/asset/${asset.hash}`, {
-                headers: { Authorization: `token=${token}` },
-                timeout: 5000,
-                skipAutoProbe: true
-              });
-              if (headRes && headRes.headers) {
-                const contentLength = headRes.headers['content-length'] || headRes.headers['Content-Length'];
-                if (contentLength) {
-                  size = parseInt(contentLength, 10) || 0;
-                }
-              }
-
-              // Update the DB cache with the size so subsequent duplicate checks are instant
-              if (size > 0 && db) {
-                const metadataStr = JSON.stringify({ size, width: 0, height: 0 });
-                await db.runAsync('UPDATE MediaAsset SET metadata = ? WHERE hash = ?', [metadataStr, asset.hash]);
-                console.log(`[AIService] Cached remote asset metadata for ${asset.hash}: size=${size}`);
-              }
-            } catch (he) {
-              console.warn(`[AIService] Failed to get remote file size for duplicate check:`, he.message);
-            }
-          }
-        }
-
-        return {
-          clusterIndex: item.clusterIndex,
-          enrichedAsset: {
+          return {
             id: asset.id,
             hash: asset.hash,
             isLocal: asset.isLocal === 1,
             filename: asset.filename,
             createTime: asset.createTime,
             mediaType: asset.mediaType,
-            width,
-            height,
-            size,
-            displayUri: displayUri || asset.localCachePath,
-            qualityScore: width * height + size / 1000
-          }
-        };
+            width: 0,
+            height: 0,
+            size: 0,
+            displayUri,
+            qualityScore: 0
+          };
+        });
       });
 
-      const enrichedResults = await Promise.all(enrichmentPromises);
-
-      // Reconstruct clusters
-      const enrichedClusters = Array.from({ length: clusters.length }, () => []);
-      for (const res of enrichedResults) {
-        enrichedClusters[res.clusterIndex].push(res.enrichedAsset);
-      }
-
-      // Sort each cluster descending by qualityScore
-      for (const cluster of enrichedClusters) {
-        cluster.sort((a, b) => b.qualityScore - a.qualityScore);
-      }
-
+      console.timeEnd('[AIService] duplicate_scan_total');
       return enrichedClusters;
     } catch (error) {
+      console.timeEnd('[AIService] duplicate_scan_total');
       console.error('[AIService] Failed in findDuplicateGroups:', error);
       return [];
     }

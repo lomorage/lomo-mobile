@@ -158,7 +158,7 @@ describe('AssetDBService', () => {
 
     expect(mockSpies.withExclusiveTransactionAsync).toHaveBeenCalled();
     expect(mockSpies.prepareAsync).toHaveBeenCalledWith(expect.stringContaining('UPDATE MediaAsset SET filename = ?, mediaType = ? WHERE id = ?'));
-    expect(mockStatement.executeAsync).toHaveBeenCalledWith(
+    expect(mockStatement.executeSync).toHaveBeenCalledWith(
       'healed.jpg',
       'photo',
       'h1'
