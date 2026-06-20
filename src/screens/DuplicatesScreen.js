@@ -24,6 +24,7 @@ import AssetDBService from '../services/AssetDBService';
 import MediaService from '../services/MediaService';
 import AuthService from '../services/AuthService';
 import * as FileSystem from 'expo-file-system/legacy';
+import { useSettings } from '../context/SettingsContext';
 
 const { width } = Dimensions.get('window');
 
@@ -401,6 +402,7 @@ function CompareItemPage({ item, index, isSelected, onToggle, setModalMeta, isFo
 export default function DuplicatesScreen() {
     const insets = useSafeAreaInsets();
     const navigation = useNavigation();
+    const { debugMode } = useSettings();
     const [loading, setLoading] = useState(true);
     const [deleting, setDeleting] = useState(false);
     const [groups, setGroups] = useState([]);
@@ -433,7 +435,7 @@ export default function DuplicatesScreen() {
             console.error('[DuplicatesScreen] Failed to load duplicates:', error);
             Alert.alert(
                 'Oops', 
-                __DEV__ 
+                debugMode 
                     ? `Failed to load duplicates: ${error.message}` 
                     : 'We ran into a hiccup while finding duplicates. Please try again.'
             );
@@ -464,23 +466,33 @@ export default function DuplicatesScreen() {
     // Ignore an entire group of duplicates
     const handleIgnoreGroup = useCallback((group) => {
         if (!group || group.length === 0) return;
+        
+        // Capture IDs as primitives BEFORE the Alert opens, to avoid stale closure issues
+        const assetIds = group.map(a => a.id);
+        const firstId = group[0]?.id;
+
         Alert.alert(
             'Ignore Group',
-            'Are you sure you want to ignore this group? These photos will no longer be flagged as duplicates in the future.',
+            'This group will not appear in the cleanup list again.',
             [
                 { text: 'Cancel', style: 'cancel' },
                 { 
                     text: 'Ignore', 
                     style: 'destructive',
-                    onPress: async () => {
-                        try {
-                            const assetIds = group.map(a => a.id);
-                            await AssetDBService.ignoreAssetsForDuplicates(assetIds);
-                            AIService.clearDuplicateCache();
-                            loadDuplicates();
-                        } catch (e) {
-                            console.error('[DuplicatesScreen] Failed to ignore group:', e);
-                        }
+                    onPress: () => {
+                        // Optimistically remove from UI immediately
+                        setGroups(prev => prev.filter(g => g[0]?.id !== firstId));
+                        setSelectedMap(prev => {
+                            const copy = { ...prev };
+                            assetIds.forEach(id => delete copy[id]);
+                            return copy;
+                        });
+                        
+                        // Persist to DB in background
+                        AssetDBService.ignoreAssetsForDuplicates(assetIds).catch(e => {
+                            console.error('[DuplicatesScreen] Failed to ignore group in DB:', e);
+                        });
+                        AIService.clearDuplicateCache(); // Invalidate cache so it recalculates if re-entered
                     }
                 }
             ]
@@ -579,7 +591,7 @@ export default function DuplicatesScreen() {
                             console.error('[DuplicatesScreen] Deletion error:', err);
                             Alert.alert(
                                 'Cleanup Incomplete', 
-                                __DEV__ 
+                                debugMode 
                                     ? `Error cleaning photos: ${err.message}` 
                                     : 'We couldn\'t finish cleaning up all selected photos. Please check your connection and try again.'
                             );
@@ -634,7 +646,7 @@ export default function DuplicatesScreen() {
                     <ActivityIndicator size="large" color="#007AFF" />
                     <Text style={styles.loadingText}>Scanning library for duplicates...</Text>
                     <Text style={styles.loadingSubtext}>
-                        {__DEV__ 
+                        {debugMode 
                             ? 'This may take a few seconds, clustering photos by perceptual hash...' 
                             : 'This may take a few moments while we find similar photos for you...'}
                     </Text>
