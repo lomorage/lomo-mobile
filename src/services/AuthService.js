@@ -1,4 +1,5 @@
 import * as SecureStore from 'expo-secure-store';
+import * as Crypto from 'expo-crypto';
 import axios from 'axios';
 import Argon2 from 'react-native-argon2';
 import { Alert, Platform, DeviceEventEmitter } from 'react-native';
@@ -129,6 +130,17 @@ class AuthService {
             this.determineBestConnection();
         }
     });
+  }
+
+  async getDeviceId() {
+    let deviceId = await SecureStore.getItemAsync('lomo_device_id');
+    if (!deviceId) {
+      const uuid = Crypto.randomUUID();
+      const platform = Platform.OS === 'ios' ? 'ios' : 'android';
+      deviceId = `${platform}-lomo-mobile-${uuid}`;
+      await SecureStore.setItemAsync('lomo_device_id', deviceId);
+    }
+    return deviceId;
   }
 
   /**
@@ -369,7 +381,7 @@ class AuthService {
       console.log('Password hashed successfully.');
 
       // Build Basic auth header: base64(username:hashedPassword:deviceId)
-      const deviceId = 'android-lomo-mobile';
+      const deviceId = await this.getDeviceId();
       const credentials = `${trimmedUsername}:${hashedPassword}:${deviceId}`;
       
       // btoa is not available in React Native, use a simple base64 alternative

@@ -13,7 +13,7 @@ export function SettingsProvider({ children }) {
     const [hashConcurrency, setHashConcurrency] = useState(2);
     const [uploadConcurrency, setUploadConcurrency] = useState(3);
     const [excludedAlbums, setExcludedAlbums] = useState([]);
-    const [remoteAIProcessingEnabled, setRemoteAIProcessingEnabled] = useState(false);
+    const [remoteAIProcessingEnabled, setRemoteAIProcessingEnabled] = useState(true);
     const [searchThreshold, setSearchThreshold] = useState(0.25);
     const [aiWifiOnly, setAIWifiOnly] = useState(true);
     const [aiChargingOnly, setAIChargingOnly] = useState(true);
@@ -69,6 +69,8 @@ export function SettingsProvider({ children }) {
             const savedRemoteAI = await SecureStore.getItemAsync('lomorage_remote_ai_processing');
             if (savedRemoteAI !== null) {
                 setRemoteAIProcessingEnabled(savedRemoteAI === 'true');
+            } else {
+                setRemoteAIProcessingEnabled(true);
             }
             const savedThreshold = await SecureStore.getItemAsync('lomorage_search_threshold');
             if (savedThreshold !== null) {

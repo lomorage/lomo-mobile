@@ -6,6 +6,7 @@ import * as Sharing from 'expo-sharing';
 import { Ionicons } from '@expo/vector-icons';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import convertToProxyURL from 'react-native-video-cache';
+import * as Device from 'expo-device';
 import AuthService from '../services/AuthService';
 import MediaService from '../services/MediaService';
 import SyncService from '../services/SyncService';
@@ -741,8 +742,9 @@ export default function AssetDetailScreen({ route, navigation }) {
         const shouldPlayLive = isLive && isLivePlaying && isVisible && liveVideoUri;
 
         // Remote videos are converted to proxy URLs synchronously to prevent mount/frame flash
+        // Only use the video cache proxy on physical devices, as it fails on Simulators/Emulators
         let resolvedVideoUri = uri;
-        if (item.status === 'remote' && item.mediaType === 'video' && !isLive) {
+        if (item.status === 'remote' && item.mediaType === 'video' && !isLive && Device.isDevice) {
             try {
                 resolvedVideoUri = convertToProxyURL(uri);
             } catch (e) {

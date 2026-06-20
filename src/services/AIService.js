@@ -375,7 +375,7 @@ class AIService {
               isProcessing: true,
               current: 0,
               total: 0,
-              message: `正在上传照片特征 (${processedUploads}/${totalUploads})...`
+              message: `Uploading photo features (${processedUploads}/${totalUploads})...`
             };
             DeviceEventEmitter.emit('ai_processing_status', this.status);
 
@@ -386,7 +386,7 @@ class AIService {
             }
 
             const device = Platform.OS === 'ios' ? 'ios' : 'android';
-            const name = `${device}.similarity.clip.embedding`;
+            const name = 'shared.similarity.clip.embedding';
             
             const payload = [{
               Category: 'similarity',
@@ -415,9 +415,97 @@ class AIService {
         await new Promise(resolve => setTimeout(resolve, 300));
       }
 
+      // Part A2: Upload locally calculated pHashes to server
+      const totalPHashUploadsRow = await db.getFirstAsync(`
+        SELECT COUNT(*) as count 
+        FROM MediaAsset 
+        WHERE isLocal = 1 
+          AND uploaded = 1 
+          AND phash IS NOT NULL 
+          AND phash != "" 
+          AND phash != "failed" 
+          AND phash != "none"
+          AND hash IS NOT NULL
+          AND hash NOT IN (
+            SELECT hash FROM MediaAsset WHERE isLocal = 0 AND phash IS NOT NULL AND phash != ""
+          )
+      `);
+      const totalPHashUploads = totalPHashUploadsRow?.count || 0;
+      let processedPHashUploads = 0;
+      let hasMorePHashUploads = true;
+
+      while (hasMorePHashUploads) {
+        const localPendingPHashUpload = await db.getAllAsync(`
+          SELECT id, hash, phash 
+          FROM MediaAsset 
+          WHERE isLocal = 1 
+            AND uploaded = 1 
+            AND phash IS NOT NULL 
+            AND phash != "" 
+            AND phash != "failed" 
+            AND phash != "none"
+            AND hash NOT IN (
+              SELECT hash FROM MediaAsset WHERE isLocal = 0 AND phash IS NOT NULL AND phash != ""
+            )
+          LIMIT 10
+        `);
+
+        if (localPendingPHashUpload.length === 0) {
+          hasMorePHashUploads = false;
+          break;
+        }
+
+        console.log(`[AIService] Uploading batch of ${localPendingPHashUpload.length} local pHashes to server...`);
+        for (const asset of localPendingPHashUpload) {
+          try {
+            processedPHashUploads++;
+            this.status = {
+              isProcessing: true,
+              current: 0,
+              total: 0,
+              message: `Uploading photo fingerprints (${processedPHashUploads}/${totalPHashUploads})...`
+            };
+            DeviceEventEmitter.emit('ai_processing_status', this.status);
+
+            const serverAssetId = await this.getServerAssetIdByHash(asset.hash);
+            if (!serverAssetId) {
+              console.log(`[AIService] Skipping phash upload for ${asset.hash}: server ID not synced yet.`);
+              continue;
+            }
+
+            const device = Platform.OS === 'ios' ? 'ios' : 'android';
+            const name = 'shared.phash.fingerprint';
+            
+            const payload = [{
+              Category: 'similarity',
+              SourceDevice: device,
+              AssetID: serverAssetId,
+              Name: name,
+              Value: asset.phash,
+              Version: 1
+            }];
+
+            await axios.post(`${url}/assets/metadata?force=1`, payload, {
+              headers: { Authorization: `token=${token}` },
+              timeout: 15000
+            });
+            console.log(`[AIService] Uploaded phash for server asset ID ${serverAssetId} successfully.`);
+            // Mark remote asset representation in SQLite as having the phash to avoid re-upload loop
+            await db.runAsync(
+              'INSERT OR IGNORE INTO MediaAsset (id, hash, isLocal) VALUES (?, ?, 0)',
+              [asset.hash, asset.hash]
+            );
+            await this.saveAssetPHash(asset.hash, asset.phash);
+          } catch (e) {
+            console.warn(`[AIService] Failed to upload phash for ${asset.hash}:`, e.message);
+          }
+        }
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+
       // Part B: Download remote embeddings and phash from server
       const savedRemoteAI = await SecureStore.getItemAsync('lomorage_remote_ai_processing');
-      const remoteAIEnabled = savedRemoteAI === 'true';
+      const remoteAIEnabled = savedRemoteAI !== 'false';
       if (!remoteAIEnabled && !force) {
         console.log('[AIService] Skip remote embedding download: remote AI indexing disabled.');
       } else {
@@ -453,7 +541,7 @@ class AIService {
                 isProcessing: true,
                 current: 0,
                 total: 0,
-                message: `正在同步远程照片特征 (${Math.min(processedDownloads, totalDownloads)}/${totalDownloads})...`
+                message: `Syncing remote photo features (${Math.min(processedDownloads, totalDownloads)}/${totalDownloads})...`
               };
               DeviceEventEmitter.emit('ai_processing_status', this.status);
 
@@ -468,7 +556,7 @@ class AIService {
             
             if (data && data.Metadatas) {
               for (const meta of data.Metadatas) {
-                if (meta.Name === 'ios.phash.fingerprint') {
+                if (meta.Name === 'shared.phash.fingerprint' || meta.Name === 'ios.phash.fingerprint' || meta.Name === 'android.phash.fingerprint') {
                   if (meta.Value && meta.Value.length > 0) {
                     await this.saveAssetPHash(asset.hash, meta.Value);
                     foundPHash = true;
@@ -540,7 +628,7 @@ class AIService {
                 isProcessing: true,
                 current: 0,
                 total: 0,
-                message: `正在提取远程照片特征 (${Math.min(processedRemote, totalRemote)}/${totalRemote})...`
+                message: `Extracting remote photo features (${Math.min(processedRemote, totalRemote)}/${totalRemote})...`
               };
               DeviceEventEmitter.emit('ai_processing_status', this.status);
 
@@ -555,35 +643,54 @@ class AIService {
                   throw new Error(`Failed to download preview, HTTP status ${downloadRes.status}`);
                 }
 
-                // 2. Extract embedding from downloaded preview file
+                // 2. Extract embedding and phash from downloaded preview file
                 const base64 = await this.getImageEmbedding(downloadRes.uri);
+                let phash = null;
+                try {
+                  phash = await ExpoLomoHasher.generatePHashAsync(downloadRes.uri);
+                } catch (pe) {
+                  console.warn(`[AIService] Scheme B failed to calculate phash for remote asset ${asset.hash}:`, pe.message);
+                }
 
                 // 3. Save locally in SQLite
                 await this.saveAssetEmbedding(asset.hash, base64, 1);
-                console.log(`[AIService] Saved embedding locally for remote asset ${asset.hash}`);
+                if (phash && phash !== "0") {
+                  await this.saveAssetPHash(asset.hash, phash);
+                }
+                console.log(`[AIService] Saved embedding and phash locally for remote asset ${asset.hash}`);
 
                 // 4. Clean up temporary download file
                 await FileSystem.deleteAsync(tempUri, { idempotent: true });
 
-                // 5. Upload the newly calculated embedding to server so other devices can pull it!
+                // 5. Upload the newly calculated features to server so other devices can pull them!
                 const serverAssetId = await this.getServerAssetIdByHash(asset.hash);
                 if (serverAssetId) {
                   const device = Platform.OS === 'ios' ? 'ios' : 'android';
-                  const name = `${device}.similarity.clip.embedding`;
-                  const payload = [{
+                  const payload = [];
+                  payload.push({
                     Category: 'similarity',
                     SourceDevice: device,
                     AssetID: serverAssetId,
-                    Name: name,
+                    Name: 'shared.similarity.clip.embedding',
                     Value: base64,
                     Version: 1
-                  }];
+                  });
+                  if (phash && phash !== "0") {
+                    payload.push({
+                      Category: 'similarity',
+                      SourceDevice: device,
+                      AssetID: serverAssetId,
+                      Name: 'shared.phash.fingerprint',
+                      Value: phash,
+                      Version: 1
+                    });
+                  }
 
                   await axios.post(`${url}/assets/metadata?force=1`, payload, {
                     headers: { Authorization: `token=${token}` },
                     timeout: 15000
                   });
-                  console.log(`[AIService] Uploaded calculated embedding for remote asset ID ${serverAssetId} successfully.`);
+                  console.log(`[AIService] Uploaded calculated features for remote asset ID ${serverAssetId} successfully.`);
                 }
               } catch (err) {
                 console.warn(`[AIService] Scheme B failed for remote asset ${asset.hash}:`, err.message);

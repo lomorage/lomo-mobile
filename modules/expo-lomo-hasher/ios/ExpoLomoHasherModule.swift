@@ -525,7 +525,7 @@ public class ExpoLomoHasherModule: Module {
           let inputTensor = try ORTValue(tensorData: NSMutableData(data: inputData), elementType: .float, shape: shape)
           
           let outputNames = try session.outputNames()
-          let outputs = try session.run(withInputs: ["pixel_values": inputTensor], outputNames: outputNames, runOptions: nil)
+          let outputs = try session.run(withInputs: ["pixel_values": inputTensor], outputNames: Set(outputNames), runOptions: nil)
           guard let firstOutputName = outputNames.first, let outputVal = outputs[firstOutputName] else {
             promise.reject("ERR_INFERENCE", "Output not found")
             return
@@ -534,7 +534,9 @@ public class ExpoLomoHasherModule: Module {
           let outputData = try outputVal.tensorData()
           let count = outputData.count / MemoryLayout<Float>.size
           var floats = [Float](repeating: 0.0, count: count)
-          outputData.copyBytes(to: UnsafeMutableBufferPointer(start: &floats, count: count))
+          floats.withUnsafeMutableBufferPointer { buffer in
+            outputData.copyBytes(to: buffer)
+          }
           
           let normalized = self.normalizeL2(floats)
           let base64 = self.floatArrayToBase64(normalized)
@@ -593,7 +595,7 @@ public class ExpoLomoHasherModule: Module {
           ]
           
           let outputNames = try session.outputNames()
-          let outputs = try session.run(withInputs: inputMap, outputNames: outputNames, runOptions: nil)
+          let outputs = try session.run(withInputs: inputMap, outputNames: Set(outputNames), runOptions: nil)
           guard let firstOutputName = outputNames.first, let outputVal = outputs[firstOutputName] else {
             promise.reject("ERR_INFERENCE", "Output not found")
             return
@@ -602,7 +604,9 @@ public class ExpoLomoHasherModule: Module {
           let outputData = try outputVal.tensorData()
           let count = outputData.count / MemoryLayout<Float>.size
           var floats = [Float](repeating: 0.0, count: count)
-          outputData.copyBytes(to: UnsafeMutableBufferPointer(start: &floats, count: count))
+          floats.withUnsafeMutableBufferPointer { buffer in
+            outputData.copyBytes(to: buffer)
+          }
           
           let normalized = self.normalizeL2(floats)
           let base64 = self.floatArrayToBase64(normalized)

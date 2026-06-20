@@ -40,7 +40,11 @@ class RemoteAlbumService {
         count: a.AssetsCount || a.assetsCount || a.count || a.Count || 0
       }));
     } catch (error) {
-      console.error('[RemoteAlbumService] Error fetching albums:', error.message);
+      if (axios.isCancel(error)) {
+        console.log('[RemoteAlbumService] Fetching albums canceled');
+      } else {
+        console.error('[RemoteAlbumService] Error fetching albums:', error.message);
+      }
       return [];
     }
   }
@@ -101,7 +105,11 @@ class RemoteAlbumService {
       // API returns array of objects { Name, Hash } or strings depending on version/params
       return data.map(item => typeof item === 'string' ? item : (item.Hash || item.Name || item.hash || item.name)).filter(Boolean);
     } catch (error) {
-      console.error(`[RemoteAlbumService] Error fetching assets for album ${albumId}:`, error.message);
+      if (axios.isCancel(error)) {
+        console.log(`[RemoteAlbumService] Fetching assets for album ${albumId} canceled`);
+      } else {
+        console.error(`[RemoteAlbumService] Error fetching assets for album ${albumId}:`, error.message);
+      }
       return [];
     }
   }

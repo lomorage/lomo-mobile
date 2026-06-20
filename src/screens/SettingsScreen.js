@@ -484,6 +484,19 @@ export default function SettingsScreen({ navigation }) {
 
                         <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8, paddingTop: 8 }]}>
                             <View style={styles.settingTextContainer}>
+                                <Text style={styles.settingLabel}>Sync Remote AI Features</Text>
+                                <Text style={styles.settingDescription}>Download and sync CLIP embeddings and photo fingerprints from the server for remote photos.</Text>
+                            </View>
+                            <Switch
+                                value={remoteAIProcessingEnabled}
+                                onValueChange={toggleRemoteAIProcessing}
+                                trackColor={{ false: '#d1d1d1', true: '#4CAF50' }}
+                                thumbColor={'#fff'}
+                            />
+                        </View>
+
+                        <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8, paddingTop: 8 }]}>
+                            <View style={styles.settingTextContainer}>
                                 <Text style={styles.settingLabel}>AI Background Indexer Status</Text>
                                 <Text style={styles.settingDescription}>{aiStatus.message}</Text>
                             </View>
