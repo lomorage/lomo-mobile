@@ -58,7 +58,7 @@ function LazyLocalAsset({ assetId, style, onMetadata, ...rest }) {
 
 // Standalone card for one asset within a duplicate group.
 // Needed so that useState (for lazy metadata) follows React Hooks rules (no hooks in loops).
-function AssetCard({ asset, idx, isSelected, onToggle }) {
+function AssetCard({ asset, idx, isSelected, onToggle, onSize }) {
     const isBest = idx === 0;
     const [localMeta, setLocalMeta] = React.useState({ width: 0, height: 0, size: 0 });
 
@@ -83,7 +83,10 @@ function AssetCard({ asset, idx, isSelected, onToggle }) {
                         style={styles.thumbnail}
                         contentFit="cover"
                         cachePolicy="memory-disk"
-                        onMetadata={(uri, w, h, s) => setLocalMeta({ width: w, height: h, size: s })}
+                        onMetadata={(uri, w, h, s) => {
+                            setLocalMeta({ width: w, height: h, size: s });
+                            if (onSize && s > 0) onSize(asset.id, s);
+                        }}
                     />
                 ) : (
                     <Image
@@ -310,6 +313,7 @@ export default function DuplicatesScreen() {
     const [deleting, setDeleting] = useState(false);
     const [groups, setGroups] = useState([]);
     const [selectedMap, setSelectedMap] = useState({}); // id -> boolean
+    const [sizesMap, setSizesMap] = useState({});
     
     // Compare modal state
     const [compareGroup, setCompareGroup] = useState(null);
@@ -356,6 +360,10 @@ export default function DuplicatesScreen() {
         }));
     };
 
+    const handleSize = useCallback((id, size) => {
+        setSizesMap(prev => prev[id] === size ? prev : { ...prev, [id]: size });
+    }, []);
+
     // Ignore an entire group of duplicates
     const handleIgnoreGroup = (group) => {
         if (!group || group.length === 0) return;
@@ -391,7 +399,6 @@ export default function DuplicatesScreen() {
         );
     };
 
-    // Calculate total size and count of selected items for deletion
     let selectedCount = 0;
     let selectedSize = 0; // bytes
 
@@ -399,7 +406,7 @@ export default function DuplicatesScreen() {
         group.forEach(asset => {
             if (selectedMap[asset.id]) {
                 selectedCount++;
-                selectedSize += asset.size || 0;
+                selectedSize += sizesMap[asset.id] || asset.size || 0;
             }
         });
     });
@@ -537,6 +544,7 @@ export default function DuplicatesScreen() {
                             idx={idx}
                             isSelected={!!selectedMap[asset.id]}
                             onToggle={toggleSelect}
+                            onSize={handleSize}
                         />
                     ))}
                 </ScrollView>
