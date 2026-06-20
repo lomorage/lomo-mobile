@@ -2,9 +2,6 @@
 
 echo "Starting Android Release Build..."
 
-echo "Bumping app version..."
-node bump-version.js || exit 1
-
 # Navigate to android directory
 echo "Syncing native configurations (Prebuild)..."
 npx expo prebuild -p android || exit 1
