@@ -207,10 +207,13 @@ export function SettingsProvider({ children }) {
             const newValue = !remoteAIProcessingEnabled;
             await SecureStore.setItemAsync('lomorage_remote_ai_processing', newValue.toString());
             setRemoteAIProcessingEnabled(newValue);
+            const AIService = require('../services/AIService').default;
             if (newValue && aiEnabled) {
                 // Immediately start syncing remote embeddings
-                const AIService = require('../services/AIService').default;
                 AIService.syncEmbeddings(true).catch(e => console.warn('[SettingsContext] Remote AI sync failed:', e.message));
+                AIService.registerBackgroundSync();
+            } else {
+                AIService.unregisterBackgroundSync();
             }
         } catch (error) {
             console.error('Failed to update remote AI processing setting', error);
@@ -256,12 +259,17 @@ export function SettingsProvider({ children }) {
             const newValue = !aiEnabled;
             await SecureStore.setItemAsync('lomorage_ai_enabled', newValue.toString());
             setAiEnabled(newValue);
+            const AIService = require('../services/AIService').default;
             if (newValue) {
-                const AIService = require('../services/AIService').default;
                 (async () => {
                     await AIService.processLocalEmbeddings(30);
                     await AIService.syncEmbeddings();
                 })().catch(e => console.warn('[SettingsContext] AI sync failed:', e.message));
+                if (remoteAIProcessingEnabled) {
+                    AIService.registerBackgroundSync();
+                }
+            } else {
+                AIService.unregisterBackgroundSync();
             }
         } catch (error) {
             console.error('Failed to update AI enabled setting', error);

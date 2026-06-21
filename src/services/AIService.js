@@ -5,9 +5,14 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as SecureStore from 'expo-secure-store';
 import * as Network from 'expo-network';
 import * as Battery from 'expo-battery';
+import * as TaskManager from 'expo-task-manager';
+import * as BackgroundTask from 'expo-background-task';
 import AssetDBService from './AssetDBService';
 import AuthService from './AuthService';
 import MediaService from './MediaService';
+import TaskSchedulerService from './TaskSchedulerService';
+
+export const BACKGROUND_AI_SYNC_TASK = 'LOMO_AI_SYNC_TASK';
 
 // Base64 helper to convert base64 string to Float32Array
 function base64ToFloat32Array(base64) {
@@ -120,6 +125,63 @@ class AIService {
     }
   }
 
+  // Check if conditions are met for aggressive background indexing
+  async isIdleForAI() {
+    try {
+      const batteryLevel = await Battery.getBatteryLevelAsync();
+      const batteryState = await Battery.getBatteryStateAsync();
+      const isCharging = batteryState === Battery.BatteryState.CHARGING || batteryState === Battery.BatteryState.FULL;
+      
+      // If battery is above 30%, we don't strictly require it to be charging.
+      // If battery is below 30%, it MUST be charging to run heavy background tasks.
+      const hasEnoughBattery = batteryLevel > 0.3 || isCharging;
+      
+      const network = await Network.getNetworkStateAsync();
+      const isWifi = network.type === Network.NetworkStateType.WIFI;
+
+      return hasEnoughBattery && isWifi;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // Register the OS-level background fetch task
+  async registerBackgroundSync() {
+    if (Platform.OS === 'web') return;
+    try {
+      const status = await BackgroundTask.getStatusAsync();
+      if (status === BackgroundTask.BackgroundTaskStatus.Restricted || status === BackgroundTask.BackgroundTaskStatus.Denied) {
+        console.log('[AIService] Background sync registration denied by user.');
+        return;
+      }
+
+      const isRegistered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_AI_SYNC_TASK);
+      if (!isRegistered) {
+        await BackgroundTask.registerTaskAsync(BACKGROUND_AI_SYNC_TASK, {
+          minimumInterval: 3600, // 1 hour
+          stopOnTerminate: false,
+          startOnBoot: true,
+        });
+        console.log('[AIService] Background AI sync task registered successfully.');
+      }
+    } catch (e) {
+      console.warn('[AIService] Failed to register background AI sync task:', e.message);
+    }
+  }
+
+  async unregisterBackgroundSync() {
+    if (Platform.OS === 'web') return;
+    try {
+      const isRegistered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_AI_SYNC_TASK);
+      if (isRegistered) {
+        await BackgroundTask.unregisterTaskAsync(BACKGROUND_AI_SYNC_TASK);
+        console.log('[AIService] Background AI sync task unregistered.');
+      }
+    } catch (e) {
+      console.warn('[AIService] Failed to unregister background AI sync task:', e.message);
+    }
+  }
+
   // Generate vector from local image asset
   async getImageEmbedding(imageUri) {
     try {
@@ -180,6 +242,9 @@ class AIService {
 
       let hasMore = true;
       while (hasMore) {
+        // Yield to user interactions
+        await TaskSchedulerService.waitUntilIdle();
+
         // Double check AI enabled switch inside loop to halt immediately if turned off
         const currentAiEnabled = (await SecureStore.getItemAsync('lomorage_ai_enabled')) !== 'false';
         if (!currentAiEnabled && !force) {
@@ -536,6 +601,9 @@ class AIService {
 
         let hasMoreDownloads = true;
         while (hasMoreDownloads) {
+          // Yield to user interactions to prevent scroll stuttering
+          await TaskSchedulerService.waitUntilIdle();
+
           const remotePendingDownload = await db.getAllAsync(`
             SELECT id, hash 
             FROM MediaAsset 
@@ -1281,3 +1349,37 @@ class AIService {
 }
 
 export default new AIService();
+
+// Define task globally so it fires in background mode
+TaskManager.defineTask(BACKGROUND_AI_SYNC_TASK, async () => {
+    console.log('[Background AI Sync Task] Starting background AI fetch...');
+    
+    // Do not run if already processing in foreground
+    const AIServiceInstance = require('./AIService').default;
+    if (AIServiceInstance.isSyncing) {
+        console.log('[Background AI Sync Task] AIService is currently syncing in foreground, skipping.');
+        return BackgroundTask.BackgroundTaskResult.Success;
+    }
+
+    try {
+        // Enforce idle check (WiFi + Charging) to protect user battery and data
+        const isIdle = await AIServiceInstance.isIdleForAI();
+        if (!isIdle) {
+            console.log('[Background AI Sync Task] Device not on WiFi + Charging. Skipping background AI fetch.');
+            return BackgroundTask.BackgroundTaskResult.Success;
+        }
+
+        const savedRemoteAI = await SecureStore.getItemAsync('lomorage_remote_ai_processing');
+        if (savedRemoteAI === 'false') {
+            console.log('[Background AI Sync Task] Remote AI processing disabled. Skipping background AI fetch.');
+            return BackgroundTask.BackgroundTaskResult.Success;
+        }
+
+        await AIServiceInstance.syncEmbeddings(true);
+        console.log('[Background AI Sync Task] Background AI fetch completed successfully.');
+        return BackgroundTask.BackgroundTaskResult.NewData;
+    } catch (error) {
+        console.error('[Background AI Sync Task] Failed:', error);
+        return BackgroundTask.BackgroundTaskResult.Failed;
+    }
+});

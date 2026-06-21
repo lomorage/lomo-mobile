@@ -8,6 +8,7 @@ import * as Battery from 'expo-battery';
 import * as Location from 'expo-location';
 import UploadService from './UploadService';
 import GalleryStore from '../store/GalleryStore';
+import TaskSchedulerService from './TaskSchedulerService';
 
 export const BACKGROUND_BACKUP_TASK = 'LOMO_BACKUP_TASK';
 
@@ -330,15 +331,13 @@ class AutoBackupManager {
 
         return new Promise((resolve) => {
             const processNext = async () => {
-                if (this.isPaused) {
+                if (this.isPaused || this.currentIndex >= this.queue.length) {
                     if (this.activeWeight === 0) resolve();
                     return;
                 }
 
-                if (this.currentIndex >= this.queue.length) {
-                    if (this.activeWeight === 0) resolve();
-                    return;
-                }
+                // Yield to UI to prevent scroll stuttering
+                await TaskSchedulerService.waitUntilIdle();
 
                 const asset = this.queue[this.currentIndex];
                 const isVideo = asset.mediaType === 'video';
