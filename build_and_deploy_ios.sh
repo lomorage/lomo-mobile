@@ -2,6 +2,11 @@
 # Exit immediately if any command fails
 set -e
 
+# Set locale to UTF-8 to prevent Fastlane/xcpretty encoding crashes
+export LANG=en_US.UTF-8
+export LANGUAGE=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
+
 # Load environment variables if they exist in a local .env file
 if [ -f .env ]; then
   echo "Loading credentials from .env file..."
