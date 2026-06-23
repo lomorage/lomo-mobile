@@ -454,8 +454,8 @@ class AIService {
             processedUploads++;
             this.status = {
               isProcessing: true,
-              current: 0,
-              total: 0,
+              current: processedUploads,
+              total: totalUploads,
               message: `Uploading photo features (${processedUploads}/${totalUploads})...`
             };
             DeviceEventEmitter.emit('ai_processing_status', this.status);
@@ -542,8 +542,8 @@ class AIService {
             processedPHashUploads++;
             this.status = {
               isProcessing: true,
-              current: 0,
-              total: 0,
+              current: processedPHashUploads,
+              total: totalPHashUploads,
               message: `Uploading photo fingerprints (${processedPHashUploads}/${totalPHashUploads})...`
             };
             DeviceEventEmitter.emit('ai_processing_status', this.status);
@@ -626,8 +626,8 @@ class AIService {
               processedDownloads++;
               this.status = {
                 isProcessing: true,
-                current: 0,
-                total: 0,
+                current: Math.min(processedDownloads, totalDownloads),
+                total: totalDownloads,
                 message: `Syncing remote photo features (${Math.min(processedDownloads, totalDownloads)}/${totalDownloads})...`
               };
               DeviceEventEmitter.emit('ai_processing_status', this.status);
@@ -736,8 +736,8 @@ class AIService {
               processedRemote++;
               this.status = {
                 isProcessing: true,
-                current: 0,
-                total: 0,
+                current: Math.min(processedRemote, totalRemote),
+                total: totalRemote,
                 message: `Extracting remote photo features (${Math.min(processedRemote, totalRemote)}/${totalRemote})...`
               };
               DeviceEventEmitter.emit('ai_processing_status', this.status);
@@ -833,12 +833,48 @@ class AIService {
         [hash]
       );
       if (row && row.filename) {
-        const parts = row.filename.split('.');
-        const idVal = parseInt(parts[0], 10);
-        if (!isNaN(idVal)) {
+        // e.g. "20251231_67311.mp4" or "67311.jpg"
+        const basename = row.filename.split('.')[0];
+        // Split by '_' to handle Date_ID formats
+        const nameParts = basename.split('_');
+        
+        // Try the last part first (often the ID in Date_ID format)
+        let idVal = parseInt(nameParts[nameParts.length - 1], 10);
+        
+        // If the last part wasn't a number, try the first part (legacy ID.filename format)
+        if (isNaN(idVal) && nameParts.length > 1) {
+            idVal = parseInt(nameParts[0], 10);
+        }
+
+        if (!isNaN(idVal) && idVal > 0) {
+          // Additional safety check: If it looks like a YYYYMMDD date (e.g. 20251231)
+          // and we have a network fallback, we might still want to verify.
+          // But usually the ID is the last part now, so it shouldn't hit the date.
           return idVal;
         }
       }
+
+      // Fallback: If parsing the filename fails, fetch the ID directly from the server using the hash
+      const url = AuthService.getServerUrl();
+      const token = AuthService.getToken();
+      if (url && token) {
+        try {
+          const res = await axios.get(`${url}/asset/metadata/${hash}`, {
+            headers: { Authorization: `token=${token}` },
+            timeout: 10000,
+            skipAutoProbe: true
+          });
+          const data = res.data;
+          if (data) {
+            if (data.Id !== undefined) return parseInt(data.Id, 10);
+            if (data.ID !== undefined) return parseInt(data.ID, 10);
+            if (data.id !== undefined) return parseInt(data.id, 10);
+          }
+        } catch (fetchErr) {
+          console.warn(`[AIService] Fallback failed to fetch server asset ID for hash ${hash}:`, fetchErr.message);
+        }
+      }
+
       return null;
     } catch (e) {
       console.warn('[AIService] Failed to get server asset ID for hash:', hash, e);

@@ -1,0 +1,30 @@
+# Lomorage Mobile Roadmap
+
+## 🎯 Core Positioning
+Lomorage is designed around three core pillars:
+1. **Privacy-First & Self-Hosted**: Users have complete control over their personal data, stored entirely on their own hardware (NAS/Raspberry Pi/PC), without cloud vendor lock-in.
+2. **On-Device AI**: Edge computing model where features like similarity search, text extraction, and deduplication run directly on the user's mobile device, preventing sensitive data from leaving the local network.
+3. **Massive Gallery Management**: Optimized for huge galleries (18,000+ photos), utilizing Merkle trees for incremental sync and SQLite caching for lightning-fast UX.
+
+---
+
+## 🚀 Future Features
+
+### 1. Intelligent Albums & Memories
+- **Face Grouping**: On-device lightweight models to cluster family and friends.
+- **Trip & Event Clustering**: Auto-generate albums based on GPS coordinates and time clusters.
+- **On This Day (Memories)**: Automatically resurface old photos from the same day in past years.
+
+### 2. Enhanced Search Experience
+- **Interactive Map View**: A photo map wall/heatmap to visually browse media by global location.
+- **OCR Search**: On-device text extraction from images (receipts, business cards, screenshots) for keyword search.
+- **Multi-Condition Search**: Search by combining location, time, and AI semantic objects (e.g., "dog on the beach in Sanya").
+
+### 3. Storage & Sync Optimization
+- **Smart Free Up Space**: Auto-delete local full-res originals once safely backed up, leaving only compressed "Optimized Versions" for fast local browsing.
+- **Family & Guest Spaces**: Multi-account isolation under the same NAS and shared family albums.
+- **Secure Guest Links**: Generate secure, temporary web links (via tunneling) to share specific albums with non-users.
+
+### 4. Editing & AI Enhancements
+- **Duplicate Cleanup UI**: Leverage existing pHash data to provide an intuitive interface for cleaning up similar photos/burst shots.
+- **Basic Photo Editing**: Built-in crop, rotate, and filtering, automatically synced as new versions to the NAS.

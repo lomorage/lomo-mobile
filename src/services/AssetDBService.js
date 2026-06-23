@@ -585,7 +585,6 @@ class AssetDBService {
     }
   }
 
-  // Get all assets that have valid geo coordinates (for the Photo Map)
   async getAssetsWithGeo() {
     if (!this.db) return [];
     try {
@@ -595,6 +594,32 @@ class AssetDBService {
       return rows;
     } catch (error) {
       console.error('[AssetDBService] Failed to get assets with geo:', error);
+      return [];
+    }
+  }
+
+  // Get assets created on this exact day in previous years (Memories / On This Day)
+  async getOnThisDayAssets() {
+    if (!this.db) return [];
+    try {
+      const now = new Date();
+      const currentMonth = ('0' + (now.getMonth() + 1)).slice(-2);
+      const currentDay = ('0' + now.getDate()).slice(-2);
+      const currentYear = now.getFullYear();
+
+      const query = `
+        SELECT id, isLocal, hash, mediaType, createTime, filename 
+        FROM MediaAsset 
+        WHERE createTime > 0 
+          AND strftime('%m-%d', createTime / 1000, 'unixepoch', 'localtime') = ?
+          AND cast(strftime('%Y', createTime / 1000, 'unixepoch', 'localtime') as integer) < ?
+        ORDER BY createTime DESC
+        LIMIT 50
+      `;
+      const rows = await this.db.getAllAsync(query, [`${currentMonth}-${currentDay}`, currentYear]);
+      return rows;
+    } catch (e) {
+      console.error('[AssetDBService] Failed to get On This Day assets:', e);
       return [];
     }
   }

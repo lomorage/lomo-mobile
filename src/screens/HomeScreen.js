@@ -100,6 +100,7 @@ const LivePhotoIcon = ({ color = '#fff', size = 14 }) => {
 
 export default function HomeScreen({ navigation, route }) {
     const [assets, setAssets] = useState([]);
+    const [onThisDayAssets, setOnThisDayAssets] = useState([]);
     const [syncing, setSyncing] = useState(false);
     const [syncProgress, setSyncProgress] = useState(null);
     const [backupState, setBackupState] = useState({ isBackingUp: false, pendingCount: 0, totalCount: 0, currentAssetId: null });
@@ -794,12 +795,33 @@ const formatSpeed = (bytesPerSec) => {
 
             // Load local assets and remote assets concurrently.
             // Reading local metadata is very fast, and querying SQLite for remote assets is extremely fast (<50ms).
-            const [cumulativeLocalAssets, sqliteRemoteAssets] = await Promise.all([
+            const [cumulativeLocalAssets, sqliteRemoteAssets, sqliteOnThisDayAssets] = await Promise.all([
                 MediaService.getAllAssets(null, 500, excludedAlbums),
-                AssetDBService.getRemoteAssets()
+                AssetDBService.getRemoteAssets(),
+                AssetDBService.getOnThisDayAssets()
             ]);
-        localAssetsRef.current = cumulativeLocalAssets;
+            localAssetsRef.current = cumulativeLocalAssets;
             remoteAssetsListRef.current = sqliteRemoteAssets;
+            
+            const serverUrl = AuthService.getServerUrl();
+            const token = AuthService.getToken();
+            const isVidExt = (filename) => {
+                if (!filename) return false;
+                const ext = filename.split('.').pop().toLowerCase();
+                return ['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext);
+            };
+            
+            const mappedOnThisDay = sqliteOnThisDayAssets.map(asset => ({
+                id: asset.id,
+                hash: asset.hash,
+                uri: `${serverUrl}/preview/${asset.hash}?width=320&height=-1&token=${token}`,
+                status: 'remote',
+                creationTime: asset.createTime || 0,
+                mediaType: asset.mediaType || (isVidExt(asset.filename) ? 'video' : 'photo'),
+                filename: asset.filename || ''
+            }));
+            setOnThisDayAssets(mappedOnThisDay);
+            GalleryStore.setAssets(mappedOnThisDay, 'onThisDay');
 
             // Insert local assets into DB so they have GPS coordinate caching for map markers
             AssetDBService.insertLocalAssets(cumulativeLocalAssets).then(() => {
@@ -1094,6 +1116,39 @@ const formatSpeed = (bytesPerSec) => {
         source: isSearching && searchQuery.trim() !== '' ? 'search' : 'gallery'
     }), [isScrubbing, backupState.currentAssetId, backupState.activeAssetIds, debugMode, isSearching, searchQuery]);
 
+    const renderOnThisDay = () => {
+        if (!onThisDayAssets || onThisDayAssets.length === 0 || isSearching) return null;
+
+        return (
+            <View style={styles.onThisDayContainer}>
+                <View style={styles.onThisDayHeaderRow}>
+                    <Text style={styles.onThisDayTitle}>On This Day</Text>
+                </View>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.onThisDayScrollContent}>
+                    {onThisDayAssets.map((asset, index) => {
+                        const date = new Date(asset.creationTime);
+                        const yearsAgo = new Date().getFullYear() - date.getFullYear();
+                        return (
+                            <TouchableOpacity 
+                                key={asset.id} 
+                                style={styles.onThisDayCard}
+                                onPress={() => navigation.navigate('AssetDetail', { initialIndex: index, source: 'onThisDay' })}
+                            >
+                                <Image 
+                                    source={{ uri: safeUri(asset.uri, asset.mediaType) }} 
+                                    style={styles.onThisDayImage} 
+                                />
+                                <View style={styles.onThisDayOverlay}>
+                                    <Text style={styles.onThisDayText}>{yearsAgo} {yearsAgo === 1 ? 'year' : 'years'} ago</Text>
+                                </View>
+                            </TouchableOpacity>
+                        );
+                    })}
+                </ScrollView>
+            </View>
+        );
+    };
+
     return (
         <View style={styles.container}>
             {isSearching ? (
@@ -1233,6 +1288,7 @@ const formatSpeed = (bytesPerSec) => {
                         data={timelineData}
                         extraData={flashListExtraData}
                         renderItem={renderItem}
+                        ListHeaderComponent={renderOnThisDay()}
                         keyExtractor={item => item.id}
                         stickyHeaderIndices={stickyHeaderIndices}
                         getItemType={(item) => item.type}
@@ -1368,10 +1424,10 @@ const formatSpeed = (bytesPerSec) => {
                     )}
                     <Text style={styles.aiPillText} numberOfLines={1}>
                         {aiStatus.isProcessing && aiStatus.total > 0
-                            ? `分析照片 ${aiStatus.current}/${aiStatus.total}`
+                            ? (aiStatus.message || `Analyzing photos ${aiStatus.current}/${aiStatus.total}`)
                             : aiStatus.isProcessing
-                            ? (aiStatus.message || '正在分析照片...')
-                            : '分析完成'}
+                            ? (aiStatus.message || 'Analyzing photos...')
+                            : 'Analysis complete'}
                     </Text>
                 </Animated.View>
             )}
@@ -1408,6 +1464,49 @@ const styles = StyleSheet.create({
         color: '#666',
         marginTop: 2,
     },
+    onThisDayContainer: {
+        marginBottom: 20,
+        marginTop: 10,
+    },
+    onThisDayHeaderRow: {
+        paddingHorizontal: 16,
+        marginBottom: 10,
+    },
+    onThisDayTitle: {
+        fontSize: 18,
+        fontWeight: '700',
+        color: '#1a1a1a',
+    },
+    onThisDayScrollContent: {
+        paddingHorizontal: 16,
+    },
+    onThisDayCard: {
+        width: 120,
+        height: 160,
+        marginRight: 10,
+        borderRadius: 12,
+        overflow: 'hidden',
+        backgroundColor: '#f0f0f0',
+    },
+    onThisDayImage: {
+        width: '100%',
+        height: '100%',
+        resizeMode: 'cover',
+    },
+    onThisDayOverlay: {
+        position: 'absolute',
+        bottom: 0,
+        left: 0,
+        right: 0,
+        padding: 8,
+        paddingTop: 24, // Gradient effect space
+        backgroundColor: 'rgba(0,0,0,0.3)', // Simple dark overlay instead of complex gradient
+    },
+    onThisDayText: {
+        color: '#fff',
+        fontSize: 13,
+        fontWeight: '600',
+    },
     aiPill: {
         position: 'absolute',
         bottom: 16,
@@ -1423,7 +1522,7 @@ const styles = StyleSheet.create({
         shadowOpacity: 0.25,
         shadowRadius: 6,
         elevation: 6,
-        maxWidth: '75%',
+        maxWidth: '92%',
     },
     aiPillText: {
         color: '#fff',
