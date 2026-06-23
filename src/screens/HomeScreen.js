@@ -14,6 +14,8 @@ import AIService from '../services/AIService';
 import { useSettings } from '../context/SettingsContext';
 import GalleryStore from '../store/GalleryStore';
 import MetricsTracker from '../utils/MetricsTracker';
+import * as SecureStore from 'expo-secure-store';
+import * as LegacyFileSystem from 'expo-file-system/legacy';
 
 const { width } = Dimensions.get('window');
 const COLUMN_COUNT = 3;
@@ -94,6 +96,60 @@ const LivePhotoIcon = ({ color = '#fff', size = 14 }) => {
                 borderRadius: innerSize / 2,
                 backgroundColor: color
             }} />
+        </View>
+    );
+};
+
+const SwipeableBanner = ({ info, onPress, onDismiss, styles }) => {
+    const pan = useRef(new Animated.ValueXY()).current;
+    const panResponder = useRef(
+        PanResponder.create({
+            onMoveShouldSetPanResponder: (evt, gestureState) => {
+                return Math.abs(gestureState.dx) > 20 && Math.abs(gestureState.dx) > Math.abs(gestureState.dy);
+            },
+            onPanResponderMove: Animated.event(
+                [null, { dx: pan.x }],
+                { useNativeDriver: false }
+            ),
+            onPanResponderRelease: (evt, gestureState) => {
+                if (gestureState.dx > 100 || gestureState.dx < -100) {
+                    Animated.timing(pan, {
+                        toValue: { x: gestureState.dx > 0 ? width : -width, y: 0 },
+                        duration: 200,
+                        useNativeDriver: true
+                    }).start(() => {
+                        if (onDismiss) onDismiss();
+                    });
+                } else {
+                    Animated.spring(pan, {
+                        toValue: { x: 0, y: 0 },
+                        useNativeDriver: true
+                    }).start();
+                }
+            }
+        })
+    ).current;
+
+    return (
+        <View style={[styles.smartBannerContainer, { overflow: 'hidden' }]}>
+            <Animated.View
+                style={{ transform: [{ translateX: pan.x }] }}
+                {...panResponder.panHandlers}
+            >
+                <TouchableOpacity 
+                    style={styles.smartBanner}
+                    onPress={onPress}
+                    activeOpacity={0.9}
+                >
+                    <View style={styles.smartBannerContent}>
+                        <Text style={styles.smartBannerTitle}>Free Up Space</Text>
+                        <Text style={styles.smartBannerText}>Phone storage is low. Found {info.count} large backed-up videos to clean. Swipe to dismiss.</Text>
+                    </View>
+                    <View style={styles.smartBannerButton}>
+                        <Text style={styles.smartBannerButtonText}>Clean</Text>
+                    </View>
+                </TouchableOpacity>
+            </Animated.View>
         </View>
     );
 };
@@ -884,14 +940,37 @@ const formatSpeed = (bytesPerSec) => {
                         console.error('[HomeScreen] OfflineCacheService failed:', e);
                     });
 
-                    // Check for large backed-up files
-                    AssetDBService.getSafelyBackedUpVideos().then(largeFiles => {
-                        if (isMounted.current && largeFiles && largeFiles.length > 0) {
-                            setFreeUpSpaceInfo({ visible: true, count: largeFiles.length, loading: false });
-                        } else if (isMounted.current) {
-                            setFreeUpSpaceInfo({ visible: false, count: 0, loading: false });
+                    // Check for large backed-up files and system space
+                    const checkFreeSpaceBanner = async () => {
+                        try {
+                            const lastDismissed = await SecureStore.getItemAsync('lastBannerDismissed');
+                            if (lastDismissed) {
+                                const daysSinceDismiss = (Date.now() - parseInt(lastDismissed, 10)) / (1000 * 60 * 60 * 24);
+                                if (daysSinceDismiss < 7) {
+                                    setFreeUpSpaceInfo({ visible: false, count: 0, loading: false });
+                                    return; // within cooldown
+                                }
+                            }
+                            
+                            // Check system space (< 5GB threshold)
+                            const freeSpaceBytes = await LegacyFileSystem.getFreeDiskStorageAsync();
+                            const freeSpaceGB = freeSpaceBytes / (1024 * 1024 * 1024);
+                            if (freeSpaceGB > 5) {
+                                setFreeUpSpaceInfo({ visible: false, count: 0, loading: false });
+                                return; // still has plenty of space
+                            }
+
+                            const largeFiles = await AssetDBService.getSafelyBackedUpVideos();
+                            if (isMounted.current && largeFiles && largeFiles.length > 0) {
+                                setFreeUpSpaceInfo({ visible: true, count: largeFiles.length, loading: false });
+                            } else if (isMounted.current) {
+                                setFreeUpSpaceInfo({ visible: false, count: 0, loading: false });
+                            }
+                        } catch (e) {
+                            console.error('[HomeScreen] Error checking large files banner condition:', e);
                         }
-                    }).catch(e => console.error('[HomeScreen] Error checking large files:', e));
+                    };
+                    checkFreeSpaceBanner();
                 }
             }
 
@@ -1294,18 +1373,19 @@ const formatSpeed = (bytesPerSec) => {
                     }}
                 >
                     {freeUpSpaceInfo.visible && !isSearching && (
-                        <TouchableOpacity 
-                            style={styles.smartBanner}
-                            onPress={() => navigation.navigate('FreeUpSpace')}
-                        >
-                            <View style={styles.smartBannerContent}>
-                                <Text style={styles.smartBannerTitle}>Free Up Space</Text>
-                                <Text style={styles.smartBannerText}>Found {freeUpSpaceInfo.count} large backed-up videos to clean</Text>
-                            </View>
-                            <View style={styles.smartBannerButton}>
-                                <Text style={styles.smartBannerButtonText}>Clean</Text>
-                            </View>
-                        </TouchableOpacity>
+                        <SwipeableBanner 
+                            info={freeUpSpaceInfo} 
+                            styles={styles} 
+                            onPress={() => navigation.navigate('FreeUpSpace')} 
+                            onDismiss={async () => {
+                                setFreeUpSpaceInfo(prev => ({ ...prev, visible: false }));
+                                try {
+                                    await SecureStore.setItemAsync('lastBannerDismissed', Date.now().toString());
+                                } catch (e) {
+                                    console.error('[HomeScreen] Error saving dismiss state:', e);
+                                }
+                            }}
+                        />
                     )}
                     <FlashList
                         ref={listRef}
@@ -1464,12 +1544,16 @@ const styles = StyleSheet.create({
         flex: 1,
         backgroundColor: '#fff',
     },
-    smartBanner: {
-        backgroundColor: '#F2F2F7',
+    smartBannerContainer: {
+        position: 'relative',
         marginHorizontal: 15,
         marginTop: 10,
         marginBottom: 5,
+    },
+    smartBanner: {
+        backgroundColor: '#F2F2F7',
         padding: 12,
+        paddingRight: 32,
         borderRadius: 12,
         flexDirection: 'row',
         alignItems: 'center',
@@ -1487,12 +1571,14 @@ const styles = StyleSheet.create({
     smartBannerText: {
         fontSize: 13,
         color: '#666',
+        paddingRight: 8,
     },
     smartBannerButton: {
         backgroundColor: '#007AFF',
         paddingHorizontal: 12,
         paddingVertical: 6,
         borderRadius: 16,
+        marginLeft: 8,
     },
     smartBannerButtonText: {
         color: '#fff',
