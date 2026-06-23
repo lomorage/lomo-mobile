@@ -201,6 +201,21 @@ class MediaService {
     }
   }
 
+  // Get file size in bytes for a local asset using Expo FileSystem
+  async getAssetSize(assetId) {
+    try {
+      const info = await this.getAssetInfo(assetId);
+      if (!info) return 0;
+      const uri = info.localUri || info.uri;
+      if (!uri) return 0;
+      const fileInfo = await LegacyFileSystem.getInfoAsync(uri, { size: true });
+      return fileInfo.exists ? (fileInfo.size || 0) : 0;
+    } catch (e) {
+      console.error(`[MediaService] Failed to get size for ${assetId}:`, e);
+      return 0;
+    }
+  }
+
   /**
    * Calculate SHA-1 hash of a file.
    * 

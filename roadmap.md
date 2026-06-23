@@ -21,7 +21,8 @@ Lomorage is designed around three core pillars:
 - **Multi-Condition Search**: Search by combining location, time, and AI semantic objects (e.g., "dog on the beach in Sanya").
 
 ### 3. Storage & Sync Optimization
-- **Smart Free Up Space**: Auto-delete local full-res originals once safely backed up, leaving only compressed "Optimized Versions" for fast local browsing.
+- **Smart Free Up Space (Large File Cleanup)**: [Ongoing] Review and auto-delete massive local files (like heavy videos) that are already securely backed up to the NAS.
+- **AI-Driven Smart Declutter**: Let the backend PC/NAS run AI scoring during idle times to categorize photos (e.g. low-value receipts vs high-value family portraits). The mobile app syncs these scores and automatically deletes low-value local originals, compresses medium-value photos to 50KB offline thumbnails, and unconditionally retains high-value originals to eliminate offline viewing anxiety.
 - **Family & Guest Spaces**: Multi-account isolation under the same NAS and shared family albums.
 - **Secure Guest Links**: Generate secure, temporary web links (via tunneling) to share specific albums with non-users.
 

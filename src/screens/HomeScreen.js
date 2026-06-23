@@ -108,6 +108,7 @@ export default function HomeScreen({ navigation, route }) {
     const [activeUploads, setActiveUploads] = useState({});
     const [uploadStats, setUploadStats] = useState({});
     const [isBottomSheetVisible, setBottomSheetVisible] = useState(false);
+    const [freeUpSpaceInfo, setFreeUpSpaceInfo] = useState({ visible: false, count: 0, loading: false });
     const [error, setError] = useState(null);
     const [permissionStatus, setPermissionStatus] = useState('granted');
     const [loading, setLoading] = useState(true);
@@ -882,6 +883,15 @@ const formatSpeed = (bytesPerSec) => {
                     OfflineCacheService.syncFavoritesFromServer().catch(e => {
                         console.error('[HomeScreen] OfflineCacheService failed:', e);
                     });
+
+                    // Check for large backed-up files
+                    AssetDBService.getSafelyBackedUpVideos().then(largeFiles => {
+                        if (isMounted.current && largeFiles && largeFiles.length > 0) {
+                            setFreeUpSpaceInfo({ visible: true, count: largeFiles.length, loading: false });
+                        } else if (isMounted.current) {
+                            setFreeUpSpaceInfo({ visible: false, count: 0, loading: false });
+                        }
+                    }).catch(e => console.error('[HomeScreen] Error checking large files:', e));
                 }
             }
 
@@ -1283,6 +1293,20 @@ const formatSpeed = (bytesPerSec) => {
                         });
                     }}
                 >
+                    {freeUpSpaceInfo.visible && !isSearching && (
+                        <TouchableOpacity 
+                            style={styles.smartBanner}
+                            onPress={() => navigation.navigate('FreeUpSpace')}
+                        >
+                            <View style={styles.smartBannerContent}>
+                                <Text style={styles.smartBannerTitle}>Free Up Space</Text>
+                                <Text style={styles.smartBannerText}>Found {freeUpSpaceInfo.count} large backed-up videos to clean</Text>
+                            </View>
+                            <View style={styles.smartBannerButton}>
+                                <Text style={styles.smartBannerButtonText}>Clean</Text>
+                            </View>
+                        </TouchableOpacity>
+                    )}
                     <FlashList
                         ref={listRef}
                         data={timelineData}
@@ -1439,6 +1463,41 @@ const styles = StyleSheet.create({
     container: {
         flex: 1,
         backgroundColor: '#fff',
+    },
+    smartBanner: {
+        backgroundColor: '#F2F2F7',
+        marginHorizontal: 15,
+        marginTop: 10,
+        marginBottom: 5,
+        padding: 12,
+        borderRadius: 12,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+    },
+    smartBannerContent: {
+        flex: 1,
+    },
+    smartBannerTitle: {
+        fontSize: 15,
+        fontWeight: 'bold',
+        color: '#1a1a1a',
+        marginBottom: 2,
+    },
+    smartBannerText: {
+        fontSize: 13,
+        color: '#666',
+    },
+    smartBannerButton: {
+        backgroundColor: '#007AFF',
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+        borderRadius: 16,
+    },
+    smartBannerButtonText: {
+        color: '#fff',
+        fontSize: 13,
+        fontWeight: 'bold',
     },
     row: {
         flexDirection: 'row',

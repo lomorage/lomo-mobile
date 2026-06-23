@@ -404,6 +404,17 @@ export default function SettingsScreen({ navigation }) {
                     </View>
                 </TouchableOpacity>
 
+                <TouchableOpacity 
+                    style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8 }]}
+                    onPress={() => navigation.navigate('FreeUpSpace')}
+                >
+                    <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabel}>Free Up Space (Large Files)</Text>
+                        <Text style={styles.settingDescription}>Review and delete large videos that are safely backed up.</Text>
+                    </View>
+                    <ChevronRight color="#888" size={20} />
+                </TouchableOpacity>
+
                 {Platform.OS === 'android' && (
                     <TouchableOpacity 
                         style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8 }]}

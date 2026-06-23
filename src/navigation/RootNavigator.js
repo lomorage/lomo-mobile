@@ -11,6 +11,7 @@ import AssetDetailScreen from '../screens/AssetDetailScreen';
 import LoginScreen from '../screens/LoginScreen';
 import RegisterScreen from '../screens/RegisterScreen';
 import SettingsScreen from '../screens/SettingsScreen';
+import FreeUpSpaceScreen from '../screens/FreeUpSpaceScreen';
 import PhotoMapScreen from '../screens/PhotoMapScreen';
 import AlbumsScreen from '../screens/AlbumsScreen';
 import FolderDetailScreen from '../screens/FolderDetailScreen';
@@ -142,7 +143,12 @@ function Navigation() {
                         <Stack.Screen 
                             name="Settings" 
                             component={SettingsScreen} 
-                            options={{ headerShown: false }}
+                            options={{ headerShown: false }} 
+                        />
+                        <Stack.Screen 
+                            name="FreeUpSpace" 
+                            component={FreeUpSpaceScreen} 
+                            options={{ headerShown: false }} 
                         />
                         <Stack.Screen 
                             name="PhotoMap" 

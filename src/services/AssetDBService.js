@@ -624,6 +624,26 @@ class AssetDBService {
     }
   }
 
+  // Get safely backed up local videos for Large File Cleanup
+  async getSafelyBackedUpVideos() {
+    if (!this.db) return [];
+    try {
+      const query = `
+        SELECT id, isLocal, hash, mediaType, createTime, filename 
+        FROM MediaAsset 
+        WHERE isLocal = 1 
+          AND mediaType = 'video'
+          AND uploaded = 1
+        ORDER BY createTime DESC
+      `;
+      const rows = await this.db.getAllAsync(query);
+      return rows;
+    } catch (e) {
+      console.error('[AssetDBService] Failed to get safely backed up videos:', e);
+      return [];
+    }
+  }
+
   // Get all remote assets from SQLite database for rendering in the gallery
   async getRemoteAssets() {
     if (!this.db) return [];
