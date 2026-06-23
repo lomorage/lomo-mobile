@@ -10,6 +10,12 @@ Lomorage is designed around three core pillars:
 
 ## 🚀 Future Features
 
+### 🤖 Cross-Platform AI Architecture Strategy (RN/Expo)
+To replace legacy iOS-only native code (`lomo-ios`), we are adopting a modern, unified cross-platform approach for all on-device AI operations:
+- **Core Semantic Search & Face Clustering**: Utilize `onnxruntime-react-native` to run lightweight ONNX models (e.g., CLIP for semantic search, MobileFaceNet for face recognition/clustering) directly on the edge. This provides an elegant, zero-native-code cross-platform solution.
+- **Text Recognition & Detection**: Leverage `@infinitered/react-native-mlkit-text-recognition` (and related MLKit suites) for highly accurate, offline OCR and basic bounding-box detections, ensuring perfect Expo compatibility.
+
+
 ### 1. Intelligent Albums & Memories
 - **Face Grouping**: On-device lightweight models to cluster family and friends.
 - **Trip & Event Clustering**: Auto-generate albums based on GPS coordinates and time clusters.
