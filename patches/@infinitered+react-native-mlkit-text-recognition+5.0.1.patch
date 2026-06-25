@@ -1,0 +1,67 @@
+diff --git a/node_modules/@infinitered/react-native-mlkit-text-recognition/android/build.gradle b/node_modules/@infinitered/react-native-mlkit-text-recognition/android/build.gradle
+index 679acd5..2e4b184 100644
+--- a/node_modules/@infinitered/react-native-mlkit-text-recognition/android/build.gradle
++++ b/node_modules/@infinitered/react-native-mlkit-text-recognition/android/build.gradle
+@@ -54,5 +54,5 @@ android {
+ dependencies {
+   implementation project(':expo-modules-core')
+   implementation project(path: ':infinitered-react-native-mlkit-core')
+-  implementation 'com.google.mlkit:text-recognition:16.0.1'
++  implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'
+ }
+diff --git a/node_modules/@infinitered/react-native-mlkit-text-recognition/android/src/main/java/red/infinite/reactnativemlkit/textrecognition/RNMLKitTextRecognitionModule.kt b/node_modules/@infinitered/react-native-mlkit-text-recognition/android/src/main/java/red/infinite/reactnativemlkit/textrecognition/RNMLKitTextRecognitionModule.kt
+index 7500f91..4927dd8 100644
+--- a/node_modules/@infinitered/react-native-mlkit-text-recognition/android/src/main/java/red/infinite/reactnativemlkit/textrecognition/RNMLKitTextRecognitionModule.kt
++++ b/node_modules/@infinitered/react-native-mlkit-text-recognition/android/src/main/java/red/infinite/reactnativemlkit/textrecognition/RNMLKitTextRecognitionModule.kt
+@@ -4,7 +4,7 @@ import expo.modules.kotlin.Promise
+ import expo.modules.kotlin.exception.CodedException
+ import expo.modules.kotlin.modules.Module
+ import expo.modules.kotlin.modules.ModuleDefinition
+-import com.google.mlkit.vision.text.latin.TextRecognizerOptions
++import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
+ import com.google.mlkit.vision.text.TextRecognition
+ import com.google.mlkit.vision.common.InputImage
+ import kotlinx.coroutines.runBlocking
+@@ -17,7 +17,7 @@ class RNMLKitTextRecognitionModule : Module() {
+ 
+     AsyncFunction("recognizeText") { imagePath: String, promise: Promise ->
+       runBlocking {
+-        val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
++        val recognizer = TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
+ 
+         val image: InputImage = RNMLKitImage(Uri.parse(imagePath), appContext.reactContext!!).image
+ 
+diff --git a/node_modules/@infinitered/react-native-mlkit-text-recognition/ios/RNMLKitTextRecognition.podspec b/node_modules/@infinitered/react-native-mlkit-text-recognition/ios/RNMLKitTextRecognition.podspec
+index cb80592..82fa6a3 100644
+--- a/node_modules/@infinitered/react-native-mlkit-text-recognition/ios/RNMLKitTextRecognition.podspec
++++ b/node_modules/@infinitered/react-native-mlkit-text-recognition/ios/RNMLKitTextRecognition.podspec
+@@ -17,7 +17,7 @@ Pod::Spec.new do |s|
+ 
+   s.dependency 'ExpoModulesCore'
+   s.dependency 'RNMLKitCore'
+-  s.dependency 'GoogleMLKit/TextRecognition'
++  s.dependency 'GoogleMLKit/TextRecognitionChinese'
+ 
+   # Swift/Objective-C compatibility
+   s.pod_target_xcconfig = {
+diff --git a/node_modules/@infinitered/react-native-mlkit-text-recognition/ios/RNMLKitTextRecognitionModule.swift b/node_modules/@infinitered/react-native-mlkit-text-recognition/ios/RNMLKitTextRecognitionModule.swift
+index 0357141..4a84761 100644
+--- a/node_modules/@infinitered/react-native-mlkit-text-recognition/ios/RNMLKitTextRecognitionModule.swift
++++ b/node_modules/@infinitered/react-native-mlkit-text-recognition/ios/RNMLKitTextRecognitionModule.swift
+@@ -1,6 +1,7 @@
+ import ExpoModulesCore
+ import MLKitCommon
+ import MLKitTextRecognition
++import MLKitTextRecognitionChinese
+ import RNMLKitCore
+ 
+ public class RNMLKitTextRecognitionModule: Module {
+@@ -13,7 +14,7 @@ public class RNMLKitTextRecognitionModule: Module {
+       let logger = Logger(logHandlers: [createOSLogHandler(category: Logger.EXPO_LOG_CATEGORY)])
+       logger.info("RNMLKit", "recognize text: Recognizing text from image: \(imagePath) ")
+       
+-      let options = TextRecognizerOptions()
++      let options = ChineseTextRecognizerOptions()
+       let textRecognizer = TextRecognizer.textRecognizer(options:options)
+       
+       let image = try RNMLKitImage(imagePath: imagePath)

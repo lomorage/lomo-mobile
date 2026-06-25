@@ -166,6 +166,19 @@ class AssetDBService {
         console.log('[AssetDBService] Database migrated to version 8 (Added phash and clipEmbedding indexes).');
       }
 
+      if (currentVersion < 9) {
+        // Version 9: Add ocrText column for OCR full text search and caching
+        try {
+          await db.execAsync('ALTER TABLE MediaAsset ADD COLUMN ocrText TEXT;');
+          await db.execAsync('CREATE INDEX IF NOT EXISTS idx_ocrText ON MediaAsset(ocrText);');
+        } catch (e) {
+          console.warn('[AssetDBService] Failed to add ocrText column or index:', e.message);
+        }
+        await db.execAsync('PRAGMA user_version = 9');
+        currentVersion = 9;
+        console.log('[AssetDBService] Database migrated to version 9 (Added ocrText column).');
+      }
+
       // Smooth migration: if local_hash_cache_v2.json exists, migrate it to SQLite
       await this.migrateLocalHashCache(db);
 
@@ -903,6 +916,45 @@ class AssetDBService {
       console.log(`[AssetDBService] Ignored ${assetIds.length} assets for duplicates.`);
     } catch (error) {
       console.error('[AssetDBService] Failed to ignore assets for duplicates:', error);
+    }
+  }
+
+  // Save OCR text extracted for an asset
+  async saveAssetOCR(idOrHash, ocrText) {
+    if (!this.db) return;
+    try {
+      await this.db.runAsync(
+        'UPDATE MediaAsset SET ocrText = ? WHERE id = ? OR hash = ?',
+        [ocrText, idOrHash, idOrHash]
+      );
+    } catch (error) {
+      console.error('[AssetDBService] Failed to save asset OCR text:', error);
+    }
+  }
+
+  // Save/merge metadata for an asset
+  async saveAssetMetadata(idOrHash, newMetadata) {
+    if (!this.db) return;
+    try {
+      const row = await this.db.getFirstAsync(
+        'SELECT metadata FROM MediaAsset WHERE id = ? OR hash = ?',
+        [idOrHash, idOrHash]
+      );
+      let existingMeta = {};
+      if (row && row.metadata) {
+        try {
+          existingMeta = JSON.parse(row.metadata);
+        } catch (e) {
+          // ignore parsing error for malformed string
+        }
+      }
+      const mergedMeta = { ...existingMeta, ...newMetadata };
+      await this.db.runAsync(
+        'UPDATE MediaAsset SET metadata = ? WHERE id = ? OR hash = ?',
+        [JSON.stringify(mergedMeta), idOrHash, idOrHash]
+      );
+    } catch (error) {
+      console.error('[AssetDBService] Failed to save asset metadata:', error);
     }
   }
 

@@ -7,7 +7,8 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "test": "jest"
+    "test": "jest",
+    "postinstall": "patch-package"
   },
   "jest": {
     "preset": "jest-expo",
@@ -16,6 +17,8 @@
     ]
   },
   "dependencies": {
+    "@infinitered/react-native-mlkit-core": "^5.0.0",
+    "@infinitered/react-native-mlkit-text-recognition": "^5.0.1",
     "@react-native-community/netinfo": "11.4.1",
     "@react-navigation/bottom-tabs": "^7.18.0",
     "@react-navigation/core": "^7.20.0",
@@ -73,6 +76,7 @@
     "@types/react": "~19.1.10",
     "jest": "^29.7.0",
     "jest-expo": "~54.0.0",
+    "patch-package": "^8.0.1",
     "react-test-renderer": "19.1.0",
     "typescript": "~5.9.2"
   }

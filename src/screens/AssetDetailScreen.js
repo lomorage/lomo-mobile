@@ -1,17 +1,19 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { StyleSheet, View, Dimensions, TouchableOpacity, Text, FlatList, Alert, DeviceEventEmitter, Pressable, ActivityIndicator, Animated, Vibration, ScrollView, PanResponder, Platform } from 'react-native';
+import { StyleSheet, View, Dimensions, TouchableOpacity, Text, FlatList, Alert, DeviceEventEmitter, Pressable, ActivityIndicator, Animated, Vibration, ScrollView, PanResponder, Platform, TextInput, Share as RNShare } from 'react-native';
 import { Image } from 'expo-image';
-import { ChevronLeft, CloudUpload, Trash2, Share, Heart, FolderMinus } from 'lucide-react-native';
+import { ChevronLeft, CloudUpload, Trash2, Share, Heart, FolderMinus, ScanText } from 'lucide-react-native';
 import * as Sharing from 'expo-sharing';
 import { Ionicons } from '@expo/vector-icons';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import convertToProxyURL from 'react-native-video-cache';
 import * as Device from 'expo-device';
+import { TouchableOpacity as RNGHTouchableOpacity, GestureDetector, Gesture } from 'react-native-gesture-handler';
 import AuthService from '../services/AuthService';
 import MediaService from '../services/MediaService';
 import SyncService from '../services/SyncService';
 import { useSettings } from '../context/SettingsContext';
 import RemoteAlbumService from '../services/RemoteAlbumService';
+import AIService from '../services/AIService';
 import UploadService from '../services/UploadService';
 import axios from 'axios';
 import NetworkQueue from '../services/NetworkQueue';
@@ -79,6 +81,61 @@ const LivePhotoIcon = ({ color = '#fff', size = 14 }) => {
                 backgroundColor: color
             }} />
         </View>
+    );
+};
+
+const OcrBlock = ({ block, idx, isSelected, offsetX, offsetY, renderedWidth, renderedHeight, onSelect }) => {
+    const tapGesture = React.useMemo(() => {
+        return Gesture.Tap()
+            .runOnJS(true)
+            .onStart(() => {
+                try {
+                    Vibration.vibrate(10);
+                } catch (e) {}
+                onSelect(idx);
+            });
+    }, [idx, onSelect]);
+
+    const blockWidth = block.frame.w * renderedWidth;
+    const blockHeight = block.frame.h * renderedHeight;
+    const blockLeft = offsetX + block.frame.x * renderedWidth;
+    const blockTop = offsetY + block.frame.y * renderedHeight;
+
+    if (idx < 3) {
+      console.log(`[AssetDetailScreen] OcrBlock ${idx}: text="${block.text.replace(/\n/g, ' ')}", frame={x:${block.frame.x.toFixed(4)}, y:${block.frame.y.toFixed(4)}, w:${block.frame.w.toFixed(4)}, h:${block.frame.h.toFixed(4)}}, blockLeft=${blockLeft.toFixed(2)}, blockTop=${blockTop.toFixed(2)}, blockWidth=${blockWidth.toFixed(2)}, blockHeight=${blockHeight.toFixed(2)}`);
+    }
+
+    // Expand touch target to at least 36px for easier selection
+    const minTouchDim = 36;
+    const padX = Math.max(0, (minTouchDim - blockWidth) / 2);
+    const padY = Math.max(0, (minTouchDim - blockHeight) / 2);
+
+    return (
+        <GestureDetector gesture={tapGesture}>
+            <View
+                style={{
+                    position: 'absolute',
+                    left: blockLeft - padX,
+                    top: blockTop - padY,
+                    width: blockWidth + padX * 2,
+                    height: blockHeight + padY * 2,
+                    backgroundColor: 'transparent',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                }}
+            >
+                <View
+                    style={{
+                        width: blockWidth,
+                        height: blockHeight,
+                        backgroundColor: isSelected ? 'rgba(0, 122, 255, 0.35)' : 'rgba(255, 255, 255, 0.2)',
+                        borderColor: isSelected ? 'rgba(0, 122, 255, 0.75)' : 'transparent',
+                        borderWidth: isSelected ? 1 : 0,
+                        borderRadius: 3,
+                    }}
+                />
+            </View>
+        </GestureDetector>
     );
 };
 
@@ -200,10 +257,84 @@ export default function AssetDetailScreen({ route, navigation }) {
     const [isLivePlaying, setIsLivePlaying] = useState(false);
     const [flatListScrollEnabled, setFlatListScrollEnabled] = useState(true);
     const [isSharing, setIsSharing] = useState(false);
+    const [isExtractingText, setIsExtractingText] = useState(false);
     const [isFavorite, setIsFavorite] = useState(false);
     const [userAlbums, setUserAlbums] = useState([]);
     const [toastMessage, setToastMessage] = useState(null);
     const [undoAction, setUndoAction] = useState(null);
+    const [ocrBlocks, setOcrBlocks] = useState([]);
+    const [isOcrOverlayVisible, setIsOcrOverlayVisible] = useState(false);
+    const [selectedOcrIndices, setSelectedOcrIndices] = useState(new Set());
+    const [ocrDims, setOcrDims] = useState(null);
+    const [loadedDimsMap, setLoadedDimsMap] = useState({});
+    const toggleOcrSelection = useCallback((idx) => {
+        setSelectedOcrIndices(prev => {
+            const newSet = new Set(prev);
+            if (newSet.has(idx)) newSet.delete(idx);
+            else newSet.add(idx);
+            return newSet;
+        });
+    }, []);
+    const sweepAnim = useRef(new Animated.Value(0)).current;
+    const sweepOpacity = useRef(new Animated.Value(0)).current;
+    const blocksOpacity = useRef(new Animated.Value(0)).current;
+    const pillTranslateY = useRef(new Animated.Value(150)).current;
+
+    useEffect(() => {
+        if (isOcrOverlayVisible) {
+            sweepAnim.setValue(0);
+            sweepOpacity.setValue(0);
+            blocksOpacity.setValue(0);
+
+            Animated.sequence([
+                Animated.timing(sweepOpacity, {
+                    toValue: 1,
+                    duration: 200,
+                    useNativeDriver: true
+                }),
+                Animated.timing(sweepAnim, {
+                    toValue: 1,
+                    duration: 1200,
+                    useNativeDriver: true
+                }),
+                Animated.timing(sweepOpacity, {
+                    toValue: 0,
+                    duration: 200,
+                    useNativeDriver: true
+                })
+            ]).start();
+
+            Animated.timing(blocksOpacity, {
+                toValue: 1,
+                delay: 600,
+                duration: 600,
+                useNativeDriver: true
+            }).start();
+        } else {
+            sweepAnim.setValue(0);
+            sweepOpacity.setValue(0);
+            blocksOpacity.setValue(0);
+        }
+    }, [isOcrOverlayVisible]);
+
+    const hasSelection = selectedOcrIndices.size > 0;
+    useEffect(() => {
+        if (isOcrOverlayVisible && hasSelection) {
+            Animated.spring(pillTranslateY, {
+                toValue: 0,
+                friction: 8,
+                tension: 40,
+                useNativeDriver: true
+            }).start();
+        } else {
+            Animated.timing(pillTranslateY, {
+                toValue: 150,
+                duration: 250,
+                useNativeDriver: true
+            }).start();
+        }
+    }, [hasSelection, isOcrOverlayVisible]);
+
     const scaleAnim = useRef(new Animated.Value(1)).current;
     const fadeAnim = useRef(new Animated.Value(0)).current;
 
@@ -403,6 +534,13 @@ export default function AssetDetailScreen({ route, navigation }) {
     
     const currentAsset = assets[currentIndex] || {};
 
+    useEffect(() => {
+        setIsOcrOverlayVisible(false);
+        setOcrBlocks([]);
+        setSelectedOcrIndices(new Set());
+        setOcrDims(null);
+    }, [currentAsset?.id]);
+
     const handleAddToAlbum = async (album) => {
         if (!currentAsset || !currentAsset.hash) return;
         
@@ -509,6 +647,144 @@ export default function AssetDetailScreen({ route, navigation }) {
         } finally {
             setIsSharing(false);
         }
+    };
+
+    const handleExtractText = async () => {
+        if (!currentAsset || isExtractingText) return;
+        if (currentAsset.mediaType === 'video') {
+            setToastMessage('Only images are supported for OCR');
+            return;
+        }
+
+        // If overlay is already visible, just hide it
+        if (isOcrOverlayVisible) {
+            setIsOcrOverlayVisible(false);
+            setSelectedOcrIndices(new Set());
+            return;
+        }
+        
+        setIsExtractingText(true);
+        try {
+            let blocksList = null;
+            let loadedOcrDims = null;
+            // 1. Try to get coordinates from SQLite metadata (either Android mlkit or iOS vision)
+            const dbAsset = await AssetDBService.db.getFirstAsync('SELECT metadata FROM MediaAsset WHERE id = ? OR hash = ?', [currentAsset.id || currentAsset.hash, currentAsset.hash || currentAsset.id]);
+            if (dbAsset && dbAsset.metadata) {
+                try {
+                    const metaObj = JSON.parse(dbAsset.metadata);
+                    if (metaObj['mlkit.vision.text.blocks']) {
+                        blocksList = JSON.parse(metaObj['mlkit.vision.text.blocks']);
+                        // Load the oriented dims stored at OCR time for correct rendering
+                        if (metaObj['mlkit.vision.text.dims']) {
+                            loadedOcrDims = JSON.parse(metaObj['mlkit.vision.text.dims']);
+                        }
+                    } else if (metaObj['ios.vision.text.bounding'] && metaObj['ios.vision.text.content']) {
+                        const iosBounding = JSON.parse(metaObj['ios.vision.text.bounding']);
+                        const iosContent = JSON.parse(metaObj['ios.vision.text.content']);
+                        if (Array.isArray(iosBounding) && Array.isArray(iosContent) && iosBounding.length === iosContent.length) {
+                            blocksList = iosBounding.map((b, i) => {
+                                return {
+                                    text: iosContent[i],
+                                    frame: {
+                                        x: b.origin.x,
+                                        y: 1.0 - (b.origin.y + b.size.h), // Convert iOS bottom-left to top-left
+                                        w: b.size.w,
+                                        h: b.size.h
+                                    }
+                                };
+                            });
+                        }
+                    }
+                } catch(e) {
+                   console.log('[AssetDetailScreen] Error parsing metadata for OCR:', e);
+                }
+            }
+
+
+
+            if (loadedOcrDims) {
+                setOcrDims(loadedOcrDims);
+            } else {
+                setOcrDims(null);
+            }
+
+            // 2. If no coordinates found, trigger silent transient extraction to get them and upgrade DB
+            if (!blocksList) {
+                console.log('[AssetDetailScreen] Running transient OCR extraction to get blocks...');
+                const result = await AIService.extractOCRForAsset(currentAsset, true);
+                if (result && result.blocks) {
+                    blocksList = result.blocks;
+                    if (result.dims) {
+                        setOcrDims(result.dims);
+                    }
+                }
+            }
+
+            if (blocksList && blocksList.length > 0) {
+                setOcrBlocks(blocksList);
+                setIsOcrOverlayVisible(true);
+                setSelectedOcrIndices(new Set());
+                setToastMessage('Tap text blocks to select them.');
+            } else {
+                setToastMessage('No text found in this image.');
+            }
+        } catch (e) {
+            setToastMessage('Error extracting text: ' + e.message);
+        } finally {
+            setIsExtractingText(false);
+        }
+    };
+
+    const handleForceExtractText = () => {
+        if (!currentAsset || isExtractingText) return;
+        if (currentAsset.mediaType === 'video') {
+            setToastMessage('Only images are supported for OCR');
+            return;
+        }
+        
+        Alert.alert(
+            "Force Re-scan",
+            "Do you want to force a new OCR extraction for this photo? This will overwrite the existing text and bounding boxes.",
+            [
+                { text: "Cancel", style: "cancel" },
+                { 
+                    text: "Confirm", 
+                    onPress: async () => {
+                        setIsExtractingText(true);
+                        try {
+                            console.log('[AssetDetailScreen] Running forced OCR extraction...');
+                            const result = await AIService.extractOCRForAsset(currentAsset, true);
+                            let blocksList = null;
+                            if (result && result.blocks) {
+                                blocksList = result.blocks;
+                                if (result.dims) {
+                                    setOcrDims(result.dims);
+                                }
+                            }
+                            if (blocksList && blocksList.length > 0) {
+                                // Reset overlay visibility briefly to force re-run the animation
+                                setIsOcrOverlayVisible(false);
+                                setTimeout(() => {
+                                    setOcrBlocks(blocksList);
+                                    setIsOcrOverlayVisible(true);
+                                    setSelectedOcrIndices(new Set());
+                                    setToastMessage('OCR re-scanned successfully. Tap text to select.');
+                                }, 50);
+                            } else {
+                                setOcrBlocks([]);
+                                setIsOcrOverlayVisible(false);
+                                setSelectedOcrIndices(new Set());
+                                setToastMessage('No text found in this image.');
+                            }
+                        } catch (e) {
+                            setToastMessage('Error extracting text: ' + e.message);
+                        } finally {
+                            setIsExtractingText(false);
+                        }
+                    }
+                }
+            ]
+        );
     };
 
     const handleUpload = async () => {
@@ -702,6 +978,8 @@ export default function AssetDetailScreen({ route, navigation }) {
         const baseUrl = AuthService.getServerUrl();
         const token = AuthService.getToken();
         const assetId = item.hash || item.id;
+        const loadedDimsKey = item.hash || item.id;
+        const loadedDims = loadedDimsMap[loadedDimsKey];
 
         let uri;
         let isRemote = false;
@@ -800,43 +1078,151 @@ export default function AssetDetailScreen({ route, navigation }) {
                             )}
                         </View>
                     ) : (
-                        <Pressable
-                            style={{ width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center', position: 'relative' }}
-                            onPressIn={() => handlePressIn(isLive, liveVideoUri)}
-                            onPressOut={handlePressOut}
-                        >
-                            <Animated.View style={{
-                                width: '100%',
-                                height: '100%',
-                                justifyContent: 'center',
-                                alignItems: 'center',
-                                transform: [{ scale: scaleAnim }]
-                            }}>
-                                {/* Static Image with native placeholder scaled to fit */}
-                                <Image
-                                    source={{ uri: staticImageUri }}
-                                    placeholder={thumbUri ? { uri: thumbUri } : null}
-                                    placeholderContentFit="contain"
-                                    style={styles.image}
-                                    contentFit="contain"
-                                    cachePolicy="memory-disk"
-                                    transition={0}
-                                />
+                        (() => {
+                            const imageAndOcr = (
+                                <Animated.View style={{
+                                    width: '100%',
+                                    height: '100%',
+                                    justifyContent: 'center',
+                                    alignItems: 'center',
+                                    transform: [{ scale: scaleAnim }]
+                                }}>
+                                    {/* Static Image with native placeholder scaled to fit */}
+                                    <Image
+                                        source={{ uri: staticImageUri }}
+                                        placeholder={thumbUri ? { uri: thumbUri } : null}
+                                        placeholderContentFit="contain"
+                                        style={styles.image}
+                                        contentFit="contain"
+                                        cachePolicy="memory-disk"
+                                        transition={0}
+                                        onLoad={(event) => {
+                                            if (event.source) {
+                                                console.log('[AssetDetailScreen] Image loaded for item:', loadedDimsKey, 'source size:', event.source.width, event.source.height);
+                                                setLoadedDimsMap(prev => ({
+                                                    ...prev,
+                                                    [loadedDimsKey]: { w: event.source.width, h: event.source.height }
+                                                }));
+                                            }
+                                        }}
+                                    />
 
-                                {/* Looping Video Player is absolute positioned on top of the Image when playing */}
-                                {shouldPlayLive ? (
-                                    <Animated.View style={[StyleSheet.absoluteFill, { opacity: fadeAnim }]}>
-                                        <AssetVideoPlayer 
-                                            key={liveVideoUri}
-                                            uri={liveVideoUri} 
-                                            style={styles.image} 
-                                            shouldPlay={true}
-                                            nativeControls={false}
+                                    {/* Dimming Focus Overlay */}
+                                    {isOcrOverlayVisible && item.id === currentAsset.id && (
+                                        <Animated.View 
+                                            style={[
+                                                StyleSheet.absoluteFillObject, 
+                                                { 
+                                                    backgroundColor: 'rgba(0, 0, 0, 0.35)', 
+                                                    opacity: blocksOpacity 
+                                                }
+                                            ]} 
+                                            pointerEvents="none" 
                                         />
-                                    </Animated.View>
-                                ) : null}
-                            </Animated.View>
-                        </Pressable>
+                                    )}
+
+                                    {/* OCR Text Overlays (Google Lens style) */}
+                                    {isOcrOverlayVisible && ocrBlocks.length > 0 && (ocrDims?.w || loadedDims?.w || currentAsset.width) && (ocrDims?.h || loadedDims?.h || currentAsset.height) && item.id === currentAsset.id && (
+                                        (() => {
+                                            const assetWidth = ocrDims?.w || loadedDims?.w || currentAsset.width;
+                                            const assetHeight = ocrDims?.h || loadedDims?.h || currentAsset.height;
+                                            console.log('[AssetDetailScreen] Render OCR overlay: assetWidth=', assetWidth, 'assetHeight=', assetHeight, 'ocrDims=', ocrDims, 'loadedDims=', loadedDims, 'currentAsset.width=', currentAsset.width, 'currentAsset.height=', currentAsset.height);
+                                            const scale = Math.min(width / assetWidth, (height * 0.7) / assetHeight);
+                                            const renderedWidth = assetWidth * scale;
+                                            const renderedHeight = assetHeight * scale;
+                                            const offsetX = (width - renderedWidth) / 2;
+                                            const offsetY = (height * 0.7 - renderedHeight) / 2;
+                                            console.log('[AssetDetailScreen] Render OCR layout stats: scale=', scale, 'renderedWidth=', renderedWidth, 'renderedHeight=', renderedHeight, 'offsetX=', offsetX, 'offsetY=', offsetY, 'screenWidth=', width, 'containerHeight=', height * 0.7);
+                                            return (
+                                                <Animated.View 
+                                                    style={[StyleSheet.absoluteFillObject, { opacity: blocksOpacity }]} 
+                                                    pointerEvents="box-none"
+                                                >
+                                                    {ocrBlocks.map((block, idx) => {
+                                                        const isSelected = selectedOcrIndices.has(idx);
+                                                        return (
+                                                            <OcrBlock
+                                                                key={`ocr-${idx}`}
+                                                                block={block}
+                                                                idx={idx}
+                                                                isSelected={isSelected}
+                                                                offsetX={offsetX}
+                                                                offsetY={offsetY}
+                                                                renderedWidth={renderedWidth}
+                                                                renderedHeight={renderedHeight}
+                                                                onSelect={toggleOcrSelection}
+                                                            />
+                                                        );
+                                                    })}
+                                                </Animated.View>
+                                            );
+                                        })()
+                                    )}
+
+                                    {/* Laser Sweep Line */}
+                                    {isOcrOverlayVisible && (ocrDims?.w || loadedDims?.w || currentAsset.width) && (ocrDims?.h || loadedDims?.h || currentAsset.height) && item.id === currentAsset.id && (
+                                        (() => {
+                                            const assetWidth = ocrDims?.w || loadedDims?.w || currentAsset.width;
+                                            const assetHeight = ocrDims?.h || loadedDims?.h || currentAsset.height;
+                                            const scale = Math.min(width / assetWidth, (height * 0.7) / assetHeight);
+                                            const renderedWidth = assetWidth * scale;
+                                            const renderedHeight = assetHeight * scale;
+                                            const offsetX = (width - renderedWidth) / 2;
+                                            const offsetY = (height * 0.7 - renderedHeight) / 2;
+                                            
+                                            return (
+                                                <Animated.View
+                                                    style={{
+                                                        position: 'absolute',
+                                                        left: offsetX,
+                                                        width: renderedWidth,
+                                                        height: 3,
+                                                        backgroundColor: '#007AFF',
+                                                        shadowColor: '#007AFF',
+                                                        shadowOffset: { width: 0, height: 0 },
+                                                        shadowOpacity: 0.8,
+                                                        shadowRadius: 10,
+                                                        elevation: 5,
+                                                        opacity: sweepOpacity,
+                                                        transform: [{
+                                                            translateY: sweepAnim.interpolate({
+                                                                inputRange: [0, 1],
+                                                                outputRange: [offsetY, offsetY + renderedHeight]
+                                                            })
+                                                        }]
+                                                    }}
+                                                    pointerEvents="none"
+                                                />
+                                            );
+                                        })()
+                                    )}
+
+                                    {/* Looping Video Player is absolute positioned on top of the Image when playing */}
+                                    {shouldPlayLive ? (
+                                        <Animated.View style={[StyleSheet.absoluteFill, { opacity: fadeAnim }]}>
+                                            <AssetVideoPlayer 
+                                                key={liveVideoUri}
+                                                uri={liveVideoUri} 
+                                                style={styles.image} 
+                                                shouldPlay={true}
+                                                nativeControls={false}
+                                            />
+                                        </Animated.View>
+                                    ) : null}
+                                </Animated.View>
+                            );
+
+                            return (
+                                <Pressable
+                                    style={{ width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center', position: 'relative' }}
+                                    onPressIn={() => !isOcrOverlayVisible && handlePressIn(isLive, liveVideoUri)}
+                                    onPressOut={() => !isOcrOverlayVisible && handlePressOut()}
+                                    disabled={isOcrOverlayVisible}
+                                >
+                                    {imageAndOcr}
+                                </Pressable>
+                            );
+                        })()
                     )}
                 </ZoomableMedia>
                 {isLive ? (
@@ -897,6 +1283,20 @@ export default function AssetDetailScreen({ route, navigation }) {
                             <Share color="#007AFF" size={24} />
                         )}
                     </TouchableOpacity>
+                    {currentAsset.mediaType !== 'video' && (
+                                                        <TouchableOpacity 
+                                                            onPress={handleExtractText} 
+                                                            onLongPress={handleForceExtractText}
+                                                            style={styles.iconButton} 
+                                                            disabled={isExtractingText}
+                                                        >
+                                                            {isExtractingText ? (
+                                                                <ActivityIndicator size="small" color="#007AFF" />
+                                                            ) : (
+                                                                <ScanText color="#007AFF" size={24} />
+                                                            )}
+                                                        </TouchableOpacity>
+                                                    )}
                     {source.startsWith('album_') && (
                         <TouchableOpacity onPress={handleSwipeUpAction} style={styles.iconButton}>
                             <FolderMinus color="#ff9500" size={24} />
@@ -984,6 +1384,48 @@ export default function AssetDetailScreen({ route, navigation }) {
                     <Text selectable style={styles.debugText}>Index: {currentIndex} / {assets.length}</Text>
                 </View>
             ) : null}
+
+            {/* Sleek Google Lens Style Floating Action Bar */}
+            {isOcrOverlayVisible && (
+                <Animated.View 
+                    style={[
+                        styles.ocrActionBar,
+                        {
+                            transform: [{
+                                translateY: pillTranslateY
+                            }]
+                        }
+                    ]}
+                    pointerEvents={hasSelection ? "auto" : "none"}
+                >
+                    <TouchableOpacity 
+                        style={styles.ocrActionButton}
+                        onPress={async () => {
+                            const text = Array.from(selectedOcrIndices)
+                                .sort((a, b) => a - b)
+                                .map(idx => ocrBlocks[idx]?.text)
+                                .join(' ');
+                            try {
+                                await RNShare.share({ message: text });
+                            } catch (e) {
+                                console.error('Share error:', e);
+                            }
+                        }}
+                    >
+                        <ScanText color="#fff" size={20} />
+                        <Text style={styles.ocrActionText}>Copy / Share</Text>
+                    </TouchableOpacity>
+
+                    <View style={styles.ocrActionDivider} />
+
+                    <TouchableOpacity 
+                        style={styles.ocrActionButton}
+                        onPress={() => setSelectedOcrIndices(new Set())}
+                    >
+                        <Text style={styles.ocrActionText}>Clear</Text>
+                    </TouchableOpacity>
+                </Animated.View>
+            )}
         </View>
     );
 }
@@ -1191,5 +1633,40 @@ const styles = StyleSheet.create({
         fontWeight: 'bold',
         marginLeft: 6,
         letterSpacing: 1,
+    },
+    ocrActionBar: {
+        position: 'absolute',
+        bottom: 100,
+        alignSelf: 'center',
+        flexDirection: 'row',
+        backgroundColor: 'rgba(30, 30, 30, 0.95)',
+        borderRadius: 28,
+        paddingHorizontal: 20,
+        paddingVertical: 10,
+        alignItems: 'center',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.4,
+        shadowRadius: 5,
+        elevation: 8,
+        zIndex: 2000,
+    },
+    ocrActionButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: 12,
+        paddingVertical: 4,
+    },
+    ocrActionText: {
+        color: '#fff',
+        fontSize: 14,
+        fontWeight: '600',
+        marginLeft: 6,
+    },
+    ocrActionDivider: {
+        width: 1,
+        height: 20,
+        backgroundColor: 'rgba(255, 255, 255, 0.25)',
+        marginHorizontal: 8,
     }
 });
