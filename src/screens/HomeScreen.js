@@ -22,26 +22,26 @@ const COLUMN_COUNT = 3;
 const ITEM_SIZE = width / COLUMN_COUNT;
 
 const SMART_TAGS = [
-    { label: '🐱 猫咪', query: 'cat' },
-    { label: '🐶 狗狗', query: 'dog' },
-    { label: '🍔 美食', query: 'food' },
-    { label: '🌅 海滩', query: 'beach' },
-    { label: '🏞️ 风景', query: 'landscape' },
-    { label: '🌸 花卉', query: 'flower' },
-    { label: '📄 截图', query: 'screenshot' },
-    { label: '🚗 汽车', query: 'car' },
-    { label: '👶 宝宝', query: 'baby' },
-    { label: '🌲 森林', query: 'forest' },
-    { label: '🏔️ 雪山', query: 'snowy mountain' },
-    { label: '🌃 夜景', query: 'night view' },
-    { label: '🏠 建筑', query: 'building' },
-    { label: '☕ 咖啡', query: 'coffee' },
-    { label: '🚲 自行车', query: 'bicycle' },
-    { label: '⚽ 运动', query: 'sports' },
-    { label: '✈️ 旅行', query: 'travel' },
-    { label: '🌊 海洋', query: 'ocean' },
-    { label: '🍁 红叶', query: 'autumn leaves' },
-    { label: '🎸 音乐', query: 'musical instrument' }
+    { label: '🐱 Cats', query: 'cat' },
+    { label: '🐶 Dogs', query: 'dog' },
+    { label: '🍔 Food', query: 'food' },
+    { label: '🌅 Beach', query: 'beach' },
+    { label: '🏞️ Landscape', query: 'landscape' },
+    { label: '🌸 Flowers', query: 'flower' },
+    { label: '📄 Screenshots', query: 'screenshot' },
+    { label: '🚗 Cars', query: 'car' },
+    { label: '👶 Babies', query: 'baby' },
+    { label: '🌲 Forests', query: 'forest' },
+    { label: '🏔️ Mountains', query: 'snowy mountain' },
+    { label: '🌃 Night Views', query: 'night view' },
+    { label: '🏠 Buildings', query: 'building' },
+    { label: '☕ Coffee', query: 'coffee' },
+    { label: '🚲 Bicycles', query: 'bicycle' },
+    { label: '⚽ Sports', query: 'sports' },
+    { label: '✈️ Travel', query: 'travel' },
+    { label: '🌊 Oceans', query: 'ocean' },
+    { label: '🍁 Autumn Leaves', query: 'autumn leaves' },
+    { label: '🎸 Music', query: 'musical instrument' }
 ];
 
 const isLivePhoto = (asset) => {
@@ -1275,7 +1275,8 @@ const formatSpeed = (bytesPerSec) => {
                             <Search size={18} color="#999" style={styles.searchIcon} />
                             <TextInput
                                 style={styles.searchInput}
-                                placeholder="搜索照片 (如: 猫, 海滩, 食物)..."
+                                placeholder="Search photos (e.g., cat, beach, food)..."
+                                placeholderTextColor="#8E8E93"
                                 value={searchQuery}
                                 onChangeText={setSearchQuery}
                                 autoFocus
@@ -1294,7 +1295,7 @@ const formatSpeed = (bytesPerSec) => {
                             }} 
                             style={styles.cancelButton}
                         >
-                            <Text style={styles.cancelButtonText}>取消</Text>
+                            <Text style={styles.cancelButtonText}>Cancel</Text>
                         </TouchableOpacity>
                     </View>
                     
@@ -1445,10 +1446,10 @@ const formatSpeed = (bytesPerSec) => {
                                 {isSearchLoading ? (
                                     <View style={{ alignItems: 'center' }}>
                                         <ActivityIndicator size="small" color="#007AFF" style={{ marginBottom: 8 }} />
-                                        <Text style={{ color: '#8e8e93', fontSize: 14 }}>正在搜索...</Text>
+                                        <Text style={{ color: '#8e8e93', fontSize: 14 }}>Searching...</Text>
                                     </View>
                                 ) : (
-                                    <Text style={{ color: '#8e8e93', fontSize: 15 }}>{isSearching ? "未找到符合条件的照片。" : "No photos found."}</Text>
+                                    <Text style={{ color: '#8e8e93', fontSize: 15 }}>No photos found.</Text>
                                 )}
                             </View>
                         }
