@@ -459,16 +459,18 @@ class AIService {
     let w = 0;
     let h = 0;
     
-    // Try to get physical dimensions directly from PNG/JPEG headers
-    try {
-      const physicalSize = await readImagePhysicalDimensions(filePath);
-      if (physicalSize) {
-        w = physicalSize.w;
-        h = physicalSize.h;
-        console.log(`[AIService] _getOrientedDimensionsFromFile physical parse: w=${w}, h=${h}`);
+    // Try to get physical dimensions directly from PNG/JPEG headers on Android
+    if (Platform.OS === 'android') {
+      try {
+        const physicalSize = await readImagePhysicalDimensions(filePath);
+        if (physicalSize) {
+          w = physicalSize.w;
+          h = physicalSize.h;
+          console.log(`[AIService] _getOrientedDimensionsFromFile physical parse: w=${w}, h=${h}`);
+        }
+      } catch (e) {
+        console.warn(`[AIService] readImagePhysicalDimensions failed in _getOrientedDimensionsFromFile for ${filePath}:`, e.message);
       }
-    } catch (e) {
-      console.warn(`[AIService] readImagePhysicalDimensions failed in _getOrientedDimensionsFromFile for ${filePath}:`, e.message);
     }
 
     if (w === 0 || h === 0) {
