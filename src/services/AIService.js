@@ -1560,7 +1560,8 @@ class AIService {
               isLocal: row.isLocal === 1,
               localCachePath: row.localCachePath,
               isFavorite: row.isFavorite === 1,
-              score: 1.0 // Force OCR matches to the top
+              score: 1.0, // Force OCR matches to the top
+              isOcrMatch: true
             });
           }
           if (ocrCandidates.length > 0) {

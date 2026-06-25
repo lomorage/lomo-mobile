@@ -3,7 +3,7 @@ import { StyleSheet, View, Dimensions, TouchableOpacity, Text, ActivityIndicator
 import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 import { FlashList } from '@shopify/flash-list';
-import { Cloud, CheckCircle, Smartphone, PlayCircle, PauseCircle, Settings as SettingsIcon, UploadCloud, X, MapPin, Heart, Search } from 'lucide-react-native';
+import { Cloud, CheckCircle, Smartphone, PlayCircle, PauseCircle, Settings as SettingsIcon, UploadCloud, X, MapPin, Heart, Search, ScanText } from 'lucide-react-native';
 import MediaService from '../services/MediaService';
 import SyncService from '../services/SyncService';
 import OfflineCacheService from '../services/OfflineCacheService';
@@ -227,7 +227,7 @@ export default function HomeScreen({ navigation, route }) {
             const mappedResults = results.map(res => {
                 const matched = currentAssets.find(a => a.id === res.id || (res.hash && a.hash === res.hash));
                 if (matched) {
-                    return { ...matched, score: res.score };
+                    return { ...matched, score: res.score, isOcrMatch: res.isOcrMatch };
                 }
                 return {
                     ...res,
@@ -280,7 +280,7 @@ export default function HomeScreen({ navigation, route }) {
                 const mappedResults = results.map(res => {
                     const matched = currentAssets.find(a => a.id === res.id || (res.hash && a.hash === res.hash));
                     if (matched) {
-                        return { ...matched, score: res.score };
+                        return { ...matched, score: res.score, isOcrMatch: res.isOcrMatch };
                     }
                     return {
                         ...res,
@@ -531,29 +531,51 @@ const formatSpeed = (bytesPerSec) => {
         const isActivelySearching = isSearching && searchQuery.trim() !== '';
 
         if (isActivelySearching) {
-            let currentRowItems = [];
             let currentOffset = 0;
 
-            const pushRow = () => {
-                if (currentRowItems.length > 0) {
-                    const rowId = `row-${currentRowItems.map(item => item.id).join('_')}`;
-                    data.push({ type: 'row', id: rowId, items: currentRowItems, length: ITEM_SIZE, offset: currentOffset });
-                    currentOffset += ITEM_SIZE;
-                    currentRowItems = [];
-                }
+            // Separate OCR matches and Semantic matches
+            const ocrAssets = activeAssets.filter(asset => asset.isOcrMatch);
+            const semanticAssets = activeAssets.filter(asset => !asset.isOcrMatch);
+
+            const pushSection = (sectionTitle, sectionAssets) => {
+                if (sectionAssets.length === 0) return;
+
+                // Push Section Header
+                indices.push(data.length);
+                data.push({ 
+                    type: 'header', 
+                    id: `header-${sectionTitle}`, 
+                    title: sectionTitle, 
+                    length: 48, 
+                    offset: currentOffset 
+                });
+                currentOffset += 48;
+
+                let currentRowItems = [];
+                const pushRow = () => {
+                    if (currentRowItems.length > 0) {
+                        const rowId = `row-${currentRowItems.map(item => item.id).join('_')}`;
+                        data.push({ type: 'row', id: rowId, items: currentRowItems, length: ITEM_SIZE, offset: currentOffset });
+                        currentOffset += ITEM_SIZE;
+                        currentRowItems = [];
+                    }
+                };
+
+                sectionAssets.forEach((asset) => {
+                    currentRowItems.push({ ...asset, globalIndex: activeAssets.findIndex(a => a.id === asset.id) });
+                    if (currentRowItems.length === COLUMN_COUNT) {
+                        pushRow();
+                    }
+                });
+                pushRow();
             };
 
-            activeAssets.forEach((asset, globalIndex) => {
-                currentRowItems.push({ ...asset, globalIndex });
-                if (currentRowItems.length === COLUMN_COUNT) {
-                    pushRow();
-                }
-            });
-            pushRow();
+            pushSection('Text in Photos', ocrAssets);
+            pushSection('Scenes & Objects', semanticAssets);
 
             timelineDataRef.current = data;
-            stickyHeaderIndicesRef.current = [];
-            return { timelineData: data, stickyHeaderIndices: [] };
+            stickyHeaderIndicesRef.current = indices;
+            return { timelineData: data, stickyHeaderIndices: indices };
         }
 
         const dateCache = new Map();
@@ -1053,6 +1075,12 @@ const formatSpeed = (bytesPerSec) => {
                 {asset.isFavorite ? (
                     <View style={{ position: 'absolute', bottom: 5, right: 5, backgroundColor: 'rgba(0,0,0,0.4)', borderRadius: 12, padding: 4 }}>
                         <Heart color="#ef4444" fill="#ef4444" size={14} />
+                    </View>
+                ) : null}
+                {asset.isOcrMatch ? (
+                    <View style={styles.ocrBadge}>
+                        <ScanText color="#fff" size={10} style={{ marginRight: 2 }} />
+                        <Text style={styles.ocrBadgeText}>Text Match</Text>
                     </View>
                 ) : null}
                 {asset.mediaType === 'video' ? (
@@ -2005,5 +2033,21 @@ const styles = StyleSheet.create({
     tagTextActive: {
         color: '#fff',
         fontWeight: '600',
+    },
+    ocrBadge: {
+        position: 'absolute',
+        top: 5,
+        right: 5,
+        backgroundColor: 'rgba(0, 122, 255, 0.85)',
+        borderRadius: 4,
+        paddingHorizontal: 4,
+        paddingVertical: 2,
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
+    ocrBadgeText: {
+        color: '#fff',
+        fontSize: 9,
+        fontWeight: 'bold',
     },
 });
