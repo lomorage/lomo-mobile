@@ -451,17 +451,26 @@ export default function DuplicatesScreen() {
     const [selectedMap, setSelectedMap] = useState({}); // id -> boolean
     const [sizesMap, setSizesMap] = useState({});
     
-    // Compare modal state
     const [compareGroup, setCompareGroup] = useState(null);
     const [compareIndex, setCompareIndex] = useState(0);
     const [modalMeta, setModalMeta] = useState({});
 
     const groupsRef = useRef([]);
+    const sizesMapRef = useRef({});
+    const modalMetaRef = useRef({});
 
-    // Keep groupsRef in sync with groups state
+    // Keep refs in sync with state for callbacks that are memoized
     useEffect(() => {
         groupsRef.current = groups;
     }, [groups]);
+
+    useEffect(() => {
+        sizesMapRef.current = sizesMap;
+    }, [sizesMap]);
+
+    useEffect(() => {
+        modalMetaRef.current = modalMeta;
+    }, [modalMeta]);
 
     const loadDuplicates = async (forceRescan = false) => {
         // Prevent loading spinner flash if we already have groups in memory and not forcing rescan
@@ -669,7 +678,9 @@ export default function DuplicatesScreen() {
         group.forEach(asset => {
             if (selectedMap[asset.id]) {
                 groupSelectedCount++;
-                groupSelectedSize += sizesMap[asset.id] || (modalMeta[asset.id] && modalMeta[asset.id].size) || asset.size || 0;
+                const sMap = sizesMapRef.current;
+                const mMeta = modalMetaRef.current;
+                groupSelectedSize += sMap[asset.id] || (mMeta[asset.id] && mMeta[asset.id].size) || asset.size || 0;
                 allIdsOrHashes.push(asset.id);
                 if (asset.hash) allIdsOrHashes.push(asset.hash);
 
@@ -735,7 +746,7 @@ export default function DuplicatesScreen() {
                 }
             ]
         );
-    }, [selectedMap, sizesMap, modalMeta]);
+    }, [selectedMap]);
 
     const handleOpenCompare = useCallback((group, idx) => {
         setCompareGroup(group);
