@@ -1562,81 +1562,103 @@ const formatSpeed = (bytesPerSec) => {
                                         return (
                                             <View key={token.id} style={styles.tokenChip}>
                                                 <Text style={styles.tokenChipText}>{prefix}{token.value}</Text>
-                                                <TouchableOpacity onPress={() => removeToken(token.id)} style={styles.tokenChipClose}>
-                                                    <X size={10} color="#007AFF" />
-                                                </TouchableOpacity>
-                                            </View>
-                                        );
-                                    })}
-                                </ScrollView>
-                            )}
-                            <TextInput
-                                style={styles.searchInput}
-                                placeholder={searchTokens.length > 0 ? "" : "Search photos (e.g., cat, beach)..."}
-                                placeholderTextColor="#8E8E93"
-                                value={searchQuery}
-                                onChangeText={setSearchQuery}
-                                onKeyPress={handleKeyPress}
-                                onSubmitEditing={() => setSuggestions([])}
-                                onFocus={() => {
-                                    hideSuggestionsUntilFocusRef.current = false;
-                                    setSuggestionTrigger(prev => prev + 1);
-                                }}
-                                onTouchStart={() => {
-                                    hideSuggestionsUntilFocusRef.current = false;
-                                    setSuggestionTrigger(prev => prev + 1);
-                                }}
-                                autoFocus
-                                clearButtonMode="while-editing"
-                                returnKeyType="search"
-                            />
-                            {isSearchLoading && timelineData.length > 0 ? (
-                                <ActivityIndicator size="small" color="#007AFF" style={styles.searchLoadingIndicator} />
-                            ) : null}
+                        <View style={{ flex: 1 }}>
+                            <View style={styles.searchBar}>
+                                <Search size={18} color="#999" style={styles.searchIcon} />
+                                <TextInput
+                                    style={styles.searchInput}
+                                    placeholder={searchTokens.length > 0 ? "" : "Search (e.g., cats 2023, beach last week)..."}
+                                    placeholderTextColor="#8E8E93"
+                                    value={searchQuery}
+                                    onChangeText={setSearchQuery}
+                                    autoFocus
+                                    returnKeyType="search"
+                                    onKeyPress={handleKeyPress}
+                                    onSubmitEditing={() => setSuggestions([])}
+                                    onFocus={() => {
+                                        hideSuggestionsUntilFocusRef.current = false;
+                                        setSuggestionTrigger(prev => prev + 1);
+                                    }}
+                                    onTouchStart={() => {
+                                        hideSuggestionsUntilFocusRef.current = false;
+                                        setSuggestionTrigger(prev => prev + 1);
+                                    }}
+                                />
+                                {searchQuery.length > 0 && (
+                                    <TouchableOpacity onPress={() => setSearchQuery('')} style={styles.clearIcon}>
+                                        <X size={16} color="#999" />
+                                    </TouchableOpacity>
+                                )}
+                            </View>
                         </View>
-                        <TouchableOpacity 
-                            onPress={() => {
-                                setIsSearching(false);
-                                setSearchQuery('');
-                                setSearchTokens([]);
-                                setSearchResults([]);
-                                setSuggestions([]);
-                            }} 
-                            style={styles.cancelButton}
-                        >
-                            <Text style={styles.cancelButtonText}>Cancel</Text>
-                        </TouchableOpacity>
+                        <View style={styles.cancelButtonContainer}>
+                            <TouchableOpacity 
+                                onPress={() => {
+                                    Keyboard.dismiss();
+                                    setIsSearching(false);
+                                    setSearchQuery('');
+                                    setSearchTokens([]);
+                                    setSearchResults([]);
+                                    setSuggestions([]);
+                                }} 
+                                style={styles.cancelButton}
+                            >
+                                <Text style={styles.cancelButtonText}>Cancel</Text>
+                            </TouchableOpacity>
+                        </View>
                     </View>
-                    
-                    {/* Horizontal Smart Tags List */}
-                    <ScrollView 
-                        horizontal 
-                        showsHorizontalScrollIndicator={false} 
-                        keyboardShouldPersistTaps="handled"
-                        style={styles.tagsContainer}
-                        contentContainerStyle={styles.tagsContent}
-                    >
-                        {COMBINED_TAGS.map((tag, idx) => {
-                            const isActive = searchTokens.some(t => t.type === tag.type && t.value === tag.query);
-                            return (
-                                <TouchableOpacity 
-                                    key={idx} 
-                                    style={[
-                                        styles.tagButton,
-                                        isActive && styles.tagButtonActive
-                                    ]}
-                                    onPress={() => handleTagPress(tag)}
-                                >
-                                    <Text style={[
-                                        styles.tagText,
-                                        isActive && styles.tagTextActive
-                                    ]}>
-                                        {tag.label}
-                                    </Text>
-                                </TouchableOpacity>
-                            );
-                        })}
-                    </ScrollView>
+
+                    {/* Tags Layout: Two Rows for Better UX */}
+                    <View style={styles.tagsWrapper}>
+                        {/* Time Tags Row */}
+                        <ScrollView 
+                            horizontal 
+                            showsHorizontalScrollIndicator={false} 
+                            keyboardShouldPersistTaps="handled"
+                            style={styles.tagsContainer}
+                            contentContainerStyle={styles.tagsContent}
+                        >
+                            {TIME_TAGS.map((tag, idx) => {
+                                const isActive = searchTokens.some(t => t.type === tag.type && t.value === tag.query);
+                                return (
+                                    <TouchableOpacity 
+                                        key={`time-${idx}`} 
+                                        style={[styles.tagButton, isActive && styles.tagButtonActive]}
+                                        onPress={() => handleTagPress(tag)}
+                                    >
+                                        <Text style={[styles.tagText, isActive && styles.tagTextActive]}>
+                                            {tag.label}
+                                        </Text>
+                                    </TouchableOpacity>
+                                );
+                            })}
+                        </ScrollView>
+
+                        {/* Semantic Tags Row */}
+                        <ScrollView 
+                            horizontal 
+                            showsHorizontalScrollIndicator={false} 
+                            keyboardShouldPersistTaps="handled"
+                            style={[styles.tagsContainer, { marginTop: 8 }]}
+                            contentContainerStyle={styles.tagsContent}
+                        >
+                            {SMART_TAGS.map((tag, idx) => {
+                                const semanticTag = {...tag, type: 'semantic'};
+                                const isActive = searchTokens.some(t => t.type === semanticTag.type && t.value === semanticTag.query);
+                                return (
+                                    <TouchableOpacity 
+                                        key={`semantic-${idx}`} 
+                                        style={[styles.tagButton, isActive && styles.tagButtonActive]}
+                                        onPress={() => handleTagPress(semanticTag)}
+                                    >
+                                        <Text style={[styles.tagText, isActive && styles.tagTextActive]}>
+                                            {semanticTag.label}
+                                        </Text>
+                                    </TouchableOpacity>
+                                );
+                            })}
+                        </ScrollView>
+                    </View>
                 </View>
             ) : (
                 <View style={styles.header}>
