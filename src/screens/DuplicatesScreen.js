@@ -148,12 +148,14 @@ const AssetCard = React.memo(function AssetCard({ asset, idx, isSelected, onTogg
 });
 
 // Memoized group container to prevent massive FlatList re-renders when selection changes
-const DuplicateGroup = React.memo(function DuplicateGroup({ group, groupIndex, selectedMap, modalMeta, toggleSelect, handleSize, handleIgnoreGroup, onOpenCompare }) {
+const DuplicateGroup = React.memo(function DuplicateGroup({ group, groupIndex, selectedMap, modalMeta, toggleSelect, handleSize, handleIgnoreGroup, handleDeleteGroup, onOpenCompare }) {
     const formatDate = (timestamp) => {
         if (!timestamp) return 'Unknown Date';
         const date = new Date(timestamp);
         return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
     };
+
+    const selectedInGroup = group.filter(a => selectedMap[a.id]).length;
 
     return (
         <View style={styles.card}>
@@ -165,6 +167,14 @@ const DuplicateGroup = React.memo(function DuplicateGroup({ group, groupIndex, s
                     </Text>
                 </View>
                 <View style={styles.cardHeaderActions}>
+                    {selectedInGroup > 0 && (
+                        <TouchableOpacity
+                            style={[styles.ignoreButton, { backgroundColor: '#FF3B30', borderColor: '#FF3B30', marginRight: 8 }]}
+                            onPress={() => handleDeleteGroup(group)}
+                        >
+                            <Text style={[styles.ignoreText, { color: '#FFF' }]}>Clean Up ({selectedInGroup})</Text>
+                        </TouchableOpacity>
+                    )}
                     <TouchableOpacity
                         style={styles.ignoreButton}
                         onPress={() => handleIgnoreGroup(group)}
@@ -647,6 +657,86 @@ export default function DuplicatesScreen() {
         );
     };
 
+    const handleDeleteGroup = useCallback((group) => {
+        if (!group || group.length === 0) return;
+
+        let groupSelectedCount = 0;
+        let groupSelectedSize = 0;
+        const localIdsToDelete = [];
+        const remoteItemsToDelete = [];
+        const allIdsOrHashes = [];
+
+        group.forEach(asset => {
+            if (selectedMap[asset.id]) {
+                groupSelectedCount++;
+                groupSelectedSize += sizesMap[asset.id] || (modalMeta[asset.id] && modalMeta[asset.id].size) || asset.size || 0;
+                allIdsOrHashes.push(asset.id);
+                if (asset.hash) allIdsOrHashes.push(asset.hash);
+
+                if (asset.isLocal) {
+                    localIdsToDelete.push(asset.id);
+                } else {
+                    remoteItemsToDelete.push({ idOrHash: asset.hash, isHash: true });
+                }
+            }
+        });
+
+        if (groupSelectedCount === 0) {
+            Alert.alert('No Selection', 'Please select at least one duplicate to delete in this group.');
+            return;
+        }
+
+        Alert.alert(
+            'Confirm Cleanup',
+            `Are you sure you want to delete ${groupSelectedCount} selected ${groupSelectedCount === 1 ? 'photo' : 'photos'} in this group? This will free up ${formatSize(groupSelectedSize)}.`,
+            [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                    text: 'Clean Up',
+                    style: 'destructive',
+                    onPress: async () => {
+                        setDeleting(true);
+                        try {
+                            // 1. Delete local assets first
+                            if (localIdsToDelete.length > 0) {
+                                try {
+                                    await MediaService.deleteLocalAssets(localIdsToDelete);
+                                } catch (le) {
+                                    console.log('[DuplicatesScreen] Local deletion cancelled or failed:', le.message);
+                                    setDeleting(false);
+                                    return;
+                                }
+                            }
+
+                            // 2. Delete remote assets
+                            if (remoteItemsToDelete.length > 0) {
+                                try {
+                                    await MediaService.deleteRemoteAssets(remoteItemsToDelete);
+                                } catch (re) {
+                                    console.warn('[DuplicatesScreen] Remote deletion failed:', re.message);
+                                }
+                            }
+
+                            // 3. Remove from SQLite
+                            await AssetDBService.deleteAssets(allIdsOrHashes);
+
+                            // 4. Remove group from cache and UI state
+                            const assetIds = group.map(a => a.id);
+                            AIService.removeDuplicateGroupFromCache(assetIds);
+                            setGroups(prev => prev.filter(g => g !== group));
+                            
+                        } catch (err) {
+                            console.error('[DuplicatesScreen] Group deletion error:', err);
+                            Alert.alert('Cleanup Error', 'Failed to clean up some photos.');
+                        } finally {
+                            setDeleting(false);
+                        }
+                    }
+                }
+            ]
+        );
+    }, [selectedMap, sizesMap, modalMeta]);
+
     const handleOpenCompare = useCallback((group, idx) => {
         setCompareGroup(group);
         setCompareIndex(idx);
@@ -662,10 +752,11 @@ export default function DuplicatesScreen() {
                 toggleSelect={toggleSelect}
                 handleSize={handleSize}
                 handleIgnoreGroup={handleIgnoreGroup}
+                handleDeleteGroup={handleDeleteGroup}
                 onOpenCompare={handleOpenCompare}
             />
         );
-    }, [selectedMap, modalMeta, toggleSelect, handleSize, handleIgnoreGroup, handleOpenCompare]);
+    }, [selectedMap, modalMeta, toggleSelect, handleSize, handleIgnoreGroup, handleDeleteGroup, handleOpenCompare]);
 
     return (
         <View style={styles.container}>
