@@ -1560,19 +1560,24 @@ const formatSpeed = (bytesPerSec) => {
                                         else if (token.type === 'semantic') prefix = '🔍 ';
                                         
                                         return (
-                                            <View key={token.id} style={styles.tokenChip}>
+                                            <TouchableOpacity 
+                                                key={token.id} 
+                                                style={styles.tokenChip} 
+                                                onPress={() => removeToken(token.id)}
+                                                activeOpacity={0.7}
+                                            >
                                                 <Text style={styles.tokenChipText}>{prefix}{token.value}</Text>
-                                                <TouchableOpacity onPress={() => removeToken(token.id)} style={styles.tokenChipClose}>
+                                                <View style={styles.tokenChipClose}>
                                                     <X size={10} color="#007AFF" />
-                                                </TouchableOpacity>
-                                            </View>
+                                                </View>
+                                            </TouchableOpacity>
                                         );
                                     })}
                                 </ScrollView>
                             )}
                             <TextInput
                                 style={styles.searchInput}
-                                placeholder={searchTokens.length > 0 ? "" : "Search (e.g., cats 2023, beach last week)..."}
+                                placeholder={searchTokens.length > 0 ? "" : "Search (e.g. cat 2023)..."}
                                 placeholderTextColor="#8E8E93"
                                 value={searchQuery}
                                 onChangeText={setSearchQuery}
