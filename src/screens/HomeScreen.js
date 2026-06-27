@@ -1562,50 +1562,51 @@ const formatSpeed = (bytesPerSec) => {
                                         return (
                                             <View key={token.id} style={styles.tokenChip}>
                                                 <Text style={styles.tokenChipText}>{prefix}{token.value}</Text>
-                        <View style={{ flex: 1 }}>
-                            <View style={styles.searchBar}>
-                                <Search size={18} color="#999" style={styles.searchIcon} />
-                                <TextInput
-                                    style={styles.searchInput}
-                                    placeholder={searchTokens.length > 0 ? "" : "Search (e.g., cats 2023, beach last week)..."}
-                                    placeholderTextColor="#8E8E93"
-                                    value={searchQuery}
-                                    onChangeText={setSearchQuery}
-                                    autoFocus
-                                    returnKeyType="search"
-                                    onKeyPress={handleKeyPress}
-                                    onSubmitEditing={() => setSuggestions([])}
-                                    onFocus={() => {
-                                        hideSuggestionsUntilFocusRef.current = false;
-                                        setSuggestionTrigger(prev => prev + 1);
-                                    }}
-                                    onTouchStart={() => {
-                                        hideSuggestionsUntilFocusRef.current = false;
-                                        setSuggestionTrigger(prev => prev + 1);
-                                    }}
-                                />
-                                {searchQuery.length > 0 && (
-                                    <TouchableOpacity onPress={() => setSearchQuery('')} style={styles.clearIcon}>
-                                        <X size={16} color="#999" />
-                                    </TouchableOpacity>
-                                )}
-                            </View>
+                                                <TouchableOpacity onPress={() => removeToken(token.id)} style={styles.tokenChipClose}>
+                                                    <X size={10} color="#007AFF" />
+                                                </TouchableOpacity>
+                                            </View>
+                                        );
+                                    })}
+                                </ScrollView>
+                            )}
+                            <TextInput
+                                style={styles.searchInput}
+                                placeholder={searchTokens.length > 0 ? "" : "Search (e.g., cats 2023, beach last week)..."}
+                                placeholderTextColor="#8E8E93"
+                                value={searchQuery}
+                                onChangeText={setSearchQuery}
+                                autoFocus
+                                clearButtonMode="while-editing"
+                                returnKeyType="search"
+                                onKeyPress={handleKeyPress}
+                                onSubmitEditing={() => setSuggestions([])}
+                                onFocus={() => {
+                                    hideSuggestionsUntilFocusRef.current = false;
+                                    setSuggestionTrigger(prev => prev + 1);
+                                }}
+                                onTouchStart={() => {
+                                    hideSuggestionsUntilFocusRef.current = false;
+                                    setSuggestionTrigger(prev => prev + 1);
+                                }}
+                            />
+                            {isSearchLoading && timelineData.length > 0 ? (
+                                <ActivityIndicator size="small" color="#007AFF" style={styles.searchLoadingIndicator} />
+                            ) : null}
                         </View>
-                        <View style={styles.cancelButtonContainer}>
-                            <TouchableOpacity 
-                                onPress={() => {
-                                    Keyboard.dismiss();
-                                    setIsSearching(false);
-                                    setSearchQuery('');
-                                    setSearchTokens([]);
-                                    setSearchResults([]);
-                                    setSuggestions([]);
-                                }} 
-                                style={styles.cancelButton}
-                            >
-                                <Text style={styles.cancelButtonText}>Cancel</Text>
-                            </TouchableOpacity>
-                        </View>
+                        <TouchableOpacity 
+                            onPress={() => {
+                                Keyboard.dismiss();
+                                setIsSearching(false);
+                                setSearchQuery('');
+                                setSearchTokens([]);
+                                setSearchResults([]);
+                                setSuggestions([]);
+                            }} 
+                            style={styles.cancelButton}
+                        >
+                            <Text style={styles.cancelButtonText}>Cancel</Text>
+                        </TouchableOpacity>
                     </View>
 
                     {/* Tags Layout: Two Rows for Better UX */}
