@@ -68,6 +68,7 @@ class AssetDBService {
       await db.execAsync('CREATE INDEX IF NOT EXISTS idx_isLocal ON MediaAsset(isLocal);');
       await db.execAsync('CREATE INDEX IF NOT EXISTS idx_phash ON MediaAsset(phash);');
       await db.execAsync('CREATE INDEX IF NOT EXISTS idx_clipEmbedding ON MediaAsset(clipEmbedding);');
+      await db.execAsync('CREATE INDEX IF NOT EXISTS idx_createTime ON MediaAsset(createTime);');
 
       // Handle versioned migrations
       const { user_version } = await db.getFirstAsync('PRAGMA user_version');
@@ -177,6 +178,35 @@ class AssetDBService {
         await db.execAsync('PRAGMA user_version = 9');
         currentVersion = 9;
         console.log('[AssetDBService] Database migrated to version 9 (Added ocrText column).');
+      }
+
+      if (currentVersion < 10) {
+        // Version 10: Add reverse geocoding columns for hybrid search
+        try {
+          await db.execAsync('ALTER TABLE MediaAsset ADD COLUMN locationCity TEXT;');
+          await db.execAsync('ALTER TABLE MediaAsset ADD COLUMN locationState TEXT;');
+          await db.execAsync('ALTER TABLE MediaAsset ADD COLUMN locationCountry TEXT;');
+          await db.execAsync('ALTER TABLE MediaAsset ADD COLUMN locationChecked INTEGER DEFAULT 0;');
+          await db.execAsync('CREATE INDEX IF NOT EXISTS idx_locationCity ON MediaAsset(locationCity);');
+          await db.execAsync('CREATE INDEX IF NOT EXISTS idx_locationChecked ON MediaAsset(locationChecked);');
+        } catch (e) {
+          console.warn('[AssetDBService] Failed to migrate database to version 10:', e.message);
+        }
+        await db.execAsync('PRAGMA user_version = 10');
+        currentVersion = 10;
+        console.log('[AssetDBService] Database migrated to version 10 (Added location columns).');
+      }
+
+      if (currentVersion < 11) {
+        // Version 11: Add index on createTime to speed up date-range queries
+        try {
+          await db.execAsync('CREATE INDEX IF NOT EXISTS idx_createTime ON MediaAsset(createTime);');
+        } catch (e) {
+          console.warn('[AssetDBService] Failed to migrate database to version 11:', e.message);
+        }
+        await db.execAsync('PRAGMA user_version = 11');
+        currentVersion = 11;
+        console.log('[AssetDBService] Database migrated to version 11 (Added idx_createTime index).');
       }
 
       // Smooth migration: if local_hash_cache_v2.json exists, migrate it to SQLite
@@ -542,13 +572,15 @@ class AssetDBService {
       const chunkSize = 100;
       for (let i = 0; i < updates.length; i += chunkSize) {
         const chunk = updates.slice(i, i + chunkSize);
-        await this.db.withExclusiveTransactionAsync(async () => {
+        // Use withTransactionAsync (not Exclusive) so concurrent reads (e.g. search) are not blocked.
+        await this.db.withTransactionAsync(async () => {
           const statement = await this.db.prepareAsync(`
             UPDATE MediaAsset SET hasGeo = 1, latitude = ?, longitude = ? WHERE id = ?
           `);
           try {
             for (const update of chunk) {
-              statement.executeSync(
+              // Use executeAsync (not executeSync) to avoid blocking the JS thread.
+              await statement.executeAsync(
                 update.latitude || 0.0,
                 update.longitude || 0.0,
                 update.id
@@ -558,9 +590,9 @@ class AssetDBService {
             await statement.finalizeAsync();
           }
         });
-        if (i + chunkSize < updates.length) {
-          await new Promise(resolve => setTimeout(resolve, 5));
-        }
+        // Yield to the JS event loop between chunks so React state updates (e.g. search tokens)
+        // are not blocked by back-to-back GPS batch writes.
+        await new Promise(resolve => setTimeout(resolve, 50));
       }
       console.log(`[AssetDBService] Updated geo for ${updates.length} assets.`);
     } catch (error) {
@@ -577,21 +609,22 @@ class AssetDBService {
       const chunkSize = 100;
       for (let i = 0; i < ids.length; i += chunkSize) {
         const chunk = ids.slice(i, i + chunkSize);
-        await this.db.withExclusiveTransactionAsync(async () => {
+        // Use withTransactionAsync (not Exclusive) so concurrent reads are not blocked.
+        await this.db.withTransactionAsync(async () => {
           const statement = await this.db.prepareAsync(`
             UPDATE MediaAsset SET hasGeo = 1 WHERE id = ?
           `);
           try {
             for (const id of chunk) {
-              statement.executeSync(id);
+              // Use executeAsync (not executeSync) to avoid blocking the JS thread.
+              await statement.executeAsync(id);
             }
           } finally {
             await statement.finalizeAsync();
           }
         });
-        if (i + chunkSize < ids.length) {
-          await new Promise(resolve => setTimeout(resolve, 5));
-        }
+        // Yield to the JS event loop between chunks.
+        await new Promise(resolve => setTimeout(resolve, 50));
       }
     } catch (error) {
       console.error('[AssetDBService] Failed to mark assets geo processed:', error);
@@ -929,6 +962,52 @@ class AssetDBService {
       );
     } catch (error) {
       console.error('[AssetDBService] Failed to save asset OCR text:', error);
+    }
+  }
+
+  // Save geocoded location for an asset
+  async saveAssetLocation(id, location) {
+    if (!this.db) return;
+    try {
+      await this.db.runAsync(
+        'UPDATE MediaAsset SET locationCity = ?, locationState = ?, locationCountry = ?, locationChecked = 1 WHERE id = ?',
+        [location.city || null, location.region || null, location.country || null, id]
+      );
+    } catch (error) {
+      console.error('[AssetDBService] Failed to save asset location:', error);
+    }
+  }
+
+  // Mark geocoding checked (failed or no coordinates)
+  async markLocationChecked(id) {
+    if (!this.db) return;
+    try {
+      await this.db.runAsync(
+        'UPDATE MediaAsset SET locationChecked = 1 WHERE id = ?',
+        [id]
+      );
+    } catch (error) {
+      console.error('[AssetDBService] Failed to mark location checked:', error);
+    }
+  }
+
+  // Fetch unique location suggestions matching text
+  async getLocationSuggestions(text) {
+    if (!this.db || !text || text.trim().length === 0) return [];
+    try {
+      const match = `%${text}%`;
+      const rows = await this.db.getAllAsync(`
+        SELECT DISTINCT locationCity AS name, 'city' AS type FROM MediaAsset WHERE locationCity LIKE ? AND locationCity IS NOT NULL
+        UNION
+        SELECT DISTINCT locationState AS name, 'state' AS type FROM MediaAsset WHERE locationState LIKE ? AND locationState IS NOT NULL
+        UNION
+        SELECT DISTINCT locationCountry AS name, 'country' AS type FROM MediaAsset WHERE locationCountry LIKE ? AND locationCountry IS NOT NULL
+        LIMIT 6
+      `, [match, match, match]);
+      return rows;
+    } catch (e) {
+      console.error('[AssetDBService] Failed to get location suggestions:', e);
+      return [];
     }
   }
 

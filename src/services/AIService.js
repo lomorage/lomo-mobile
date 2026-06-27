@@ -8,6 +8,7 @@ import * as Battery from 'expo-battery';
 import * as TaskManager from 'expo-task-manager';
 import * as BackgroundTask from 'expo-background-task';
 import * as MediaLibrary from 'expo-media-library';
+import * as Location from 'expo-location';
 import AssetDBService from './AssetDBService';
 import AuthService from './AuthService';
 import MediaService from './MediaService';
@@ -205,6 +206,7 @@ class AIService {
     this.isProcessing = false;
     this.isSyncing = false;
     this.vectorCache = new Map(); // id -> Float32Array
+    this.ocrCache = new Map(); // id -> string
     this.status = { isProcessing: false, current: 0, total: 0, message: 'Idle' };
     this.isPHashClearedInMemory = false;
     this.isCLIPClearedInMemory = false;
@@ -831,6 +833,8 @@ class AIService {
       this.status = { isProcessing: false, current: 0, total: 0, message: 'Idle' };
       DeviceEventEmitter.emit('ai_processing_status', this.status);
       console.log('[AIService] Local features processing finished.');
+      // Trigger background geocoding after local feature extraction completes
+      this.runBackgroundGeocoding().catch(e => console.error('[AIService] runBackgroundGeocoding on idle failed:', e));
     }
   }
 
@@ -1470,6 +1474,731 @@ class AIService {
     }
   }
 
+  // 2.5 Background Reverse Geocoding queue with batch throttling and distance-based caching
+  async runBackgroundGeocoding() {
+    const db = AssetDBService.db;
+    if (!db) return;
+    try {
+      console.log('[AIService] Running background geocoding check...');
+      
+      const { status } = await Location.getForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        console.log('[AIService] Skip background geocoding: foreground location permission not granted.');
+        return;
+      }
+
+      // 1. Mark all assets without geo coordinates as checked
+      await db.runAsync('UPDATE MediaAsset SET locationChecked = 1 WHERE hasGeo = 0 AND locationChecked = 0');
+      
+      // 2. Fetch pending assets with geo coordinate data
+      const pending = await db.getAllAsync(
+        'SELECT id, latitude, longitude FROM MediaAsset WHERE hasGeo = 1 AND locationChecked = 0 LIMIT 200'
+      );
+      
+      if (pending.length === 0) {
+        console.log('[AIService] No pending geocoding assets found.');
+        return;
+      }
+      
+      console.log(`[AIService] Found ${pending.length} pending geocoding assets. Processing...`);
+      
+      // Haversine distance calculator
+      const getDistanceMeters = (lat1, lon1, lat2, lon2) => {
+        const R = 6371000;
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLon = (lon2 - lon1) * Math.PI / 180;
+        const a = 
+          Math.sin(dLat/2) * Math.sin(dLat/2) +
+          Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+          Math.sin(dLon/2) * Math.sin(dLon/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        return R * c;
+      };
+
+      const geocodedCache = []; // { lat, lng, location }
+      
+      // Warm up cache with already resolved coordinates from SQLite to prevent repeat calls even across sessions
+      const resolved = await db.getAllAsync(
+        'SELECT latitude, longitude, locationCity, locationState, locationCountry FROM MediaAsset WHERE hasGeo = 1 AND locationChecked = 1 AND locationCity IS NOT NULL LIMIT 500'
+      );
+      for (const row of resolved) {
+        geocodedCache.push({
+          lat: row.latitude,
+          lng: row.longitude,
+          location: {
+            city: row.locationCity,
+            region: row.locationState,
+            country: row.locationCountry
+          }
+        });
+      }
+
+      for (const asset of pending) {
+        // Validate coordinates to prevent IllegalArgumentException (latitude out of range [-90, 90] or longitude out of range [-180, 180])
+        if (asset.latitude === null || asset.longitude === null ||
+            asset.latitude < -90 || asset.latitude > 90 ||
+            asset.longitude < -180 || asset.longitude > 180 ||
+            isNaN(asset.latitude) || isNaN(asset.longitude)) {
+          console.warn(`[AIService] Skipping geocoding for asset ${asset.id} due to invalid coordinates: lat=${asset.latitude}, lng=${asset.longitude}`);
+          await AssetDBService.markLocationChecked(asset.id);
+          continue;
+        }
+
+        // Check cache hit
+        let cacheHit = null;
+        for (const cached of geocodedCache) {
+          if (getDistanceMeters(asset.latitude, asset.longitude, cached.lat, cached.lng) < 200) {
+            cacheHit = cached.location;
+            break;
+          }
+        }
+
+        if (cacheHit) {
+          console.log(`[AIService] Geocoding cache hit for asset ${asset.id} (distance < 200m).`);
+          await AssetDBService.saveAssetLocation(asset.id, cacheHit);
+        } else {
+          try {
+            console.log(`[AIService] Geocoding cache miss for asset ${asset.id}. Requesting reverseGeocodeAsync...`);
+            const result = await Location.reverseGeocodeAsync({
+              latitude: asset.latitude,
+              longitude: asset.longitude
+            });
+            
+            if (result && result.length > 0) {
+              const loc = result[0];
+              console.log(`[AIService] Geocoding resolved: city="${loc.city}", region="${loc.region}", country="${loc.country}"`);
+              await AssetDBService.saveAssetLocation(asset.id, loc);
+              geocodedCache.push({
+                lat: asset.latitude,
+                lng: asset.longitude,
+                location: loc
+              });
+            } else {
+              console.log(`[AIService] Geocoding returned empty results for asset ${asset.id}.`);
+              await AssetDBService.markLocationChecked(asset.id);
+            }
+            
+            // Sleep 3 seconds to stay under native rate limits
+            await new Promise(resolve => setTimeout(resolve, 3000));
+          } catch (geocodeErr) {
+            console.warn(`[AIService] reverseGeocodeAsync failed for asset ${asset.id}:`, geocodeErr.message);
+            // Mark checked as failed to prevent loop blocking, will retry if db cleared
+            await AssetDBService.markLocationChecked(asset.id);
+            // Sleep 5 seconds on failure before retrying next
+            await new Promise(resolve => setTimeout(resolve, 5000));
+          }
+        }
+      }
+      console.log('[AIService] Background geocoding processing batch complete.');
+    } catch (e) {
+      console.error('[AIService] Failed in runBackgroundGeocoding:', e);
+    }
+  }
+
+  extractTimeRange(queryText) {
+    if (!queryText) return { startTime: null, endTime: null, remainingText: '' };
+    let text = queryText;
+    let startTime = null;
+    let endTime = null;
+    const now = new Date();
+
+    const startOfDay = (d) => {
+      const nd = new Date(d);
+      nd.setHours(0, 0, 0, 0);
+      return nd.getTime();
+    };
+    const endOfDay = (d) => {
+      const nd = new Date(d);
+      nd.setHours(23, 59, 59, 999);
+      return nd.getTime();
+    };
+
+    // 1. Check relative date terms (longest terms first to avoid partial matches)
+    const relativePatterns = [
+      { patterns: [/\blast week\b/i, /上周/g, /上星期/g], getRange: () => {
+          const lastWeek = new Date();
+          lastWeek.setDate(now.getDate() - 7);
+          return { start: startOfDay(lastWeek), end: endOfDay(now) };
+      }},
+      { patterns: [/\blast month\b/i, /上个月/g], getRange: () => {
+          const start = new Date(now.getFullYear(), now.getMonth() - 1, 1, 0, 0, 0, 0).getTime();
+          const end = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999).getTime();
+          return { start, end };
+      }},
+      { patterns: [/\blast year\b/i, /去年/g], getRange: () => {
+          const start = new Date(now.getFullYear() - 1, 0, 1, 0, 0, 0, 0).getTime();
+          const end = new Date(now.getFullYear() - 1, 11, 31, 23, 59, 59, 999).getTime();
+          return { start, end };
+      }},
+      { patterns: [/\bthis year\b/i, /今年/g], getRange: () => {
+          const start = new Date(now.getFullYear(), 0, 1, 0, 0, 0, 0).getTime();
+          return { start, end: endOfDay(now) };
+      }},
+      { patterns: [/\bthis month\b/i, /这个月/g], getRange: () => {
+          const start = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0).getTime();
+          return { start, end: endOfDay(now) };
+      }},
+      { patterns: [/\byesterday\b/i, /昨天/g], getRange: () => {
+          const yesterday = new Date();
+          yesterday.setDate(now.getDate() - 1);
+          return { start: startOfDay(yesterday), end: endOfDay(yesterday) };
+      }},
+      { patterns: [/\btoday\b/i, /今天/g], getRange: () => {
+          return { start: startOfDay(now), end: endOfDay(now) };
+      }}
+    ];
+
+    for (const item of relativePatterns) {
+      for (const pat of item.patterns) {
+        if (pat.test(text)) {
+          const range = item.getRange();
+          startTime = range.start;
+          endTime = range.end;
+          text = text.replace(pat, '');
+          return { startTime, endTime, remainingText: text.trim() };
+        }
+      }
+    }
+
+    // 2. YYYY-MM-DD or YYYY/MM/DD or YYYY.MM.DD
+    const ymdPattern = /\b(\d{4})[-/.](0?[1-9]|1[0-2])[-/.](0?[1-9]|[12]\d|3[01])\b/;
+    const ymdMatch = text.match(ymdPattern);
+    if (ymdMatch) {
+      const y = parseInt(ymdMatch[1], 10);
+      const m = parseInt(ymdMatch[2], 10) - 1;
+      const d = parseInt(ymdMatch[3], 10);
+      const dateObj = new Date(y, m, d);
+      startTime = startOfDay(dateObj);
+      endTime = endOfDay(dateObj);
+      text = text.replace(ymdPattern, '');
+      return { startTime, endTime, remainingText: text.trim() };
+    }
+
+    // Chinese YYYY年MM月DD日
+    const ymdCnPattern = /(\d{4})年(0?[1-9]|1[0-2])月(0?[1-9]|[12]\d|3[01])日/;
+    const ymdCnMatch = text.match(ymdCnPattern);
+    if (ymdCnMatch) {
+      const y = parseInt(ymdCnMatch[1], 10);
+      const m = parseInt(ymdCnMatch[2], 10) - 1;
+      const d = parseInt(ymdCnMatch[3], 10);
+      const dateObj = new Date(y, m, d);
+      startTime = startOfDay(dateObj);
+      endTime = endOfDay(dateObj);
+      text = text.replace(ymdCnPattern, '');
+      return { startTime, endTime, remainingText: text.trim() };
+    }
+
+    // 8-digit YYYYMMDD
+    const ymd8Pattern = /\b(\d{4})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\b/;
+    const ymd8Match = text.match(ymd8Pattern);
+    if (ymd8Match) {
+      const y = parseInt(ymd8Match[1], 10);
+      const m = parseInt(ymd8Match[2], 10) - 1;
+      const d = parseInt(ymd8Match[3], 10);
+      const dateObj = new Date(y, m, d);
+      startTime = startOfDay(dateObj);
+      endTime = endOfDay(dateObj);
+      text = text.replace(ymd8Pattern, '');
+      return { startTime, endTime, remainingText: text.trim() };
+    }
+
+    // 3. YYYY-MM or YYYY/MM or YYYY.MM
+    const ymPattern = /\b(\d{4})[-/.](0?[1-9]|1[0-2])\b/;
+    const ymMatch = text.match(ymPattern);
+    if (ymMatch) {
+      const y = parseInt(ymMatch[1], 10);
+      const m = parseInt(ymMatch[2], 10) - 1;
+      const start = new Date(y, m, 1, 0, 0, 0, 0).getTime();
+      const end = new Date(y, m + 1, 0, 23, 59, 59, 999).getTime();
+      startTime = start;
+      endTime = end;
+      text = text.replace(ymPattern, '');
+      return { startTime, endTime, remainingText: text.trim() };
+    }
+
+    // Chinese YYYY年MM月
+    const ymCnPattern = /(\d{4})年(0?[1-9]|1[0-2])月/;
+    const ymCnMatch = text.match(ymCnPattern);
+    if (ymCnMatch) {
+      const y = parseInt(ymCnMatch[1], 10);
+      const m = parseInt(ymCnMatch[2], 10) - 1;
+      const start = new Date(y, m, 1, 0, 0, 0, 0).getTime();
+      const end = new Date(y, m + 1, 0, 23, 59, 59, 999).getTime();
+      startTime = start;
+      endTime = end;
+      text = text.replace(ymCnPattern, '');
+      return { startTime, endTime, remainingText: text.trim() };
+    }
+
+    // 4. YYYY年
+    const yCnPattern = /(\d{4})年/;
+    const yCnMatch = text.match(yCnPattern);
+    if (yCnMatch) {
+      const y = parseInt(yCnMatch[1], 10);
+      const start = new Date(y, 0, 1, 0, 0, 0, 0).getTime();
+      const end = new Date(y, 11, 31, 23, 59, 59, 999).getTime();
+      startTime = start;
+      endTime = end;
+      text = text.replace(yCnPattern, '');
+      return { startTime, endTime, remainingText: text.trim() };
+    }
+
+    // Numeric YYYY (restrict to reasonable years e.g. 1990 - 2100)
+    const yPattern = /\b(\d{4})\b/;
+    const yMatch = text.match(yPattern);
+    if (yMatch) {
+      const y = parseInt(yMatch[1], 10);
+      if (y >= 1990 && y <= 2100) {
+        const start = new Date(y, 0, 1, 0, 0, 0, 0).getTime();
+        const end = new Date(y, 11, 31, 23, 59, 59, 999).getTime();
+        startTime = start;
+        endTime = end;
+        text = text.replace(yPattern, '');
+        return { startTime, endTime, remainingText: text.trim() };
+      }
+    }
+
+    return { startTime, endTime, remainingText: text.trim() };
+  }
+
+  // 2.7 Hybrid search matching location tokens, time tokens and semantic CLIP similarity
+  async searchHybrid(tokens, textQuery = '', threshold = null, limit = 50, abortSignal = null) {
+    const totalStart = Date.now();
+    try {
+      if (this.isCLIPClearedInMemory) {
+        console.log('[AIService] CLIP cache cleared flag is active, returning empty results.');
+        return [];
+      }
+
+      const db = AssetDBService.db;
+      if (!db) return [];
+
+      let finalThreshold = threshold;
+      if (finalThreshold === null) {
+        finalThreshold = 0.25; // default fallback for text semantic search
+        try {
+          const savedVal = await SecureStore.getItemAsync('lomorage_search_threshold');
+          if (savedVal !== null) {
+            const parsed = parseFloat(savedVal);
+            if (!isNaN(parsed)) finalThreshold = parsed;
+          }
+        } catch (e) {
+          console.warn('[AIService] Failed to read search threshold:', e.message);
+        }
+      }
+
+      // 1. Separate tokens into categories
+      const locationTokens = tokens.filter(t => t.type === 'location');
+      const timeTokens = [...tokens.filter(t => t.type === 'time')];
+      const semanticTokens = tokens.filter(t => t.type === 'semantic');
+
+      // Parse textQuery for date/time constraints to speed up date queries
+      let currentTextQuery = textQuery.trim();
+      const parsedTime = this.extractTimeRange(currentTextQuery);
+      if (parsedTime.startTime !== null && parsedTime.endTime !== null) {
+        timeTokens.push({
+          type: 'time',
+          extra: { startTime: parsedTime.startTime, endTime: parsedTime.endTime }
+        });
+        currentTextQuery = parsedTime.remainingText;
+      }
+
+      // 2. Combine semantic query words first to determine query weight
+      let fullSemanticQuery = semanticTokens.map(t => t.value).join(' ');
+      if (currentTextQuery.length > 0) {
+        fullSemanticQuery = (fullSemanticQuery + ' ' + currentTextQuery).trim();
+      }
+      const isSemanticSearch = fullSemanticQuery.length > 0;
+
+      // Build SQLite query dynamically
+      let sql = `
+        SELECT id, hash, filename, mediaType, createTime AS creationTime, isLocal, localCachePath, isFavorite
+        FROM MediaAsset
+        WHERE 1=1
+      `;
+      const params = [];
+
+      // 3. Apply Time constraints
+      if (timeTokens.length > 0) {
+        const clauses = [];
+        for (const token of timeTokens) {
+          if (token.extra && token.extra.startTime !== undefined && token.extra.endTime !== undefined) {
+            clauses.push(' (createTime BETWEEN ? AND ?) ');
+            params.push(token.extra.startTime, token.extra.endTime);
+          }
+        }
+        if (clauses.length > 0) {
+          sql += ` AND (${clauses.join(' OR ')}) `;
+        }
+      }
+
+      // 4. Apply Location constraints
+      if (locationTokens.length > 0) {
+        const clauses = [];
+        for (const token of locationTokens) {
+          clauses.push(' (locationCity LIKE ? OR locationState LIKE ? OR locationCountry LIKE ?) ');
+          const matchVal = `%${token.value}%`;
+          params.push(matchVal, matchVal, matchVal);
+        }
+        if (clauses.length > 0) {
+          sql += ` AND (${clauses.join(' OR ')}) `;
+        }
+      }
+
+      if (!isSemanticSearch) {
+        sql += ' ORDER BY createTime DESC LIMIT ? ';
+        params.push(limit);
+      } else if (timeTokens.length === 0 && locationTokens.length === 0) {
+        // Pure semantic search (no time/location filters)
+        // Optimization: Don't load full metadata for all 20,000 rows (takes 1400ms+).
+        // Instead, just load IDs, warm the cache if needed, score in memory, and hydrate only the top results.
+        const fastDbStart = Date.now();
+        const candidateRows = await db.getAllAsync('SELECT id FROM MediaAsset WHERE clipEmbedding IS NOT NULL OR ocrText IS NOT NULL');
+        console.log(`[AIService] searchHybrid fast-path ID fetch took ${Date.now() - fastDbStart}ms for ${candidateRows.length} items.`);
+
+        // 1. Identify missing items in cache
+        const missingIds = [];
+        for (const row of candidateRows) {
+          if (!this.vectorCache.has(row.id) || !this.ocrCache.has(row.id)) {
+            missingIds.push(row.id);
+          }
+        }
+
+        // 2. Batch load missing embeddings/OCR
+        if (missingIds.length > 0) {
+          const chunkStart = Date.now();
+          const chunkSize = 500;
+          for (let i = 0; i < missingIds.length; i += chunkSize) {
+            if (abortSignal && abortSignal.aborted) {
+              const e = new Error('Aborted'); e.name = 'AbortError'; throw e;
+            }
+            await new Promise(resolve => setTimeout(resolve, 0)); // Yield to prevent JS thread lock
+
+            const chunk = missingIds.slice(i, i + chunkSize);
+            const placeholders = chunk.map(() => '?').join(',');
+            const chunkRows = await db.getAllAsync(`SELECT id, clipEmbedding, ocrText FROM MediaAsset WHERE id IN (${placeholders})`, chunk);
+            for (const crow of chunkRows) {
+              if (crow.clipEmbedding && crow.clipEmbedding.length >= 100) {
+                try { this.vectorCache.set(crow.id, base64ToFloat32Array(crow.clipEmbedding)); } catch (e) {}
+              }
+              this.ocrCache.set(crow.id, crow.ocrText || 'none');
+            }
+          }
+          console.log(`[AIService] searchHybrid fast-path warmed ${missingIds.length} cache items in ${Date.now() - chunkStart}ms.`);
+        }
+
+        // 3. Prepare Translation and Embedding
+        const prepStart2 = Date.now();
+        let translatedQuery2 = fullSemanticQuery;
+        if (/[\u4e00-\u9fa5]/.test(fullSemanticQuery)) {
+          const cleanQuery = fullSemanticQuery.trim().toLowerCase();
+          const localMatch = LOCAL_TRANSLATION_DICT[cleanQuery];
+          if (localMatch) {
+            translatedQuery2 = localMatch;
+          } else {
+            try {
+              const res = await axios.get(
+                `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=t&q=${encodeURIComponent(fullSemanticQuery)}`,
+                { timeout: 5000 }
+              );
+              if (res.data?.[0]?.[0]?.[0]) translatedQuery2 = res.data[0][0][0];
+            } catch (e) {
+              console.warn('[AIService] searchHybrid online translation failed:', e.message);
+            }
+          }
+        }
+        const textVector2 = await this.getTextEmbedding(translatedQuery2);
+        console.log(`[AIService] searchHybrid in-memory prep took ${Date.now() - prepStart2}ms.`);
+
+        const simStart2 = Date.now();
+        
+        // 4. Find OCR matches first
+        const ocrMatchedIds = new Set();
+        const ocrResults = [];
+        const queryLower = fullSemanticQuery.toLowerCase().trim();
+        const isAlphaNum = /^[a-z0-9]+$/i.test(queryLower);
+        // Use word boundary for alphanumeric to prevent 'cat' matching 'location'. Otherwise use standard includes for Chinese/symbols.
+        const ocrRegex = isAlphaNum ? new RegExp(`\\b${queryLower}\\b`, 'i') : null;
+
+        for (const row of candidateRows) {
+          const id = row.id;
+          const ocrText = this.ocrCache.get(id);
+          let isTextMatch = false;
+          if (ocrText && ocrText !== 'none' && ocrText !== 'failed') {
+            if (isAlphaNum) {
+              isTextMatch = ocrRegex.test(ocrText);
+            } else {
+              isTextMatch = ocrText.toLowerCase().includes(queryLower);
+            }
+          }
+          if (isTextMatch) {
+            ocrMatchedIds.add(id);
+            ocrResults.push({ id, score: 1.0, isOcrMatch: true });
+          }
+        }
+
+        // 5. Find CLIP matches
+        const clipCandidates2 = [];
+        let maxScore2 = 0;
+        let loopCtr2 = 0;
+        for (const row of candidateRows) {
+          const id = row.id;
+          if (abortSignal && abortSignal.aborted) {
+            const e = new Error('Aborted'); e.name = 'AbortError'; throw e;
+          }
+          loopCtr2++;
+          if (loopCtr2 % 1000 === 0) await new Promise(resolve => setTimeout(resolve, 0));
+
+          if (ocrMatchedIds.has(id)) continue;
+          
+          const imageVector = this.vectorCache.get(id);
+          if (!imageVector) continue;
+
+          let score = 0;
+          const dims = Math.min(textVector2.length, imageVector.length);
+          for (let i = 0; i < dims; i++) score += textVector2[i] * imageVector[i];
+
+          if (score >= 0.10) {
+            if (score > maxScore2) maxScore2 = score;
+            clipCandidates2.push({ id, score, isOcrMatch: false });
+          }
+        }
+        
+        const ABSOLUTE_MIN2 = 0.225;
+        const floor2 = Math.max(ABSOLUTE_MIN2, finalThreshold - 0.05);
+        const adaptive2 = Math.max(floor2, maxScore2 - 0.04);
+        const filtered2 = clipCandidates2.filter(c => c.score >= adaptive2);
+        
+        // Combine OCR and CLIP results (do NOT slice limit here, to avoid cutting off semantic results)
+        const combined2 = [...ocrResults, ...filtered2];
+        combined2.sort((a, b) => b.score - a.score);
+        const top2 = combined2; // Return all, let HomeScreen slice it
+
+        // 6. Hydrate with full metadata from a single targeted DB query
+        const hydrateIds = top2.map(c => c.id);
+        let hydratedMap = new Map();
+        if (hydrateIds.length > 0) {
+          const placeholders = hydrateIds.map(() => '?').join(',');
+          const rows = await db.getAllAsync(
+            `SELECT id, hash, filename, mediaType, createTime AS creationTime, isLocal, localCachePath, isFavorite FROM MediaAsset WHERE id IN (${placeholders})`,
+            hydrateIds
+          );
+          for (const r of rows) hydratedMap.set(r.id, r);
+        }
+
+        const finalResults2 = top2.map(c => {
+          const r = hydratedMap.get(c.id);
+          return {
+            id: c.id,
+            hash: r?.hash,
+            filename: r?.filename,
+            mediaType: r?.mediaType || 'photo',
+            creationTime: r?.creationTime || 0,
+            isLocal: r ? r.isLocal === 1 : false,
+            localCachePath: r?.localCachePath,
+            isFavorite: r ? r.isFavorite === 1 : false,
+            score: c.score,
+            isOcrMatch: c.isOcrMatch
+          };
+        });
+
+        console.log(`[AIService] searchHybrid in-memory OCR+CLIP took ${Date.now() - simStart2}ms. Results: ${finalResults2.length}`);
+        console.log(`[AIService] searchHybrid total time (In-memory semantic): ${Date.now() - totalStart}ms.`);
+        return finalResults2;
+      } else {
+        // Semantic search with date/location filters: only load rows that have embeddings
+        sql += ' AND (clipEmbedding IS NOT NULL OR ocrText IS NOT NULL) ';
+      }
+
+      console.log(`[AIService] searchHybrid sql: ${sql}, params: ${JSON.stringify(params)}`);
+      const dbStart = Date.now();
+      const candidates = await db.getAllAsync(sql, params);
+      const dbElapsed = Date.now() - dbStart;
+      console.log(`[AIService] searchHybrid SQLite query took ${dbElapsed}ms (found ${candidates.length} filter candidates).`);
+
+      if (candidates.length === 0) return [];
+
+      // If there is NO semantic text query: we simply return all candidates
+      if (!isSemanticSearch) {
+        const results = candidates.map(c => ({
+          id: c.id,
+          hash: c.hash,
+          filename: c.filename,
+          mediaType: c.mediaType || 'photo',
+          creationTime: c.creationTime || 0,
+          isLocal: c.isLocal === 1,
+          localCachePath: c.localCachePath,
+          isFavorite: c.isFavorite === 1,
+          score: 1.0,
+          isOcrMatch: false
+        }));
+        results.sort((a, b) => b.creationTime - a.creationTime);
+        const totalElapsed = Date.now() - totalStart;
+        console.log(`[AIService] searchHybrid total time (Pure date/location search, NO semantic CLIP calculation): ${totalElapsed}ms.`);
+        return results;
+      }
+
+      // Translate query to English if contains Chinese
+      const prepStart = Date.now();
+      let translatedQuery = fullSemanticQuery;
+      if (/[\u4e00-\u9fa5]/.test(fullSemanticQuery)) {
+        const cleanQuery = fullSemanticQuery.trim().toLowerCase();
+        const localMatch = LOCAL_TRANSLATION_DICT[cleanQuery];
+        if (localMatch) {
+          translatedQuery = localMatch;
+          console.log(`[AIService] searchHybrid translated: "${fullSemanticQuery}" -> "${translatedQuery}"`);
+        } else {
+          try {
+            const res = await axios.get(
+              `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=t&q=${encodeURIComponent(fullSemanticQuery)}`,
+              { timeout: 5000 }
+            );
+            if (res.data?.[0]?.[0]?.[0]) {
+              translatedQuery = res.data[0][0][0];
+              console.log(`[AIService] searchHybrid online translated: "${fullSemanticQuery}" -> "${translatedQuery}"`);
+            }
+          } catch (e) {
+            console.warn('[AIService] searchHybrid online translation failed, using original:', e.message);
+          }
+        }
+      }
+
+      const textVector = await this.getTextEmbedding(translatedQuery);
+      const prepElapsed = Date.now() - prepStart;
+      console.log(`[AIService] searchHybrid semantic embedding/translation prep took ${prepElapsed}ms.`);
+
+      const similarityStart = Date.now();
+
+      // Identify which candidates are missing from our in-memory cache
+      const missingIds = [];
+      for (const c of candidates) {
+        if (!this.vectorCache.has(c.id) || !this.ocrCache.has(c.id)) {
+          missingIds.push(c.id);
+        }
+      }
+
+      // Batch load missing embeddings and OCR from SQLite
+      if (missingIds.length > 0) {
+        const chunkStart = Date.now();
+        console.log(`[AIService] searchHybrid cache miss for ${missingIds.length} items. Loading from DB...`);
+        const chunkSize = 500;
+        for (let i = 0; i < missingIds.length; i += chunkSize) {
+          const chunk = missingIds.slice(i, i + chunkSize);
+          const placeholders = chunk.map(() => '?').join(',');
+          const chunkRows = await db.getAllAsync(`
+            SELECT id, clipEmbedding, ocrText FROM MediaAsset WHERE id IN (${placeholders})
+          `, chunk);
+          
+          for (const crow of chunkRows) {
+            if (crow.clipEmbedding && crow.clipEmbedding.length >= 100) {
+              try {
+                this.vectorCache.set(crow.id, base64ToFloat32Array(crow.clipEmbedding));
+              } catch (e) {}
+            }
+            if (crow.ocrText) {
+              this.ocrCache.set(crow.id, crow.ocrText);
+            } else {
+              this.ocrCache.set(crow.id, 'none');
+            }
+          }
+        }
+        const chunkElapsed = Date.now() - chunkStart;
+        console.log(`[AIService] searchHybrid loaded ${missingIds.length} missing cache items in ${chunkElapsed}ms.`);
+      }
+
+      // 5. OCR substring matching within candidates
+      const ocrMatchedIds = new Set();
+      const results = [];
+
+      for (const c of candidates) {
+        const ocrText = this.ocrCache.get(c.id);
+        const isTextMatch = ocrText && ocrText !== 'none' && ocrText !== 'failed' && ocrText.toLowerCase().includes(fullSemanticQuery.toLowerCase());
+        if (isTextMatch) {
+          ocrMatchedIds.add(c.id);
+          results.push({
+            id: c.id,
+            hash: c.hash,
+            filename: c.filename,
+            mediaType: c.mediaType || 'photo',
+            creationTime: c.creationTime || 0,
+            isLocal: c.isLocal === 1,
+            localCachePath: c.localCachePath,
+            isFavorite: c.isFavorite === 1,
+            score: 1.0,
+            isOcrMatch: true
+          });
+        }
+      }
+
+      // 6. CLIP Semantic Similarity on the candidates
+      const clipCandidates = [];
+      let maxScore = 0;
+
+      let loopCounter = 0;
+      for (const c of candidates) {
+        if (abortSignal && abortSignal.aborted) {
+            const e = new Error('Aborted');
+            e.name = 'AbortError';
+            throw e;
+        }
+        
+        loopCounter++;
+        if (loopCounter % 500 === 0) {
+            await new Promise(resolve => setTimeout(resolve, 0));
+        }
+
+        if (ocrMatchedIds.has(c.id)) continue;
+        
+        const imageVector = this.vectorCache.get(c.id);
+        if (!imageVector) continue;
+
+        let score = 0;
+        const dims = Math.min(textVector.length, imageVector.length);
+        for (let i = 0; i < dims; i++) {
+          score += textVector[i] * imageVector[i];
+        }
+
+        if (score >= 0.10) {
+          if (score > maxScore) maxScore = score;
+          clipCandidates.push({
+            id: c.id,
+            hash: c.hash,
+            filename: c.filename,
+            mediaType: c.mediaType || 'photo',
+            creationTime: c.creationTime || 0,
+            isLocal: c.isLocal === 1,
+            localCachePath: c.localCachePath,
+            isFavorite: c.isFavorite === 1,
+            score,
+            isOcrMatch: false
+          });
+        }
+      }
+
+      // Apply adaptive threshold
+      const ABSOLUTE_MIN_SCORE = 0.225;
+      const floorThreshold = Math.max(ABSOLUTE_MIN_SCORE, finalThreshold - 0.05);
+      const adaptiveThreshold = Math.max(floorThreshold, maxScore - 0.04);
+      const filteredClip = clipCandidates.filter(c => c.score >= adaptiveThreshold);
+
+      // Merge and sort
+      const merged = [...results, ...filteredClip];
+      merged.sort((a, b) => b.score - a.score);
+      const similarityElapsed = Date.now() - similarityStart;
+      console.log(`[AIService] searchHybrid OCR + CLIP calculations took ${similarityElapsed}ms.`);
+
+      const totalElapsed = Date.now() - totalStart;
+      console.log(`[AIService] searchHybrid total time (Semantic search): ${totalElapsed}ms.`);
+
+      return merged;
+    } catch (e) {
+      if (e.name !== 'AbortError') {
+        console.error('[AIService] Failed in searchHybrid:', e);
+      }
+      return [];
+    }
+  }
+
   // 3. Similarity Search: perform fast Cosine Similarity in JavaScript
   async searchSimilarity(queryTextOrVector, threshold = null, limit = 50) {
     try {
@@ -1909,7 +2638,7 @@ class AIService {
           if (asset.isLocal === 1) {
             // Will be resolved lazily by the UI when the user views the asset
             displayUri = null;
-          } else if (asset.localCachePath) {
+          } else if (asset.localCachePath && asset.mediaType !== 'video') {
             displayUri = asset.localCachePath;
           } else {
             displayUri = `${url}/preview/${asset.hash}?width=320&height=-1&token=${token}`;
@@ -1984,6 +2713,7 @@ class AIService {
     try {
       console.log('[AIService] Resetting all CLIP embeddings cache in DB...');
       this.isCLIPClearedInMemory = true;
+      this.vectorCache.clear();
       
       // Run the DB update in the background without awaiting it, so the UI is released instantly
       // We also optimize the query with "WHERE ... IS NOT NULL" to skip updating already NULL rows
@@ -2013,6 +2743,7 @@ class AIService {
     if (!db) return;
     try {
       console.log('[AIService] Resetting all OCR text and blocks cache in DB...');
+      this.ocrCache.clear();
       
       // Run the DB updates in the background without awaiting them, so the UI is released instantly
       Promise.all([

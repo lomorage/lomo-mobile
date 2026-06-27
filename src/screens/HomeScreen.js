@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
-import { StyleSheet, View, Dimensions, TouchableOpacity, Text, ActivityIndicator, RefreshControl, DeviceEventEmitter, AppState, PanResponder, Animated, Modal, TextInput, ScrollView, Alert, Platform } from 'react-native';
+import { StyleSheet, View, Dimensions, TouchableOpacity, Text, ActivityIndicator, RefreshControl, DeviceEventEmitter, AppState, PanResponder, Animated, Modal, TextInput, ScrollView, Alert, Platform, Keyboard } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 import { FlashList } from '@shopify/flash-list';
-import { Cloud, CheckCircle, Smartphone, PlayCircle, PauseCircle, Settings as SettingsIcon, UploadCloud, X, MapPin, Heart, Search, ScanText } from 'lucide-react-native';
+import { Cloud, CheckCircle, Smartphone, PlayCircle, PauseCircle, Settings as SettingsIcon, UploadCloud, X, MapPin, Heart, Search, ScanText, Clock, Calendar } from 'lucide-react-native';
 import MediaService from '../services/MediaService';
 import SyncService from '../services/SyncService';
 import OfflineCacheService from '../services/OfflineCacheService';
@@ -43,6 +43,72 @@ const SMART_TAGS = [
     { label: '🍁 Autumn Leaves', query: 'autumn leaves' },
     { label: '🎸 Music', query: 'musical instrument' }
 ];
+
+const TIME_TAGS = [
+    { label: '📅 Yesterday', query: 'yesterday', type: 'time' },
+    { label: '📅 Last Week', query: 'last week', type: 'time' },
+    { label: '📅 Last Month', query: 'last month', type: 'time' },
+    { label: '📅 This Year', query: 'this year', type: 'time' },
+    { label: '📅 Last Year', query: 'last year', type: 'time' }
+];
+
+const COMBINED_TAGS = [...TIME_TAGS, ...SMART_TAGS.map(t => ({...t, type: 'semantic'}))];
+
+const parseTimeTokenExtra = (value) => {
+    const val = value.trim().toLowerCase();
+    const now = new Date();
+    
+    const startOfDay = (d) => {
+        const nd = new Date(d);
+        nd.setHours(0, 0, 0, 0);
+        return nd.getTime();
+    };
+    const endOfDay = (d) => {
+        const nd = new Date(d);
+        nd.setHours(23, 59, 59, 999);
+        return nd.getTime();
+    };
+
+    if (/^\d{4}$/.test(val)) {
+        const year = parseInt(val, 10);
+        const startTime = new Date(year, 0, 1, 0, 0, 0, 0).getTime();
+        const endTime = new Date(year, 11, 31, 23, 59, 59, 999).getTime();
+        return { startTime, endTime };
+    }
+
+    if (val === 'yesterday') {
+        const yesterday = new Date(now);
+        yesterday.setDate(now.getDate() - 1);
+        return { startTime: startOfDay(yesterday), endTime: endOfDay(yesterday) };
+    }
+
+    if (val === 'last week') {
+        const lastWeekStart = new Date(now);
+        lastWeekStart.setDate(now.getDate() - 7 - now.getDay());
+        const lastWeekEnd = new Date(lastWeekStart);
+        lastWeekEnd.setDate(lastWeekStart.getDate() + 6);
+        return { startTime: startOfDay(lastWeekStart), endTime: endOfDay(lastWeekEnd) };
+    }
+
+    if (val === 'last month') {
+        const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0);
+        return { startTime: startOfDay(lastMonthStart), endTime: endOfDay(lastMonthEnd) };
+    }
+
+    if (val === 'last year') {
+        const startTime = new Date(now.getFullYear() - 1, 0, 1, 0, 0, 0, 0).getTime();
+        const endTime = new Date(now.getFullYear() - 1, 11, 31, 23, 59, 59, 999).getTime();
+        return { startTime, endTime };
+    }
+
+    if (val === 'this year') {
+        const startTime = new Date(now.getFullYear(), 0, 1, 0, 0, 0, 0).getTime();
+        return { startTime, endTime: endOfDay(now) };
+    }
+
+    return null;
+};
 
 const isLivePhoto = (asset) => {
     // 1. Local or synced asset with mediaSubtypes metadata
@@ -173,6 +239,10 @@ export default function HomeScreen({ navigation, route }) {
     const [searchQuery, setSearchQuery] = useState('');
     const [searchResults, setSearchResults] = useState([]);
     const [isSearchLoading, setIsSearchLoading] = useState(false);
+    const [searchTokens, setSearchTokens] = useState([]);
+    const [suggestions, setSuggestions] = useState([]);
+    const [suggestionTrigger, setSuggestionTrigger] = useState(0);
+    const [headerHeight, setHeaderHeight] = useState(110);
     const [aiStatus, setAiStatus] = useState(null);
     const aiPillOpacity = useRef(new Animated.Value(0)).current;
     const aiPillTimer = useRef(null);
@@ -201,6 +271,11 @@ export default function HomeScreen({ navigation, route }) {
     const pendingAssetUpdates = useRef(new Map());
     const flushTimerRef = useRef(null);
 
+    const hideSuggestionsUntilFocusRef = useRef(false);
+
+    const globalAssetMapRef = useRef(new Map());
+    const searchAbortControllerRef = useRef(null);
+
     const backupStateRef = useRef(backupState);
     useEffect(() => {
         backupStateRef.current = backupState;
@@ -212,47 +287,131 @@ export default function HomeScreen({ navigation, route }) {
     }, [assets]);
 
 
-    // Handle clicking a Smart Category Tag
-    const handleTagPress = async (tag) => {
-        isProgrammaticSearchRef.current = true;
+    // Handle clicking a Smart Category or Time Tag
+    const handleTagPress = (tag) => {
         setIsSearching(true);
-        isProgrammaticSearchRef.current = true;
-        setSearchQuery(tag.label);
-        setIsSearchLoading(true);
-        setSearchResults([]);
-        GalleryStore.setAssets([], 'search');
-        try {
-            const results = await AIService.searchSimilarity(tag.query);
-            const currentAssets = assetsRef.current || [];
-            const mappedResults = results.map(res => {
-                const matched = currentAssets.find(a => a.id === res.id || (res.hash && a.hash === res.hash));
-                if (matched) {
-                    return { ...matched, score: res.score, isOcrMatch: res.isOcrMatch };
-                }
-                return {
-                    ...res,
-                    status: res.isLocal ? 'synced' : 'remote',
-                    uri: res.isLocal 
-                        ? (Platform.OS === 'android' ? `content://media/external/images/media/${res.id}` : `ph://${res.id}`)
-                        : `${AuthService.getServerUrl()}/preview/${res.hash}?width=320&height=-1&token=${AuthService.getToken()}`
-                };
-            });
-            
-            const topResults = mappedResults
-                .sort((a, b) => b.score - a.score)
-                .slice(0, 100);
-
-            GalleryStore.setAssets(topResults, 'search');
-            setSearchResults(topResults);
-        } catch (err) {
-            console.error('[HomeScreen] Smart tag search error:', err);
-        } finally {
-            setIsSearchLoading(false);
+        hideSuggestionsUntilFocusRef.current = true;
+        Keyboard.dismiss();
+        
+        // Check if token already exists
+        const exists = searchTokens.some(t => t.type === tag.type && t.value === tag.query);
+        if (exists) {
+            setSuggestionTrigger(prev => prev + 1);
+            return;
         }
+
+        const newToken = {
+            id: `${tag.type}-tag-${Date.now()}-${Math.random()}`,
+            type: tag.type,
+            value: tag.query,
+            label: tag.label,
+            extra: tag.type === 'time' ? parseTimeTokenExtra(tag.query) : undefined
+        };
+        setSearchTokens(prev => [...prev, newToken]);
+        setSearchQuery('');
+        setSuggestionTrigger(prev => prev + 1);
     };
 
+    // Autocomplete / Suggestions generator
     useEffect(() => {
-        if (!isSearching || searchQuery.trim() === '') {
+        if (!isSearching) {
+            setSuggestions([]);
+            return;
+        }
+
+        const query = searchQuery.trim().toLowerCase();
+        let cancel = false;
+
+        const generateSuggestions = async () => {
+            // If the user recently selected a token and hasn't tapped the input again, don't show any suggestions.
+            if (hideSuggestionsUntilFocusRef.current) {
+                if (!cancel) setSuggestions([]);
+                return;
+            }
+
+            const tempSuggestions = [];
+
+            if (query === '') {
+            } else {
+                // 1. Time Suggestion matches
+                const relativeTimes = ['yesterday', 'last week', 'last month', 'last year', 'this year'];
+                for (const rt of relativeTimes) {
+                    if (rt.includes(query)) {
+                        tempSuggestions.push({
+                            id: `time-${rt}`,
+                            type: 'time',
+                            label: rt.charAt(0).toUpperCase() + rt.slice(1),
+                            value: rt,
+                            extra: parseTimeTokenExtra(rt)
+                        });
+                    }
+                }
+
+                // Numeric year matches
+                const currentYear = new Date().getFullYear();
+                for (let y = currentYear; y >= currentYear - 5; y--) {
+                    const yStr = y.toString();
+                    if (yStr.includes(query) && !tempSuggestions.some(s => s.value === yStr)) {
+                        tempSuggestions.push({
+                            id: `time-${yStr}`,
+                            type: 'time',
+                            label: `Year ${yStr}`,
+                            value: yStr,
+                            extra: parseTimeTokenExtra(yStr)
+                        });
+                    }
+                }
+
+                // 2. Location Suggestions from SQLite
+                try {
+                    const dbSuggestions = await AssetDBService.getLocationSuggestions(query);
+                    if (!cancel) {
+                        for (const s of dbSuggestions) {
+                            tempSuggestions.push({
+                                id: `location-${s.type}-${s.name}`,
+                                type: 'location',
+                                label: `${s.name} (${s.type})`,
+                                value: s.name
+                            });
+                        }
+                    }
+                } catch (e) {
+                    console.error('[HomeScreen] Failed to get location suggestions:', e);
+                }
+
+                // 3. Semantic / Smart Tag matches
+                for (const tag of SMART_TAGS) {
+                    if (tag.label.toLowerCase().includes(query) || tag.query.toLowerCase().includes(query)) {
+                        tempSuggestions.push({
+                            id: `semantic-${tag.query}`,
+                            type: 'semantic',
+                            label: tag.label,
+                            value: tag.query
+                        });
+                    }
+                }
+            }
+
+            if (!cancel) {
+                // Filter out suggestions that are already selected in searchTokens
+                const finalSuggestions = tempSuggestions.filter(suggestion => 
+                    !searchTokens.some(t => t.type === suggestion.type && t.value === suggestion.value)
+                );
+                setSuggestions(finalSuggestions.slice(0, 10));
+            }
+        };
+
+        generateSuggestions();
+
+        return () => {
+            cancel = true;
+        };
+    }, [searchQuery, isSearching, suggestionTrigger]);
+
+    // Hybrid Search effect
+    useEffect(() => {
+        const hasActiveQuery = searchTokens.length > 0 || searchQuery.trim() !== '';
+        if (!isSearching || !hasActiveQuery) {
             setSearchResults([]);
             GalleryStore.setAssets([], 'search');
             setIsSearchLoading(false);
@@ -265,20 +424,23 @@ export default function HomeScreen({ navigation, route }) {
             return;
         }
 
-        if (searchQuery.startsWith('[')) {
-            return;
-        }
-
-        // Clear previous results immediately to transition to central loading state
-        setSearchResults([]);
-        GalleryStore.setAssets([], 'search');
+        // Optimization: Do not clear previous results immediately to avoid UI lag.
+        // Let the old results stay visible while searching.
         setIsSearchLoading(true);
+
+        if (searchAbortControllerRef.current) {
+            searchAbortControllerRef.current.abort();
+        }
+        searchAbortControllerRef.current = new AbortController();
+        const signal = searchAbortControllerRef.current.signal;
+
         const timer = setTimeout(async () => {
             try {
-                const results = await AIService.searchSimilarity(searchQuery);
-                const currentAssets = assetsRef.current || [];
+                const results = await AIService.searchHybrid(searchTokens, searchQuery, null, 50000, signal);
+                if (signal.aborted) return;
+                
                 const mappedResults = results.map(res => {
-                    const matched = currentAssets.find(a => a.id === res.id || (res.hash && a.hash === res.hash));
+                    const matched = globalAssetMapRef.current.get(res.id) || (res.hash ? globalAssetMapRef.current.get(res.hash) : undefined);
                     if (matched) {
                         return { ...matched, score: res.score, isOcrMatch: res.isOcrMatch };
                     }
@@ -290,25 +452,39 @@ export default function HomeScreen({ navigation, route }) {
                             : `${AuthService.getServerUrl()}/preview/${res.hash}?width=320&height=-1&token=${AuthService.getToken()}`
                     };
                 });
-                
+
+                // Deduplicate by id — multiple DB results can map to the same local asset
+                // (e.g. same hash matched via id lookup AND hash lookup), causing duplicate React keys.
+                const seenIds = new Set();
                 const topResults = mappedResults
                     .sort((a, b) => b.score - a.score)
-                    .slice(0, 100);
+                    .filter(r => {
+                        const key = r.id ?? r.hash;
+                        if (!key || seenIds.has(key)) return false;
+                        seenIds.add(key);
+                        return true;
+                    });
 
                 GalleryStore.setAssets(topResults, 'search');
                 setSearchResults(topResults);
             } catch (err) {
-                console.error('[HomeScreen] Search error:', err);
+                if (err.name === 'AbortError') {
+                    console.log('[HomeScreen] Search aborted');
+                } else {
+                    console.error('[HomeScreen] Hybrid search error:', err);
+                }
             } finally {
-                setIsSearchLoading(false);
+                if (signal && !signal.aborted) setIsSearchLoading(false);
             }
         }, 500);
 
         return () => clearTimeout(timer);
-    }, [searchQuery, isSearching]);
+    }, [searchTokens, searchQuery, isSearching]);
+
+    const isActivelySearching = isSearching && (searchTokens.length > 0 || searchQuery.trim() !== '');
 
     const activeAssets = useMemo(() => {
-        if (isSearching && searchQuery.trim() !== '') {
+        if (isActivelySearching) {
             return searchResults;
         }
         return assets;
@@ -495,6 +671,13 @@ const formatSpeed = (bytesPerSec) => {
         let finalCombined = combined;
         
         if (isMounted.current) {
+            const newMap = new Map();
+            for (const a of finalCombined) {
+                if (a.id) newMap.set(a.id, a);
+                if (a.hash) newMap.set(a.hash, a);
+            }
+            globalAssetMapRef.current = newMap;
+            
             GalleryStore.setAssets(finalCombined);
             setAssets(finalCombined);
             // Always sync queue immediately so new photos start backing up on app launch
@@ -528,10 +711,15 @@ const formatSpeed = (bytesPerSec) => {
         const indices = [];
         if (!activeAssets || activeAssets.length === 0) return { timelineData: data, stickyHeaderIndices: indices };
 
-        const isActivelySearching = isSearching && searchQuery.trim() !== '';
+        const isActivelySearching = isSearching && (searchTokens.length > 0 || searchQuery.trim() !== '');
 
         if (isActivelySearching) {
             let currentOffset = 0;
+
+            // Build a globalIndex map once: O(N) instead of calling findIndex per asset (O(N²)).
+            // With 2000 assets, findIndex caused 4M comparisons = ~9 second JS thread block.
+            const globalIndexMap = new Map();
+            activeAssets.forEach((asset, idx) => globalIndexMap.set(asset.id, idx));
 
             // Separate OCR matches and Semantic matches
             const ocrAssets = activeAssets.filter(asset => asset.isOcrMatch);
@@ -562,7 +750,8 @@ const formatSpeed = (bytesPerSec) => {
                 };
 
                 sectionAssets.forEach((asset) => {
-                    currentRowItems.push({ ...asset, globalIndex: activeAssets.findIndex(a => a.id === asset.id) });
+                    // O(1) map lookup instead of O(N) findIndex
+                    currentRowItems.push({ ...asset, globalIndex: globalIndexMap.get(asset.id) ?? 0 });
                     if (currentRowItems.length === COLUMN_COUNT) {
                         pushRow();
                     }
@@ -642,7 +831,7 @@ const formatSpeed = (bytesPerSec) => {
         stickyHeaderIndicesRef.current = indices;
 
         return { timelineData: data, stickyHeaderIndices: indices };
-    }, [activeAssets, isSearching, searchQuery]);
+    }, [activeAssets, isSearching, searchQuery, searchTokens]);
 
     const getItemLayout = useCallback((data, index) => {
         const item = data ? data[index] : null;
@@ -1028,7 +1217,7 @@ const formatSpeed = (bytesPerSec) => {
             ? `${AuthService.getServerUrl()}/preview/${asset.hash}?width=320&height=-1&token=${AuthService.getToken()}`
             : safeUri(asset.uri, asset.mediaType);
 
-        if (asset.status === 'remote' && asset.localCachePath) {
+        if (asset.status === 'remote' && asset.localCachePath && asset.mediaType !== 'video') {
             thumbnailUri = asset.localCachePath;
         }
 
@@ -1095,8 +1284,8 @@ const formatSpeed = (bytesPerSec) => {
                     <View style={styles.scoreBadge}>
                         <Text style={styles.scoreText}>
                             {asset.isPHash 
-                                ? `${Math.round(asset.score * 100)}%匹配` 
-                                : `${Math.min(99, Math.max(50, Math.round(50 + (asset.score - 0.18) * 250)))}%匹配`}
+                                ? `${Math.round(asset.score * 100)}% Match` 
+                                : `${Math.min(99, Math.max(50, Math.round(50 + (asset.score - 0.18) * 250)))}% Match`}
                         </Text>
                     </View>
                 ) : null}
@@ -1230,8 +1419,8 @@ const formatSpeed = (bytesPerSec) => {
         currentAssetId: backupState.currentAssetId,
         activeAssetIds: backupState.activeAssetIds,
         debugMode,
-        source: isSearching && searchQuery.trim() !== '' ? 'search' : 'gallery'
-    }), [isScrubbing, backupState.currentAssetId, backupState.activeAssetIds, debugMode, isSearching, searchQuery]);
+        source: isSearching && (searchTokens.length > 0 || searchQuery.trim() !== '') ? 'search' : 'gallery'
+    }), [isScrubbing, backupState.currentAssetId, backupState.activeAssetIds, debugMode, isSearching, searchQuery, searchTokens]);
 
     const renderOnThisDay = () => {
         if (!onThisDayAssets || onThisDayAssets.length === 0 || isSearching) return null;
@@ -1266,19 +1455,137 @@ const formatSpeed = (bytesPerSec) => {
         );
     };
 
+    const removeToken = (tokenId) => {
+        setSearchTokens(prev => prev.filter(t => t.id !== tokenId));
+    };
+
+    const renderSuggestions = () => {
+        const locations = suggestions.filter(s => s.type === 'location');
+        const times = suggestions.filter(s => s.type === 'time');
+        const semantics = suggestions.filter(s => s.type === 'semantic');
+
+        const selectSuggestion = (item) => {
+            hideSuggestionsUntilFocusRef.current = true;
+            Keyboard.dismiss();
+
+            if (!searchTokens.some(t => t.type === item.type && t.value === item.value)) {
+                setSearchTokens(prev => [...prev, {
+                    id: item.id,
+                    type: item.type,
+                    value: item.value,
+                    extra: item.extra
+                }]);
+            }
+            
+            const q = searchQuery.trim().toLowerCase();
+            if (q === '' || item.label.toLowerCase().includes(q) || item.value.toLowerCase().includes(q)) {
+                setSearchQuery('');
+            }
+            
+            setSuggestionTrigger(prev => prev + 1);
+        };
+
+        return (
+            <View style={styles.suggestionsContent}>
+                {locations.length > 0 && (
+                    <View style={styles.suggestionSection}>
+                        <Text style={styles.suggestionSectionHeader}>Locations</Text>
+                        {locations.map((item) => (
+                            <TouchableOpacity key={item.id} style={styles.suggestionItem} onPress={() => selectSuggestion(item)}>
+                                <MapPin size={16} color="#007AFF" style={styles.suggestionIcon} />
+                                <Text style={styles.suggestionItemText}>{item.label}</Text>
+                            </TouchableOpacity>
+                        ))}
+                    </View>
+                )}
+
+                {times.length > 0 && (
+                    <View style={styles.suggestionSection}>
+                        <Text style={styles.suggestionSectionHeader}>Time</Text>
+                        {times.map((item) => (
+                            <TouchableOpacity key={item.id} style={styles.suggestionItem} onPress={() => selectSuggestion(item)}>
+                                <Calendar size={16} color="#007AFF" style={styles.suggestionIcon} />
+                                <Text style={styles.suggestionItemText}>{item.label}</Text>
+                            </TouchableOpacity>
+                        ))}
+                    </View>
+                )}
+
+                {semantics.length > 0 && (
+                    <View style={styles.suggestionSection}>
+                        <Text style={styles.suggestionSectionHeader}>Scenes & Objects</Text>
+                        {semantics.map((item) => (
+                            <TouchableOpacity key={item.id} style={styles.suggestionItem} onPress={() => selectSuggestion(item)}>
+                                <Search size={16} color="#007AFF" style={styles.suggestionIcon} />
+                                <Text style={styles.suggestionItemText}>{item.label}</Text>
+                            </TouchableOpacity>
+                        ))}
+                    </View>
+                )}
+            </View>
+        );
+    };
+
+    const handleKeyPress = ({ nativeEvent }) => {
+        if (nativeEvent.key === 'Backspace' && searchQuery === '' && searchTokens.length > 0) {
+            setSearchTokens(prev => prev.slice(0, -1));
+        }
+    };
+
     return (
         <View style={styles.container}>
             {isSearching ? (
-                <View style={{ backgroundColor: '#fff' }}>
+                <View 
+                    style={{ backgroundColor: '#fff', zIndex: 10 }}
+                    onLayout={(e) => {
+                        const { height } = e.nativeEvent.layout;
+                        if (height > 0) setHeaderHeight(height);
+                    }}
+                >
                     <View style={styles.searchHeader}>
                         <View style={styles.searchBarContainer}>
                             <Search size={18} color="#999" style={styles.searchIcon} />
+                            {searchTokens.length > 0 && (
+                                <ScrollView
+                                    horizontal
+                                    showsHorizontalScrollIndicator={false}
+                                    keyboardShouldPersistTaps="handled"
+                                    style={styles.tokensScrollView}
+                                    contentContainerStyle={styles.tokensScrollContent}
+                                >
+                                    {searchTokens.map(token => {
+                                        let prefix = '';
+                                        if (token.type === 'location') prefix = '📍 ';
+                                        else if (token.type === 'time') prefix = '📅 ';
+                                        else if (token.type === 'semantic') prefix = '🔍 ';
+                                        
+                                        return (
+                                            <View key={token.id} style={styles.tokenChip}>
+                                                <Text style={styles.tokenChipText}>{prefix}{token.value}</Text>
+                                                <TouchableOpacity onPress={() => removeToken(token.id)} style={styles.tokenChipClose}>
+                                                    <X size={10} color="#007AFF" />
+                                                </TouchableOpacity>
+                                            </View>
+                                        );
+                                    })}
+                                </ScrollView>
+                            )}
                             <TextInput
                                 style={styles.searchInput}
-                                placeholder="Search photos (e.g., cat, beach, food)..."
+                                placeholder={searchTokens.length > 0 ? "" : "Search photos (e.g., cat, beach)..."}
                                 placeholderTextColor="#8E8E93"
                                 value={searchQuery}
                                 onChangeText={setSearchQuery}
+                                onKeyPress={handleKeyPress}
+                                onSubmitEditing={() => setSuggestions([])}
+                                onFocus={() => {
+                                    hideSuggestionsUntilFocusRef.current = false;
+                                    setSuggestionTrigger(prev => prev + 1);
+                                }}
+                                onTouchStart={() => {
+                                    hideSuggestionsUntilFocusRef.current = false;
+                                    setSuggestionTrigger(prev => prev + 1);
+                                }}
                                 autoFocus
                                 clearButtonMode="while-editing"
                                 returnKeyType="search"
@@ -1291,7 +1598,9 @@ const formatSpeed = (bytesPerSec) => {
                             onPress={() => {
                                 setIsSearching(false);
                                 setSearchQuery('');
+                                setSearchTokens([]);
                                 setSearchResults([]);
+                                setSuggestions([]);
                             }} 
                             style={styles.cancelButton}
                         >
@@ -1303,26 +1612,30 @@ const formatSpeed = (bytesPerSec) => {
                     <ScrollView 
                         horizontal 
                         showsHorizontalScrollIndicator={false} 
+                        keyboardShouldPersistTaps="handled"
                         style={styles.tagsContainer}
                         contentContainerStyle={styles.tagsContent}
                     >
-                        {SMART_TAGS.map((tag, idx) => (
-                            <TouchableOpacity 
-                                key={idx} 
-                                style={[
-                                    styles.tagButton,
-                                    searchQuery === tag.label && styles.tagButtonActive
-                                ]}
-                                onPress={() => handleTagPress(tag)}
-                            >
-                                <Text style={[
-                                    styles.tagText,
-                                    searchQuery === tag.label && styles.tagTextActive
-                                ]}>
-                                    {tag.label}
-                                </Text>
-                            </TouchableOpacity>
-                        ))}
+                        {COMBINED_TAGS.map((tag, idx) => {
+                            const isActive = searchTokens.some(t => t.type === tag.type && t.value === tag.query);
+                            return (
+                                <TouchableOpacity 
+                                    key={idx} 
+                                    style={[
+                                        styles.tagButton,
+                                        isActive && styles.tagButtonActive
+                                    ]}
+                                    onPress={() => handleTagPress(tag)}
+                                >
+                                    <Text style={[
+                                        styles.tagText,
+                                        isActive && styles.tagTextActive
+                                    ]}>
+                                        {tag.label}
+                                    </Text>
+                                </TouchableOpacity>
+                            );
+                        })}
                     </ScrollView>
                 </View>
             ) : (
@@ -1467,6 +1780,14 @@ const formatSpeed = (bytesPerSec) => {
                             <Text style={styles.scrubberTooltipText}>{scrubText}</Text>
                         </Animated.View>
                     )}
+                </View>
+            )}
+
+            {isSearching && suggestions.length > 0 && (
+                <View style={[styles.suggestionsDropdown, { top: headerHeight }]}>
+                    <ScrollView keyboardShouldPersistTaps="handled">
+                        {renderSuggestions()}
+                    </ScrollView>
                 </View>
             )}
 
@@ -2050,5 +2371,77 @@ const styles = StyleSheet.create({
         color: '#fff',
         fontSize: 9,
         fontWeight: 'bold',
+    },
+    tokensScrollView: {
+        maxHeight: 28,
+        marginRight: 4,
+        flexGrow: 0,
+    },
+    tokensScrollContent: {
+        alignItems: 'center',
+        paddingRight: 4,
+    },
+    tokenChip: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: '#E5F1FF',
+        borderRadius: 14,
+        paddingHorizontal: 8,
+        paddingVertical: 3,
+        marginRight: 6,
+        borderWidth: 1,
+        borderColor: '#B3D7FF',
+    },
+    tokenChipText: {
+        color: '#007AFF',
+        fontSize: 12,
+        fontWeight: '500',
+    },
+    tokenChipClose: {
+        marginLeft: 4,
+        padding: 2,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    suggestionsDropdown: {
+        position: 'absolute',
+        top: '100%',
+        left: 0,
+        right: 0,
+        height: 600,
+        backgroundColor: '#ffffff',
+        zIndex: 999,
+        elevation: 5,
+        borderTopWidth: StyleSheet.hairlineWidth,
+        borderTopColor: '#ebebeb',
+    },
+    suggestionsContent: {
+        paddingBottom: 20,
+    },
+    suggestionSection: {
+        marginTop: 15,
+        paddingHorizontal: 15,
+    },
+    suggestionSectionHeader: {
+        fontSize: 12,
+        fontWeight: 'bold',
+        color: '#8e8e93',
+        textTransform: 'uppercase',
+        marginBottom: 8,
+        letterSpacing: 0.5,
+    },
+    suggestionItem: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingVertical: 12,
+        borderBottomWidth: StyleSheet.hairlineWidth,
+        borderBottomColor: '#f2f2f7',
+    },
+    suggestionIcon: {
+        marginRight: 12,
+    },
+    suggestionItemText: {
+        fontSize: 16,
+        color: '#000000',
     },
 });

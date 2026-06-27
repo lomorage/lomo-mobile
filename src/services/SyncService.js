@@ -459,9 +459,11 @@ class SyncService {
         let loops = 0;
         while (currentIndex < assets.length) {
           loops++;
-          // CRITICAL FIX: Yield to the JS event loop every 50 iterations to prevent ANR
-          if (loops % 50 === 0) {
-            await new Promise(resolve => setTimeout(resolve, 5));
+          // Yield to the JS event loop every 5 iterations for 20ms.
+          // Hashing 800+ assets with only a 5ms/50-iteration yield was starving the JS thread,
+          // causing React state updates (e.g. search token chips) to be blocked for 9+ seconds.
+          if (loops % 5 === 0) {
+            await new Promise(resolve => setTimeout(resolve, 20));
           }
 
           const asset = assets[currentIndex++];

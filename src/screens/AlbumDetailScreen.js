@@ -224,7 +224,7 @@ export default function AlbumDetailScreen() {
                 style={styles.itemContainer}
             >
                 <Image
-                    source={item.localCachePath ? { uri: item.localCachePath } : { uri: item.uri }}
+                    source={(item.localCachePath && item.mediaType !== 'video') ? { uri: item.localCachePath } : { uri: item.uri }}
                     style={styles.image}
                     contentFit="cover"
                     cachePolicy="memory-disk"
