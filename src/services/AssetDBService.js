@@ -293,6 +293,7 @@ class AssetDBService {
         // Delete the file after migration
         await FileSystem.deleteAsync(path);
         console.log(`[AssetDBService] Successfully migrated local_hash_cache_v2 to SQLite.`);
+      }
     } catch (e) {
       console.error('[AssetDBService] Error migrating local_hash_cache:', e);
     }
@@ -1072,8 +1073,9 @@ class AssetDBService {
         `);
         return rows;
       }
-      const match = `%${text}%`;
-      const pinyinText = pinyin(text, { toneType: 'none', type: 'array' }).join('');
+      const cleanText = text.trim();
+      const match = `%${cleanText}%`;
+      const pinyinText = pinyin(cleanText, { toneType: 'none', type: 'array' }).join('');
       const pinyinMatch = `%${pinyinText}%`;
       
       const rows = await this.db.getAllAsync(`
