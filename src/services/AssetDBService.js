@@ -995,10 +995,22 @@ class AssetDBService {
     }
   }
 
-  // Fetch unique location suggestions matching text
+  // Fetch unique location suggestions matching text, or top 5 if text is empty
   async getLocationSuggestions(text) {
-    if (!this.db || !text || text.trim().length === 0) return [];
+    if (!this.db) return [];
     try {
+      if (!text || text.trim().length === 0) {
+        // Return top 5 most frequent cities when search is empty
+        const rows = await this.db.getAllAsync(`
+          SELECT locationCity AS name, 'city' AS type 
+          FROM MediaAsset 
+          WHERE locationCity IS NOT NULL 
+          GROUP BY locationCity 
+          ORDER BY COUNT(*) DESC 
+          LIMIT 5
+        `);
+        return rows;
+      }
       const match = `%${text}%`;
       const rows = await this.db.getAllAsync(`
         SELECT DISTINCT locationCity AS name, 'city' AS type FROM MediaAsset WHERE locationCity LIKE ? AND locationCity IS NOT NULL
