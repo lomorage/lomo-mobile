@@ -1073,14 +1073,17 @@ class AssetDBService {
         return rows;
       }
       const match = `%${text}%`;
+      const pinyinText = pinyin(text, { toneType: 'none', type: 'array' }).join('');
+      const pinyinMatch = `%${pinyinText}%`;
+      
       const rows = await this.db.getAllAsync(`
-        SELECT DISTINCT locationCity AS name, 'city' AS type FROM MediaAsset WHERE (locationCity LIKE ? OR locationPinyin LIKE ?) AND locationCity IS NOT NULL
+        SELECT DISTINCT locationCity AS name, 'city' AS type FROM MediaAsset WHERE (locationCity LIKE ? OR locationPinyin LIKE ? OR locationCity LIKE ? OR locationPinyin LIKE ?) AND locationCity IS NOT NULL
         UNION
-        SELECT DISTINCT locationState AS name, 'state' AS type FROM MediaAsset WHERE (locationState LIKE ? OR locationPinyin LIKE ?) AND locationState IS NOT NULL
+        SELECT DISTINCT locationState AS name, 'state' AS type FROM MediaAsset WHERE (locationState LIKE ? OR locationPinyin LIKE ? OR locationState LIKE ? OR locationPinyin LIKE ?) AND locationState IS NOT NULL
         UNION
-        SELECT DISTINCT locationCountry AS name, 'country' AS type FROM MediaAsset WHERE (locationCountry LIKE ? OR locationPinyin LIKE ?) AND locationCountry IS NOT NULL
+        SELECT DISTINCT locationCountry AS name, 'country' AS type FROM MediaAsset WHERE (locationCountry LIKE ? OR locationPinyin LIKE ? OR locationCountry LIKE ? OR locationPinyin LIKE ?) AND locationCountry IS NOT NULL
         LIMIT 6
-      `, [match, match, match, match, match, match]);
+      `, [match, match, pinyinMatch, pinyinMatch, match, match, pinyinMatch, pinyinMatch, match, match, pinyinMatch, pinyinMatch]);
       return rows;
     } catch (e) {
       console.error('[AssetDBService] Failed to get location suggestions:', e);

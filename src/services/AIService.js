@@ -1844,9 +1844,11 @@ class AIService {
       if (locationTokens.length > 0) {
         const clauses = [];
         for (const token of locationTokens) {
-          clauses.push(' (locationCity LIKE ? OR locationState LIKE ? OR locationCountry LIKE ? OR locationPinyin LIKE ?) ');
+          clauses.push(' (locationCity LIKE ? OR locationState LIKE ? OR locationCountry LIKE ? OR locationPinyin LIKE ? OR locationCity LIKE ? OR locationState LIKE ? OR locationCountry LIKE ? OR locationPinyin LIKE ?) ');
           const matchVal = `%${token.value}%`;
-          params.push(matchVal, matchVal, matchVal, matchVal);
+          const pinyinText = pinyin(token.value, { toneType: 'none', type: 'array' }).join('');
+          const pinyinMatch = `%${pinyinText}%`;
+          params.push(matchVal, matchVal, matchVal, matchVal, pinyinMatch, pinyinMatch, pinyinMatch, pinyinMatch);
         }
         if (clauses.length > 0) {
           sql += ` AND (${clauses.join(' OR ')}) `;
