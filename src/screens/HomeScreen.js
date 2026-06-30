@@ -362,23 +362,6 @@ export default function HomeScreen({ navigation, route }) {
                     }
                 }
 
-                // 2. Location Suggestions from SQLite
-                try {
-                    const dbSuggestions = await AssetDBService.getLocationSuggestions(query);
-                    if (!cancel) {
-                        for (const s of dbSuggestions) {
-                            tempSuggestions.push({
-                                id: `location-${s.type}-${s.name}`,
-                                type: 'location',
-                                label: `${s.name} (${s.type})`,
-                                value: s.name
-                            });
-                        }
-                    }
-                } catch (e) {
-                    console.error('[HomeScreen] Failed to get location suggestions:', e);
-                }
-
                 // 3. Semantic / Smart Tag matches
                 for (const tag of SMART_TAGS) {
                     if (tag.label.toLowerCase().includes(query) || tag.query.toLowerCase().includes(query)) {
@@ -390,6 +373,23 @@ export default function HomeScreen({ navigation, route }) {
                         });
                     }
                 }
+            }
+
+            // 2. Location Suggestions from SQLite (runs even for empty queries to show top locations)
+            try {
+                const dbSuggestions = await AssetDBService.getLocationSuggestions(query);
+                if (!cancel) {
+                    for (const s of dbSuggestions) {
+                        tempSuggestions.push({
+                            id: `location-${s.type}-${s.name}`,
+                            type: 'location',
+                            label: `${s.name} (${s.type})`,
+                            value: s.name
+                        });
+                    }
+                }
+            } catch (e) {
+                console.error('[HomeScreen] Failed to get location suggestions:', e);
             }
 
             if (!cancel) {
@@ -721,10 +721,6 @@ const formatSpeed = (bytesPerSec) => {
             const globalIndexMap = new Map();
             activeAssets.forEach((asset, idx) => globalIndexMap.set(asset.id, idx));
 
-            // Separate OCR matches and Semantic matches
-            const ocrAssets = activeAssets.filter(asset => asset.isOcrMatch);
-            const semanticAssets = activeAssets.filter(asset => !asset.isOcrMatch);
-
             const pushSection = (sectionTitle, sectionAssets) => {
                 if (sectionAssets.length === 0) return;
 
@@ -759,8 +755,7 @@ const formatSpeed = (bytesPerSec) => {
                 pushRow();
             };
 
-            pushSection('Text in Photos', ocrAssets);
-            pushSection('Scenes & Objects', semanticAssets);
+            pushSection('Search Results', activeAssets);
 
             timelineDataRef.current = data;
             stickyHeaderIndicesRef.current = indices;
