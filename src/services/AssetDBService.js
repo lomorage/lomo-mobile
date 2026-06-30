@@ -341,7 +341,11 @@ class AssetDBService {
     const rows = await this.db.getAllAsync('SELECT id, hash, hashModificationTime, uploaded FROM MediaAsset WHERE isLocal = 1 AND hash IS NOT NULL');
     const map = {};
     for (const row of rows) {
-      map[row.id] = { hash: row.hash, modificationTime: row.hashModificationTime, uploaded: row.uploaded };
+      map[row.id] = { 
+        hash: row.hash, 
+        modificationTime: row.hashModificationTime, 
+        uploaded: row.uploaded === 1 
+      };
     }
     return map;
   }

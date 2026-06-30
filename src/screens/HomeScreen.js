@@ -16,6 +16,7 @@ import GalleryStore from '../store/GalleryStore';
 import MetricsTracker from '../utils/MetricsTracker';
 import * as SecureStore from 'expo-secure-store';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
+import { pinyin } from 'pinyin-pro';
 
 const { width } = Dimensions.get('window');
 const COLUMN_COUNT = 3;
@@ -1479,7 +1480,13 @@ const formatSpeed = (bytesPerSec) => {
             }
             
             const q = searchQuery.trim().toLowerCase();
-            if (q === '' || item.label.toLowerCase().includes(q) || item.value.toLowerCase().includes(q)) {
+            const pinyinMatch = pinyin(q, { toneType: 'none', type: 'array' }).join('');
+
+            if (q === '' || 
+                item.label.toLowerCase().includes(q) || 
+                item.value.toLowerCase().includes(q) ||
+                item.label.toLowerCase().includes(pinyinMatch) ||
+                item.value.toLowerCase().includes(pinyinMatch)) {
                 setSearchQuery('');
             }
             
