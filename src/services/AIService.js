@@ -206,7 +206,12 @@ class AIService {
   constructor() {
     this.isProcessing = false;
     this.isSyncing = false;
-    this.vectorCache = new Map(); // id -> Float32Array
+    this.vectorCapacity = 20000;
+    this.vectorDims = 512;
+    this.vectorBuffer = new Float32Array(this.vectorCapacity * this.vectorDims);
+    this.vectorIds = new Array(this.vectorCapacity);
+    this.vectorIdToIndex = new Map();
+    this.vectorCount = 0;
     this.ocrCache = new Map(); // id -> string
     this.status = { isProcessing: false, current: 0, total: 0, message: 'Idle' };
     this.isPHashClearedInMemory = false;
@@ -218,6 +223,58 @@ class AIService {
   clearDuplicateCache() {
     this.duplicateGroupsCache = null;
     this.duplicateGroupsCacheTime = 0;
+  }
+
+  _ensureVectorCapacity(requiredCount) {
+    if (requiredCount > this.vectorCapacity) {
+      this.vectorCapacity = Math.max(this.vectorCapacity * 2, requiredCount);
+      const newBuffer = new Float32Array(this.vectorCapacity * this.vectorDims);
+      newBuffer.set(this.vectorBuffer);
+      this.vectorBuffer = newBuffer;
+      const newIds = new Array(this.vectorCapacity);
+      for (let i = 0; i < this.vectorCount; i++) {
+        newIds[i] = this.vectorIds[i];
+      }
+      this.vectorIds = newIds;
+    }
+  }
+
+  _setVector(id, float32Array) {
+    if (!float32Array || float32Array.length !== this.vectorDims) return;
+    
+    let index = this.vectorIdToIndex.get(id);
+    if (index === undefined) {
+      index = this.vectorCount;
+      this._ensureVectorCapacity(this.vectorCount + 1);
+      this.vectorIds[index] = id;
+      this.vectorIdToIndex.set(id, index);
+      this.vectorCount++;
+    }
+    
+    this.vectorBuffer.set(float32Array, index * this.vectorDims);
+  }
+
+  _deleteVector(id) {
+    const index = this.vectorIdToIndex.get(id);
+    if (index === undefined) return;
+
+    // Swap with the last element to keep the array contiguous
+    const lastIndex = this.vectorCount - 1;
+    if (index !== lastIndex) {
+      const lastId = this.vectorIds[lastIndex];
+      this.vectorIds[index] = lastId;
+      this.vectorIdToIndex.set(lastId, index);
+      
+      const offsetTo = index * this.vectorDims;
+      const offsetFrom = lastIndex * this.vectorDims;
+      for (let d = 0; d < this.vectorDims; d++) {
+        this.vectorBuffer[offsetTo + d] = this.vectorBuffer[offsetFrom + d];
+      }
+    }
+    
+    this.vectorIds[lastIndex] = undefined;
+    this.vectorIdToIndex.delete(id);
+    this.vectorCount--;
   }
 
   removeDuplicateGroupFromCache(assetIds) {
@@ -853,7 +910,7 @@ class AIService {
       try {
         const row = await db.getFirstAsync('SELECT id FROM MediaAsset WHERE id = ? OR hash = ?', [idOrHash, idOrHash]);
         if (row && row.id) {
-          this.vectorCache.set(row.id, base64ToFloat32Array(embeddingBase64));
+          this._setVector(row.id, base64ToFloat32Array(embeddingBase64));
         }
       } catch (e) {
         console.warn('[AIService] Failed to update vector cache on save:', e);
@@ -862,7 +919,7 @@ class AIService {
       try {
         const row = await db.getFirstAsync('SELECT id FROM MediaAsset WHERE id = ? OR hash = ?', [idOrHash, idOrHash]);
         if (row && row.id) {
-          this.vectorCache.delete(row.id);
+          this._deleteVector(row.id);
         }
       } catch (e) {}
     }
@@ -1201,14 +1258,14 @@ class AIService {
                 try {
                   const row = await db.getFirstAsync('SELECT id FROM MediaAsset WHERE id = ? OR hash = ?', [update.idOrHash, update.idOrHash]);
                   if (row && row.id) {
-                    this.vectorCache.set(row.id, base64ToFloat32Array(update.embedding));
+                    this._setVector(row.id, base64ToFloat32Array(update.embedding));
                   }
                 } catch (_) {}
               } else {
                 try {
                   const row = await db.getFirstAsync('SELECT id FROM MediaAsset WHERE id = ? OR hash = ?', [update.idOrHash, update.idOrHash]);
                   if (row && row.id) {
-                    this.vectorCache.delete(row.id);
+                    this._deleteVector(row.id);
                   }
                 } catch (_) {}
               }
@@ -1374,14 +1431,25 @@ class AIService {
                 isSuspectedText = true;
                 console.log(`[AIService] Remote asset ${asset.hash} is PNG screenshot, bypassing CLIP pre-judgment.`);
               } else {
-                let imageVector = this.vectorCache.get(asset.id);
-                if (!imageVector && asset.clipEmbedding) {
-                   try { imageVector = base64ToFloat32Array(asset.clipEmbedding); } catch(e) {}
+                let vIndex = this.vectorIdToIndex.get(asset.id);
+                let score = 0;
+                let hasVector = false;
+
+                if (vIndex !== undefined) {
+                  hasVector = true;
+                  const dims = Math.min(prototypeVector.length, this.vectorDims);
+                  const offset = vIndex * this.vectorDims;
+                  for (let i = 0; i < dims; i++) score += prototypeVector[i] * this.vectorBuffer[offset + i];
+                } else if (asset.clipEmbedding) {
+                   try { 
+                     const imageVector = base64ToFloat32Array(asset.clipEmbedding); 
+                     hasVector = true;
+                     const dims = Math.min(prototypeVector.length, imageVector.length);
+                     for (let i = 0; i < dims; i++) score += prototypeVector[i] * imageVector[i];
+                   } catch(e) {}
                 }
-                if (imageVector) {
-                  let score = 0;
-                  const dims = Math.min(prototypeVector.length, imageVector.length);
-                  for (let i = 0; i < dims; i++) score += prototypeVector[i] * imageVector[i];
+
+                if (hasVector) {
                   if (score > 0.26) {
                     isSuspectedText = true;
                     console.log(`[AIService] Remote asset ${asset.hash} suspected text (score=${score.toFixed(3)}).`);
@@ -1869,7 +1937,7 @@ class AIService {
         // 1. Identify missing items in cache
         const missingIds = [];
         for (const row of candidateRows) {
-          if (!this.vectorCache.has(row.id) || !this.ocrCache.has(row.id)) {
+          if (!this.vectorIdToIndex.has(row.id) || !this.ocrCache.has(row.id)) {
             missingIds.push(row.id);
           }
         }
@@ -1889,7 +1957,7 @@ class AIService {
             const chunkRows = await db.getAllAsync(`SELECT id, clipEmbedding, ocrText FROM MediaAsset WHERE id IN (${placeholders})`, chunk);
             for (const crow of chunkRows) {
               if (crow.clipEmbedding && crow.clipEmbedding.length >= 100) {
-                try { this.vectorCache.set(crow.id, base64ToFloat32Array(crow.clipEmbedding)); } catch (e) {}
+                try { this._setVector(crow.id, base64ToFloat32Array(crow.clipEmbedding)); } catch (e) {}
               }
               this.ocrCache.set(crow.id, crow.ocrText || 'none');
             }
@@ -1961,12 +2029,13 @@ class AIService {
 
           if (ocrMatchedIds.has(id)) continue;
           
-          const imageVector = this.vectorCache.get(id);
-          if (!imageVector) continue;
+          const vIndex = this.vectorIdToIndex.get(id);
+          if (vIndex === undefined) continue;
 
           let score = 0;
-          const dims = Math.min(textVector2.length, imageVector.length);
-          for (let i = 0; i < dims; i++) score += textVector2[i] * imageVector[i];
+          const dims = Math.min(textVector2.length, this.vectorDims);
+          const offset = vIndex * this.vectorDims;
+          for (let i = 0; i < dims; i++) score += textVector2[i] * this.vectorBuffer[offset + i];
 
           if (score >= 0.10) {
             if (score > maxScore2) maxScore2 = score;
@@ -2082,7 +2151,7 @@ class AIService {
       // Identify which candidates are missing from our in-memory cache
       const missingIds = [];
       for (const c of candidates) {
-        if (!this.vectorCache.has(c.id) || !this.ocrCache.has(c.id)) {
+        if (!this.vectorIdToIndex.has(c.id) || !this.ocrCache.has(c.id)) {
           missingIds.push(c.id);
         }
       }
@@ -2102,7 +2171,7 @@ class AIService {
           for (const crow of chunkRows) {
             if (crow.clipEmbedding && crow.clipEmbedding.length >= 100) {
               try {
-                this.vectorCache.set(crow.id, base64ToFloat32Array(crow.clipEmbedding));
+                this._setVector(crow.id, base64ToFloat32Array(crow.clipEmbedding));
               } catch (e) {}
             }
             if (crow.ocrText) {
@@ -2159,13 +2228,14 @@ class AIService {
 
         if (ocrMatchedIds.has(c.id)) continue;
         
-        const imageVector = this.vectorCache.get(c.id);
-        if (!imageVector) continue;
+        const vIndex = this.vectorIdToIndex.get(c.id);
+        if (vIndex === undefined) continue;
 
         let score = 0;
-        const dims = Math.min(textVector.length, imageVector.length);
+        const dims = Math.min(textVector.length, this.vectorDims);
+        const offset = vIndex * this.vectorDims;
         for (let i = 0; i < dims; i++) {
-          score += textVector[i] * imageVector[i];
+          score += textVector[i] * this.vectorBuffer[offset + i];
         }
 
         if (score >= 0.10) {
@@ -2324,7 +2394,7 @@ class AIService {
       // Identify which embeddings are missing from our in-memory cache
       const missingIds = [];
       for (const row of rows) {
-        if (!this.vectorCache.has(row.id)) {
+        if (!this.vectorIdToIndex.has(row.id)) {
           missingIds.push(row.id);
         }
       }
@@ -2343,7 +2413,7 @@ class AIService {
           for (const crow of chunkRows) {
             if (crow.clipEmbedding && crow.clipEmbedding.length >= 100) {
               try {
-                this.vectorCache.set(crow.id, base64ToFloat32Array(crow.clipEmbedding));
+                this._setVector(crow.id, base64ToFloat32Array(crow.clipEmbedding));
               } catch (e) {
                 console.warn(`[AIService] Failed to parse embedding for asset ${crow.id}:`, e);
               }
@@ -2356,14 +2426,15 @@ class AIService {
       let maxScore = 0;
 
       for (const row of rows) {
-        const imageVector = this.vectorCache.get(row.id);
-        if (!imageVector) continue;
+        const vIndex = this.vectorIdToIndex.get(row.id);
+        if (vIndex === undefined) continue;
         
         // Dot product (equivalent to Cosine Similarity since vectors are normalized)
         let score = 0;
-        const dims = Math.min(textVector.length, imageVector.length);
+        const dims = Math.min(textVector.length, this.vectorDims);
+        const offset = vIndex * this.vectorDims;
         for (let i = 0; i < dims; i++) {
-          score += textVector[i] * imageVector[i];
+          score += textVector[i] * this.vectorBuffer[offset + i];
         }
 
         if (score >= 0.10) {
@@ -2723,7 +2794,9 @@ class AIService {
     try {
       console.log('[AIService] Resetting all CLIP embeddings cache in DB...');
       this.isCLIPClearedInMemory = true;
-      this.vectorCache.clear();
+      this.vectorCount = 0;
+      this.vectorIdToIndex.clear();
+      // We don't need to reallocate the buffer, just resetting count is enough
       
       // Run the DB update in the background without awaiting it, so the UI is released instantly
       // We also optimize the query with "WHERE ... IS NOT NULL" to skip updating already NULL rows
