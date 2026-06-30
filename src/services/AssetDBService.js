@@ -1,6 +1,7 @@
 import * as SQLite from 'expo-sqlite';
 import * as FileSystem from 'expo-file-system/legacy';
 import MetricsTracker from '../utils/MetricsTracker';
+import { pinyin } from 'pinyin-pro';
 
 class AssetDBService {
   constructor() {
@@ -209,8 +210,24 @@ class AssetDBService {
         console.log('[AssetDBService] Database migrated to version 11 (Added idx_createTime index).');
       }
 
+      if (currentVersion < 12) {
+        // Version 12: Add locationPinyin for location search support
+        try {
+          await db.execAsync('ALTER TABLE MediaAsset ADD COLUMN locationPinyin TEXT;');
+          await db.execAsync('CREATE INDEX IF NOT EXISTS idx_locationPinyin ON MediaAsset(locationPinyin);');
+        } catch (e) {
+          console.warn('[AssetDBService] Failed to migrate database to version 12:', e.message);
+        }
+        await db.execAsync('PRAGMA user_version = 12');
+        currentVersion = 12;
+        console.log('[AssetDBService] Database migrated to version 12 (Added locationPinyin).');
+      }
+
       // Smooth migration: if local_hash_cache_v2.json exists, migrate it to SQLite
       await this.migrateLocalHashCache(db);
+
+      // Backfill missing location pinyins
+      this.backfillLocationPinyin(db).catch(e => console.error('[AssetDBService] backfill failed:', e));
 
       this.db = db;
       console.log(`[AssetDBService] Database initialized successfully (v${currentVersion}).`);
@@ -275,10 +292,46 @@ class AssetDBService {
         
         // Delete the file after migration
         await FileSystem.deleteAsync(path);
-        console.log('[AssetDBService] Deleted legacy local_hash_cache_v2.json');
+        console.log(`[AssetDBService] Successfully migrated local_hash_cache_v2 to SQLite.`);
+    } catch (e) {
+      console.error('[AssetDBService] Error migrating local_hash_cache:', e);
+    }
+  }
+
+  async backfillLocationPinyin(db) {
+    try {
+      const rows = await db.getAllAsync(`
+        SELECT id, locationCity, locationState, locationCountry 
+        FROM MediaAsset 
+        WHERE locationPinyin IS NULL AND locationCity IS NOT NULL
+      `);
+      if (rows && rows.length > 0) {
+        console.log(`[AssetDBService] Found ${rows.length} assets missing location pinyin. Backfilling...`);
+        const chunkSize = 100;
+        for (let i = 0; i < rows.length; i += chunkSize) {
+          const chunk = rows.slice(i, i + chunkSize);
+          await db.withExclusiveTransactionAsync(async () => {
+            const statement = await db.prepareAsync(`
+              UPDATE MediaAsset 
+              SET locationPinyin = ? 
+              WHERE id = ?
+            `);
+            try {
+              for (const row of chunk) {
+                const combined = [row.locationCity, row.locationState, row.locationCountry].filter(Boolean).join(' ');
+                // Convert to pinyin array and join without spaces (e.g. "武汉" -> "wuhan")
+                const p = pinyin(combined, { toneType: 'none', type: 'array' }).join('');
+                statement.executeSync([p, row.id]);
+              }
+            } finally {
+              await statement.finalizeAsync();
+            }
+          });
+        }
+        console.log('[AssetDBService] Backfill locationPinyin complete.');
       }
     } catch (e) {
-      console.warn('[AssetDBService] Failed to migrate local hash cache:', e);
+      console.error('[AssetDBService] Error during backfillLocationPinyin:', e);
     }
   }
 
@@ -287,13 +340,21 @@ class AssetDBService {
     const rows = await this.db.getAllAsync('SELECT id, hash, hashModificationTime, uploaded FROM MediaAsset WHERE isLocal = 1 AND hash IS NOT NULL');
     const map = {};
     for (const row of rows) {
-      map[row.id] = { 
-        hash: row.hash, 
-        modificationTime: row.hashModificationTime,
-        uploaded: row.uploaded === 1
-      };
+      map[row.id] = { hash: row.hash, modificationTime: row.hashModificationTime, uploaded: row.uploaded };
     }
     return map;
+  }
+
+  // Get total count of assets
+  async getAssetCount() {
+    if (!this.db) return 0;
+    try {
+      const result = await this.db.getFirstAsync('SELECT COUNT(*) as count FROM MediaAsset');
+      return result ? result.count : 0;
+    } catch (e) {
+      console.error('[AssetDBService] Failed to get asset count:', e);
+      return 0;
+    }
   }
 
   async updateAssetHash(id, hash, modificationTime) {
@@ -970,12 +1031,12 @@ class AssetDBService {
   }
 
   // Save geocoded location for an asset
-  async saveAssetLocation(id, location) {
+  async saveAssetLocation(id, location, locationPinyin) {
     if (!this.db) return;
     try {
       await this.db.runAsync(
-        'UPDATE MediaAsset SET locationCity = ?, locationState = ?, locationCountry = ?, locationChecked = 1 WHERE id = ?',
-        [location.city || null, location.region || null, location.country || null, id]
+        'UPDATE MediaAsset SET locationCity = ?, locationState = ?, locationCountry = ?, locationPinyin = ?, locationChecked = 1 WHERE id = ?',
+        [location.city || null, location.region || null, location.country || null, locationPinyin || null, id]
       );
     } catch (error) {
       console.error('[AssetDBService] Failed to save asset location:', error);
@@ -1013,13 +1074,13 @@ class AssetDBService {
       }
       const match = `%${text}%`;
       const rows = await this.db.getAllAsync(`
-        SELECT DISTINCT locationCity AS name, 'city' AS type FROM MediaAsset WHERE locationCity LIKE ? AND locationCity IS NOT NULL
+        SELECT DISTINCT locationCity AS name, 'city' AS type FROM MediaAsset WHERE (locationCity LIKE ? OR locationPinyin LIKE ?) AND locationCity IS NOT NULL
         UNION
-        SELECT DISTINCT locationState AS name, 'state' AS type FROM MediaAsset WHERE locationState LIKE ? AND locationState IS NOT NULL
+        SELECT DISTINCT locationState AS name, 'state' AS type FROM MediaAsset WHERE (locationState LIKE ? OR locationPinyin LIKE ?) AND locationState IS NOT NULL
         UNION
-        SELECT DISTINCT locationCountry AS name, 'country' AS type FROM MediaAsset WHERE locationCountry LIKE ? AND locationCountry IS NOT NULL
+        SELECT DISTINCT locationCountry AS name, 'country' AS type FROM MediaAsset WHERE (locationCountry LIKE ? OR locationPinyin LIKE ?) AND locationCountry IS NOT NULL
         LIMIT 6
-      `, [match, match, match]);
+      `, [match, match, match, match, match, match]);
       return rows;
     } catch (e) {
       console.error('[AssetDBService] Failed to get location suggestions:', e);

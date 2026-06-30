@@ -14,6 +14,7 @@ import AuthService from './AuthService';
 import MediaService from './MediaService';
 import TaskSchedulerService from './TaskSchedulerService';
 import { recognizeText } from '@infinitered/react-native-mlkit-text-recognition';
+import { pinyin } from 'pinyin-pro';
 
 export const BACKGROUND_AI_SYNC_TASK = 'LOMO_AI_SYNC_TASK';
 
@@ -1553,9 +1554,16 @@ class AIService {
           }
         }
 
+        const computePinyin = (locationObj) => {
+          if (!locationObj) return null;
+          const combined = [locationObj.city, locationObj.region, locationObj.country].filter(Boolean).join(' ');
+          if (!combined) return null;
+          return pinyin(combined, { toneType: 'none', type: 'array' }).join('');
+        };
+
         if (cacheHit) {
           console.log(`[AIService] Geocoding cache hit for asset ${asset.id} (distance < 200m).`);
-          await AssetDBService.saveAssetLocation(asset.id, cacheHit);
+          await AssetDBService.saveAssetLocation(asset.id, cacheHit, computePinyin(cacheHit));
         } else {
           try {
             console.log(`[AIService] Geocoding cache miss for asset ${asset.id}. Requesting reverseGeocodeAsync...`);
@@ -1567,7 +1575,7 @@ class AIService {
             if (result && result.length > 0) {
               const loc = result[0];
               console.log(`[AIService] Geocoding resolved: city="${loc.city}", region="${loc.region}", country="${loc.country}"`);
-              await AssetDBService.saveAssetLocation(asset.id, loc);
+              await AssetDBService.saveAssetLocation(asset.id, loc, computePinyin(loc));
               geocodedCache.push({
                 lat: asset.latitude,
                 lng: asset.longitude,
@@ -1836,9 +1844,9 @@ class AIService {
       if (locationTokens.length > 0) {
         const clauses = [];
         for (const token of locationTokens) {
-          clauses.push(' (locationCity LIKE ? OR locationState LIKE ? OR locationCountry LIKE ?) ');
+          clauses.push(' (locationCity LIKE ? OR locationState LIKE ? OR locationCountry LIKE ? OR locationPinyin LIKE ?) ');
           const matchVal = `%${token.value}%`;
-          params.push(matchVal, matchVal, matchVal);
+          params.push(matchVal, matchVal, matchVal, matchVal);
         }
         if (clauses.length > 0) {
           sql += ` AND (${clauses.join(' OR ')}) `;

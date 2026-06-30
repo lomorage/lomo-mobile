@@ -55,6 +55,7 @@
     "js-sha1": "^0.7.0",
     "jszip": "^3.10.1",
     "lucide-react-native": "^0.564.0",
+    "pinyin-pro": "^3.28.1",
     "react": "19.1.0",
     "react-native": "0.81.5",
     "react-native-argon2": "^4.0.0",
