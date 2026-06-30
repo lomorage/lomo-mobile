@@ -1117,12 +1117,15 @@ const formatSpeed = (bytesPerSec) => {
             });
 
             // Wait for incremental remote tree update to finish
+            console.log('[HomeScreen] Awaiting remoteOverviewPromise...');
             await remoteOverviewPromise;
+            console.log('[HomeScreen] remoteOverviewPromise resolved.');
 
             if (!isMounted.current) return;
 
             // 4. Perform Deep Hash Crypto-Sync
             try {
+                console.log('[HomeScreen] Starting SyncService.sync...');
                 setSyncProgress({ message: 'Organizing photos...' });
                 const diff = await SyncService.sync(cumulativeLocalAssets, (progress) => {
                     if (!isMounted.current) return;
@@ -1213,12 +1216,15 @@ const formatSpeed = (bytesPerSec) => {
     const RenderAsset = memo(({ asset, globalIndex, navigation, debugMode, currentAssetId, activeAssetIds, activeLoadRef, source }) => {
         const loadStartTime = useRef(0);
 
-        let thumbnailUri = (asset.status === 'remote' && asset.hash)
-            ? `${AuthService.getServerUrl()}/preview/${asset.hash}?width=320&height=-1&token=${AuthService.getToken()}`
-            : safeUri(asset.uri, asset.mediaType);
+        let thumbnailUri = safeUri(asset.uri, asset.mediaType);
 
-        if (asset.status === 'remote' && asset.localCachePath && asset.mediaType !== 'video') {
-            thumbnailUri = asset.localCachePath;
+        if (asset.status === 'remote') {
+            if (asset.localCachePath && asset.mediaType !== 'video') {
+                thumbnailUri = asset.localCachePath;
+            } else if (asset.hash) {
+                // ALWAYS use /preview/ for remote assets to prevent Glide OOM on large files/videos
+                thumbnailUri = `${AuthService.getServerUrl()}/preview/${asset.hash}?width=512&height=-1&token=${AuthService.getToken()}`;
+            }
         }
 
         return (

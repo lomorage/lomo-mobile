@@ -483,7 +483,9 @@ class SyncService {
             } else {
               try {
                 let uri = asset.uri || asset.localUri;
+                console.log(`[SyncService] precalculate worker starting hash for ${uri}`);
                 hash = await MediaService.calculateHash(uri, true); // silent log
+                console.log(`[SyncService] precalculate worker finished hash for ${uri}, result: ${hash ? 'success' : 'failed'}`);
 
                 if (!hash) {
                   const info = await MediaService.getAssetInfo(asset.id);
@@ -540,7 +542,9 @@ class SyncService {
       for (let i = 0; i < hashConcurrency; i++) {
         workers.push(worker());
       }
+      console.log(`[SyncService] Waiting for ${hashConcurrency} precalculate workers to finish...`);
       await Promise.all(workers);
+      console.log(`[SyncService] All precalculate workers finished.`);
 
       // Sync the uploaded status now that local hashes are assigned
       await AssetDBService.syncUploadedStatus();
@@ -1161,7 +1165,9 @@ class SyncService {
 
     try {
       if (onProgress) onProgress({ current: 0, total: localAssets.length });
+      console.log(`[SyncService] Starting precalculateHashes for ${localAssets.length} assets`);
       await this.precalculateHashes(localAssets, onProgress);
+      console.log(`[SyncService] Finished precalculateHashes`);
 
       await this.buildLocalTree(localAssets, onProgress);
 

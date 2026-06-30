@@ -490,7 +490,9 @@ class AssetDBService {
           const chunkSize = 500;
           for (let i = 0; i < newAssets.length; i += chunkSize) {
             const chunk = newAssets.slice(i, i + chunkSize);
+            console.log(`[AssetDBService] syncRemoteAssets entering withExclusiveTransactionAsync`);
             await this.db.withExclusiveTransactionAsync(async () => {
+              console.log(`[AssetDBService] syncRemoteAssets transaction started`);
               const statement = await this.db.prepareAsync(`
                 INSERT OR IGNORE INTO MediaAsset 
                 (id, hash, isLocal, hasGeo, latitude, longitude, createTime, mediaType, filename) 
@@ -499,28 +501,22 @@ class AssetDBService {
               
               try {
                 for (const asset of chunk) {
-                  const id = asset.hash;
-                  let createTime = 0;
-                  if (asset.date) {
-                    const parsedTime = new Date(asset.date).getTime();
-                    if (!isNaN(parsedTime)) {
-                      createTime = parsedTime;
-                    }
-                  }
-                  const filename = asset.tag || asset.filename || '';
-                  const mType = isVideoExtension(filename) ? 'video' : 'photo';
+                  const mediaTypeStr = asset.mediaType || (isVideoExtension(asset.filename) ? 'video' : 'photo');
                   statement.executeSync(
-                    id,
                     asset.hash,
-                    createTime,
-                    mType,
-                    filename
+                    asset.hash,
+                    asset.creationTime || Date.now(),
+                    mediaTypeStr,
+                    asset.filename || ''
                   );
                 }
               } finally {
+                console.log(`[AssetDBService] syncRemoteAssets finalizing statement`);
                 await statement.finalizeAsync();
+                console.log(`[AssetDBService] syncRemoteAssets finalized statement`);
               }
             });
+            console.log(`[AssetDBService] syncRemoteAssets transaction finished`);
             if (i + chunkSize < newAssets.length) {
               await new Promise(resolve => setTimeout(resolve, 5));
             }
@@ -572,24 +568,28 @@ class AssetDBService {
       const chunkSize = 100;
       for (let i = 0; i < updates.length; i += chunkSize) {
         const chunk = updates.slice(i, i + chunkSize);
-        // Use withTransactionAsync (not Exclusive) so concurrent reads (e.g. search) are not blocked.
-        await this.db.withTransactionAsync(async () => {
+        console.log(`[AssetDBService] updateAssetsGeo entering withExclusiveTransactionAsync`);
+        await this.db.withExclusiveTransactionAsync(async () => {
+          console.log(`[AssetDBService] updateAssetsGeo transaction started`);
           const statement = await this.db.prepareAsync(`
             UPDATE MediaAsset SET hasGeo = 1, latitude = ?, longitude = ? WHERE id = ?
           `);
           try {
             for (const update of chunk) {
-              // Use executeAsync (not executeSync) to avoid blocking the JS thread.
-              await statement.executeAsync(
+              // Use executeSync to prevent event loop yielding which causes deadlocks with concurrent transactions
+              statement.executeSync(
                 update.latitude || 0.0,
                 update.longitude || 0.0,
                 update.id
               );
             }
           } finally {
+            console.log(`[AssetDBService] updateAssetsGeo transaction finalizing statement`);
             await statement.finalizeAsync();
+            console.log(`[AssetDBService] updateAssetsGeo transaction finalized statement`);
           }
         });
+        console.log(`[AssetDBService] updateAssetsGeo transaction finished`);
         // Yield to the JS event loop between chunks so React state updates (e.g. search tokens)
         // are not blocked by back-to-back GPS batch writes.
         await new Promise(resolve => setTimeout(resolve, 50));
@@ -609,20 +609,24 @@ class AssetDBService {
       const chunkSize = 100;
       for (let i = 0; i < ids.length; i += chunkSize) {
         const chunk = ids.slice(i, i + chunkSize);
-        // Use withTransactionAsync (not Exclusive) so concurrent reads are not blocked.
-        await this.db.withTransactionAsync(async () => {
+        console.log(`[AssetDBService] markAssetsGeoProcessed entering withExclusiveTransactionAsync`);
+        await this.db.withExclusiveTransactionAsync(async () => {
+          console.log(`[AssetDBService] markAssetsGeoProcessed transaction started`);
           const statement = await this.db.prepareAsync(`
-            UPDATE MediaAsset SET hasGeo = 1 WHERE id = ?
+            UPDATE MediaAsset SET hasGeo = -1 WHERE id = ?
           `);
           try {
             for (const id of chunk) {
-              // Use executeAsync (not executeSync) to avoid blocking the JS thread.
-              await statement.executeAsync(id);
+              // Use executeSync to prevent event loop yielding which causes deadlocks with concurrent transactions
+              statement.executeSync(id);
             }
           } finally {
+            console.log(`[AssetDBService] markAssetsGeoProcessed transaction finalizing`);
             await statement.finalizeAsync();
+            console.log(`[AssetDBService] markAssetsGeoProcessed transaction finalized`);
           }
         });
+        console.log(`[AssetDBService] markAssetsGeoProcessed transaction finished`);
         // Yield to the JS event loop between chunks.
         await new Promise(resolve => setTimeout(resolve, 50));
       }

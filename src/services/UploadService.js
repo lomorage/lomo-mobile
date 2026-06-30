@@ -121,6 +121,8 @@ class UploadService {
                         'If-Match': ifMatch
                     },
                     sessionType,
+                    uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+                    mimeType: 'application/octet-stream',
                 },
                 (progress) => {
                     if (onProgress && fileSize > 0) {
@@ -328,6 +330,8 @@ class UploadService {
                         'Content-Type': 'application/octet-stream',
                     },
                     sessionType,
+                    uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+                    mimeType: 'application/octet-stream',
                 },
                 (progress) => {
                     if (onProgress) {
