@@ -18,7 +18,8 @@ export default function App() {
       try {
         await AssetDBService.init();
         
-        // Register background sync task if remote AI processing is enabled
+        // Start background prewarming of AI vector cache
+        AIService.prewarmVectorCache();
         const remoteAIEnabled = await SecureStore.getItemAsync('lomorage_remote_ai_processing');
         if (remoteAIEnabled !== 'false') {
           AIService.registerBackgroundSync();

@@ -218,6 +218,56 @@ class AIService {
     this.isCLIPClearedInMemory = false;
     this.duplicateGroupsCache = null;
     this.duplicateGroupsCacheTime = 0;
+    this.isPrewarming = false;
+    this.isPrewarmed = false;
+    this.prewarmPromise = null;
+  }
+
+  async prewarmVectorCache() {
+    if (this.isPrewarming || this.isPrewarmed) return this.prewarmPromise;
+    this.isPrewarming = true;
+    this.prewarmPromise = (async () => {
+      const AssetDBService = require('./AssetDBService').default;
+      const db = AssetDBService.db;
+      if (!db) return;
+
+      try {
+        console.log('[AIService] Starting background prewarming of vector cache...');
+        const startPrewarm = Date.now();
+        const candidateRows = await db.getAllAsync('SELECT id FROM MediaAsset WHERE clipEmbedding IS NOT NULL OR ocrText IS NOT NULL');
+        
+        const missingIds = [];
+        for (const row of candidateRows) {
+            if (!this.vectorIdToIndex.has(row.id) || !this.ocrCache.has(row.id)) {
+                missingIds.push(row.id);
+            }
+        }
+
+        const chunkSize = 1500;
+        for (let i = 0; i < missingIds.length; i += chunkSize) {
+          const chunk = missingIds.slice(i, i + chunkSize);
+          const placeholders = chunk.map(() => '?').join(',');
+          const chunkRows = await db.getAllAsync(`SELECT id, clipEmbedding, ocrText FROM MediaAsset WHERE id IN (${placeholders})`, chunk);
+          
+          for (const crow of chunkRows) {
+            if (crow.clipEmbedding && crow.clipEmbedding.length >= 100) {
+              try { this._setVector(crow.id, base64ToFloat32Array(crow.clipEmbedding)); } catch (e) {}
+            }
+            this.ocrCache.set(crow.id, crow.ocrText || 'none');
+          }
+          // Yield to UI to avoid dropping frames during startup
+          await new Promise(resolve => setTimeout(resolve, 30)); 
+        }
+        
+        this.isPrewarmed = true;
+        console.log(`[AIService] Successfully prewarmed ${missingIds.length} items. Total cache: ${this.vectorCount}. Took ${Date.now() - startPrewarm}ms.`);
+      } catch (err) {
+        console.error('[AIService] Error prewarming vector cache:', err);
+      } finally {
+        this.isPrewarming = false;
+      }
+    })();
+    return this.prewarmPromise;
   }
 
   clearDuplicateCache() {
@@ -1928,11 +1978,25 @@ class AIService {
         params.push(limit);
       } else if (timeTokens.length === 0 && locationTokens.length === 0) {
         // Pure semantic search (no time/location filters)
-        // Optimization: Don't load full metadata for all 20,000 rows (takes 1400ms+).
-        // Instead, just load IDs, warm the cache if needed, score in memory, and hydrate only the top results.
+        // Optimization: Bypass SQLite entirely and iterate over memory arrays!
         const fastDbStart = Date.now();
-        const candidateRows = await db.getAllAsync('SELECT id FROM MediaAsset WHERE clipEmbedding IS NOT NULL OR ocrText IS NOT NULL');
-        console.log(`[AIService] searchHybrid fast-path ID fetch took ${Date.now() - fastDbStart}ms for ${candidateRows.length} items.`);
+        console.log(`[AIService] searchHybrid bypassing SQLite for pure semantic search. Searching ${this.vectorCount} warmed items.`);
+
+        // Wait for prewarming to finish if it's currently running so we don't return 0 results on app launch
+        if (this.isPrewarming) {
+           console.log(`[AIService] searchHybrid waiting for background prewarming to finish...`);
+           await this.prewarmPromise;
+        }
+
+        // Just build dummy candidate rows from the pre-warmed arrays
+        let candidateRows = [];
+        for (let i = 0; i < this.vectorCount; i++) {
+            if (this.vectorIds[i]) {
+                candidateRows.push({ id: this.vectorIds[i] });
+            }
+        }
+        
+        console.log(`[AIService] searchHybrid fast-path ID fetch bypassed in ${Date.now() - fastDbStart}ms. Searching ${candidateRows.length} items.`);
 
         // 1. Identify missing items in cache
         const missingIds = [];
@@ -2018,14 +2082,11 @@ class AIService {
         // 5. Find CLIP matches
         const clipCandidates2 = [];
         let maxScore2 = 0;
-        let loopCtr2 = 0;
         for (const row of candidateRows) {
           const id = row.id;
           if (abortSignal && abortSignal.aborted) {
             const e = new Error('Aborted'); e.name = 'AbortError'; throw e;
           }
-          loopCtr2++;
-          if (loopCtr2 % 1000 === 0) await new Promise(resolve => setTimeout(resolve, 0));
 
           if (ocrMatchedIds.has(id)) continue;
           
@@ -2213,17 +2274,11 @@ class AIService {
       const clipCandidates = [];
       let maxScore = 0;
 
-      let loopCounter = 0;
       for (const c of candidates) {
         if (abortSignal && abortSignal.aborted) {
             const e = new Error('Aborted');
             e.name = 'AbortError';
             throw e;
-        }
-        
-        loopCounter++;
-        if (loopCounter % 500 === 0) {
-            await new Promise(resolve => setTimeout(resolve, 0));
         }
 
         if (ocrMatchedIds.has(c.id)) continue;
