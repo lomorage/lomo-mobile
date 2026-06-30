@@ -18,6 +18,7 @@ export function SettingsProvider({ children }) {
     const [aiWifiOnly, setAIWifiOnly] = useState(true);
     const [aiChargingOnly, setAIChargingOnly] = useState(true);
     const [aiEnabled, setAiEnabled] = useState(true);
+    const [iosBackgroundKeepAlive, setIosBackgroundKeepAlive] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
 
     useEffect(() => {
@@ -87,6 +88,10 @@ export function SettingsProvider({ children }) {
             const savedAIEnabled = await SecureStore.getItemAsync('lomorage_ai_enabled');
             if (savedAIEnabled !== null) {
                 setAiEnabled(savedAIEnabled === 'true');
+            }
+            const savedIosKeepAlive = await SecureStore.getItemAsync('lomorage_ios_keep_alive');
+            if (savedIosKeepAlive !== null) {
+                setIosBackgroundKeepAlive(savedIosKeepAlive === 'true');
             }
         } catch (error) {
             console.error('Failed to load settings', error);
@@ -276,6 +281,21 @@ export function SettingsProvider({ children }) {
         }
     };
 
+    const toggleIosBackgroundKeepAlive = async () => {
+        try {
+            const newValue = !iosBackgroundKeepAlive;
+            await SecureStore.setItemAsync('lomorage_ios_keep_alive', newValue.toString());
+            setIosBackgroundKeepAlive(newValue);
+            import('react-native').then(({ DeviceEventEmitter }) => {
+                DeviceEventEmitter.emit('settingsChanged', { 
+                    iosBackgroundKeepAlive: newValue 
+                });
+            });
+        } catch (error) {
+            console.error('Failed to update iOS background keep-alive setting', error);
+        }
+    };
+
     const updateSearchThreshold = async (val) => {
         try {
             await SecureStore.setItemAsync('lomorage_search_threshold', val.toString());
@@ -327,6 +347,8 @@ export function SettingsProvider({ children }) {
             toggleAIChargingOnly,
             aiEnabled,
             toggleAIEnabled,
+            iosBackgroundKeepAlive,
+            toggleIosBackgroundKeepAlive,
             isLoading
         }}>
             {children}

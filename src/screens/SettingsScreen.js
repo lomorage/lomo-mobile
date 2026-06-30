@@ -83,7 +83,9 @@ export default function SettingsScreen({ navigation }) {
         aiChargingOnly,
         toggleAIChargingOnly,
         aiEnabled,
-        toggleAIEnabled
+        toggleAIEnabled,
+        iosBackgroundKeepAlive,
+        toggleIosBackgroundKeepAlive
     } = useSettings();
     const { logout } = useAuth();
     const [stats, setStats] = React.useState({ local: 0, remote: 0 });
@@ -445,6 +447,23 @@ export default function SettingsScreen({ navigation }) {
                         </View>
                         <ChevronRight color="#007AFF" size={20} />
                     </TouchableOpacity>
+                )}
+
+                {Platform.OS === 'ios' && (
+                    <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8 }]}>
+                        <View style={styles.settingTextContainer}>
+                            <Text style={styles.settingLabel}>Keep-Alive in Background</Text>
+                            <Text style={styles.settingDescription}>
+                                Prevent iOS from suspending the app by playing a silent audio track during background sync.
+                            </Text>
+                        </View>
+                        <Switch
+                            value={iosBackgroundKeepAlive}
+                            onValueChange={toggleIosBackgroundKeepAlive}
+                            trackColor={{ false: '#d1d1d1', true: '#4CAF50' }}
+                            thumbColor={'#fff'}
+                        />
+                    </View>
                 )}
 
             </View>

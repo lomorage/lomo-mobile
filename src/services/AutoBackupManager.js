@@ -9,6 +9,7 @@ import * as Location from 'expo-location';
 import UploadService from './UploadService';
 import GalleryStore from '../store/GalleryStore';
 import TaskSchedulerService from './TaskSchedulerService';
+import { startKeepAlive, stopKeepAlive } from '../../modules/expo-background-keepalive';
 
 export const BACKGROUND_BACKUP_TASK = 'LOMO_BACKUP_TASK';
 
@@ -23,6 +24,7 @@ class AutoBackupManager {
         this.wifiOnlyBackup = true;
         this.chargingOnlyBackup = false;
         this.nightBackupOnly = false;
+        this.iosBackgroundKeepAlive = false;
         this.consecutiveErrors = 0;
         this.retryCount = 0;       // for exponential backoff
         this.retryMessage = null;  // user-friendly retry message
@@ -51,6 +53,9 @@ class AutoBackupManager {
             }
             if (settings.nightBackupOnly !== undefined) {
                 this.nightBackupOnly = settings.nightBackupOnly;
+            }
+            if (settings.iosBackgroundKeepAlive !== undefined) {
+                this.iosBackgroundKeepAlive = settings.iosBackgroundKeepAlive;
             }
             if (!this.autoBackupEnabled) {
                 this.pause();
@@ -240,6 +245,9 @@ class AutoBackupManager {
             const savedNightBackup = await SecureStore.getItemAsync('lomorage_night_backup');
             if (savedNightBackup !== null) this.nightBackupOnly = savedNightBackup === 'true';
 
+            const savedIosKeepAlive = await SecureStore.getItemAsync('lomorage_ios_keep_alive');
+            if (savedIosKeepAlive !== null) this.iosBackgroundKeepAlive = savedIosKeepAlive === 'true';
+
             if (this.autoBackupEnabled) {
                 await this.registerBackgroundTask();
             } else {
@@ -315,6 +323,9 @@ class AutoBackupManager {
         this.isBackingUp = true;
         this.completedSessionCount = 0;
         this.emitState();
+        if (this.iosBackgroundKeepAlive) {
+            startKeepAlive();
+        }
 
         let uploadConcurrency = 3;
         let adaptiveConcurrencyEnabled = true;
@@ -404,6 +415,7 @@ class AutoBackupManager {
                 // If paused, keep the queue intact so the banner correctly displays "Backup Paused"
                 this.emitState();
             }
+            stopKeepAlive();
         });
     }
 
@@ -578,6 +590,8 @@ class AutoBackupManager {
             this._retryTimer = null;
         }
         
+        stopKeepAlive();
+
         // ABORT ALL currently uploading files immediately!
         try {
             const UploadService = require('./UploadService').default;

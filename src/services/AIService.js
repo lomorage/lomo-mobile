@@ -15,6 +15,7 @@ import MediaService from './MediaService';
 import TaskSchedulerService from './TaskSchedulerService';
 import { recognizeText } from '@infinitered/react-native-mlkit-text-recognition';
 import { pinyin } from 'pinyin-pro';
+import { startKeepAlive, stopKeepAlive } from '../../modules/expo-background-keepalive';
 
 export const BACKGROUND_AI_SYNC_TASK = 'LOMO_AI_SYNC_TASK';
 
@@ -775,6 +776,13 @@ class AIService {
     DeviceEventEmitter.emit('ai_processing_status', this.status);
     console.log('[AIService] Starting local embeddings & phash processing...');
 
+    let iosKeepAlive = false;
+    try {
+      const savedIosKeepAlive = await SecureStore.getItemAsync('lomorage_ios_keep_alive');
+      iosKeepAlive = savedIosKeepAlive === 'true';
+      if (iosKeepAlive) startKeepAlive();
+    } catch (e) {}
+
     try {
       const db = AssetDBService.db;
       if (!db) return;
@@ -941,6 +949,7 @@ class AIService {
       this.status = { isProcessing: false, current: 0, total: 0, message: 'Idle' };
       DeviceEventEmitter.emit('ai_processing_status', this.status);
       console.log('[AIService] Local features processing finished.');
+      if (iosKeepAlive) stopKeepAlive();
       // Trigger background geocoding after local feature extraction completes
       this.runBackgroundGeocoding().catch(e => console.error('[AIService] runBackgroundGeocoding on idle failed:', e));
     }
@@ -996,6 +1005,13 @@ class AIService {
     }
     this.isSyncing = true;
     console.log('[AIService] Starting embeddings sync...');
+
+    let iosKeepAlive = false;
+    try {
+      const savedIosKeepAlive = await SecureStore.getItemAsync('lomorage_ios_keep_alive');
+      iosKeepAlive = savedIosKeepAlive === 'true';
+      if (iosKeepAlive) startKeepAlive();
+    } catch (e) {}
 
     try {
       const url = AuthService.getServerUrl();
@@ -1531,6 +1547,7 @@ class AIService {
       this.status = { isProcessing: false, current: 0, total: 0, message: 'Idle' };
       DeviceEventEmitter.emit('ai_processing_status', this.status);
       console.log('[AIService] Embeddings sync finished.');
+      if (iosKeepAlive) stopKeepAlive();
     }
   }
 

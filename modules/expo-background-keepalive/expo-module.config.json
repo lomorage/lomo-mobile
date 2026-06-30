@@ -1,0 +1,6 @@
+{
+  "name": "expo-background-keepalive",
+  "ios": {
+    "modules": ["ExpoBackgroundKeepaliveModule"]
+  }
+}

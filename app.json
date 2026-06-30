@@ -18,7 +18,8 @@
       "bundleIdentifier": "com.wtao.lomo",
       "infoPlist": {
         "UIBackgroundModes": [
-          "fetch"
+          "fetch",
+          "audio"
         ],
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true,
