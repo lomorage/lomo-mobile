@@ -163,7 +163,7 @@ export default function AlbumDetailScreen() {
             'Album Options',
             `Manage "${albumName}"`,
             [
-                { text: 'Rename', onPress: () => setPromptState({ visible: true, text: albumName }) },
+                { text: 'Rename', onPress: () => setPromptState({ visible: true, text: albumName === 'Unnamed' ? '' : albumName }) },
                 { text: 'Delete', style: 'destructive', onPress: confirmDeleteAlbum },
                 { text: 'Cancel', style: 'cancel' }
             ]

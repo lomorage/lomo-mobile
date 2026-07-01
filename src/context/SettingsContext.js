@@ -18,6 +18,7 @@ export function SettingsProvider({ children }) {
     const [aiWifiOnly, setAIWifiOnly] = useState(true);
     const [aiChargingOnly, setAIChargingOnly] = useState(true);
     const [aiEnabled, setAiEnabled] = useState(true);
+    const [faceDryRun, setFaceDryRun] = useState(true);
     const [iosBackgroundKeepAlive, setIosBackgroundKeepAlive] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
 
@@ -85,11 +86,15 @@ export function SettingsProvider({ children }) {
             if (savedAICharging !== null) {
                 setAIChargingOnly(savedAICharging === 'true');
             }
-            const savedAIEnabled = await SecureStore.getItemAsync('lomorage_ai_enabled');
-            if (savedAIEnabled !== null) {
-                setAiEnabled(savedAIEnabled === 'true');
+            const savedAiEnabled = await SecureStore.getItemAsync('lomorage_ai_enabled');
+            if (savedAiEnabled !== null) {
+                setAiEnabled(savedAiEnabled === 'true');
             }
-            const savedIosKeepAlive = await SecureStore.getItemAsync('lomorage_ios_keep_alive');
+            const savedFaceDryRun = await SecureStore.getItemAsync('lomorage_face_dry_run');
+            if (savedFaceDryRun !== null) {
+                setFaceDryRun(savedFaceDryRun === 'true');
+            }
+            const savedIosKeepAlive = await SecureStore.getItemAsync('lomorage_ios_background_keep_alive');
             if (savedIosKeepAlive !== null) {
                 setIosBackgroundKeepAlive(savedIosKeepAlive === 'true');
             }
@@ -277,18 +282,26 @@ export function SettingsProvider({ children }) {
                 AIService.unregisterBackgroundSync();
             }
         } catch (error) {
-            console.error('Failed to update AI enabled setting', error);
+            console.error('Error saving AI enabled setting:', error);
         }
     };
 
-    const toggleIosBackgroundKeepAlive = async () => {
+    const updateFaceDryRun = async (value) => {
         try {
-            const newValue = !iosBackgroundKeepAlive;
-            await SecureStore.setItemAsync('lomorage_ios_keep_alive', newValue.toString());
-            setIosBackgroundKeepAlive(newValue);
+            await SecureStore.setItemAsync('lomorage_face_dry_run', value.toString());
+            setFaceDryRun(value);
+        } catch (error) {
+            console.error('Error saving Face Dry Run setting:', error);
+        }
+    };
+
+    const updateIosBackgroundKeepAlive = async (value) => {
+        try {
+            await SecureStore.setItemAsync('lomorage_ios_background_keep_alive', value.toString());
+            setIosBackgroundKeepAlive(value);
             import('react-native').then(({ DeviceEventEmitter }) => {
                 DeviceEventEmitter.emit('settingsChanged', { 
-                    iosBackgroundKeepAlive: newValue 
+                    iosBackgroundKeepAlive: value 
                 });
             });
         } catch (error) {
@@ -347,8 +360,10 @@ export function SettingsProvider({ children }) {
             toggleAIChargingOnly,
             aiEnabled,
             toggleAIEnabled,
+            faceDryRun,
+            updateFaceDryRun,
             iosBackgroundKeepAlive,
-            toggleIosBackgroundKeepAlive,
+            updateIosBackgroundKeepAlive,
             isLoading
         }}>
             {children}

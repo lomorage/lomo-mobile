@@ -84,6 +84,8 @@ export default function SettingsScreen({ navigation }) {
         toggleAIChargingOnly,
         aiEnabled,
         toggleAIEnabled,
+        faceDryRun,
+        updateFaceDryRun,
         iosBackgroundKeepAlive,
         toggleIosBackgroundKeepAlive
     } = useSettings();
@@ -588,6 +590,52 @@ export default function SettingsScreen({ navigation }) {
                                 trackColor={{ false: '#d1d1d1', true: '#4CAF50' }}
                                 thumbColor={'#fff'}
                             />
+                        </View>
+
+                        <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8, paddingTop: 8 }]}>
+                            <View style={styles.settingTextContainer}>
+                                <Text style={styles.settingLabel}>Face Clustering Dry Run</Text>
+                                <Text style={styles.settingDescription}>Run local face clustering but skip saving to server.</Text>
+                            </View>
+                            <Switch
+                                value={faceDryRun}
+                                onValueChange={updateFaceDryRun}
+                                trackColor={{ false: '#d1d1d1', true: '#4CAF50' }}
+                                thumbColor={'#fff'}
+                            />
+                        </View>
+
+                        <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8, paddingTop: 8, flexDirection: 'column', alignItems: 'stretch' }]}>
+                            <View style={{ marginBottom: 10 }}>
+                                <Text style={styles.settingLabelDanger}>Clear Local Face Data</Text>
+                                <Text style={styles.settingDescription}>Reset all local face detection records and force a fresh scan of all photos using the new model.</Text>
+                            </View>
+                            <TouchableOpacity 
+                                onPress={() => {
+                                    Alert.alert(
+                                        "Clear Local Face Data",
+                                        "Are you sure? The background indexer will rescan all photos.",
+                                        [
+                                            { text: "Cancel", style: "cancel" },
+                                            { 
+                                                text: "Clear", 
+                                                style: "destructive", 
+                                                onPress: async () => {
+                                                    try {
+                                                        await AIService.forceRebuildFaces();
+                                                        alert('Local face cache cleared successfully! The indexer is now rescanning all photos.');
+                                                    } catch (e) {
+                                                        alert('Failed to clear face cache: ' + e.message);
+                                                    }
+                                                }
+                                            }
+                                        ]
+                                    );
+                                }}
+                                style={{ backgroundColor: '#ef4444', paddingVertical: 10, borderRadius: 8, alignItems: 'center' }}
+                            >
+                                <Text style={{ color: '#fff', fontWeight: 'bold' }}>Clear Local Face Data</Text>
+                            </TouchableOpacity>
                         </View>
 
                         <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8, paddingTop: 8 }]}>

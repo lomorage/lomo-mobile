@@ -28,7 +28,8 @@ class ExpoLomoHasherModule : Module() {
 
   private fun resolveModelPath(modelPath: String): String {
     if (modelPath.contains("/") || modelPath.contains("\\")) {
-      return modelPath
+      // Strip file:// prefix if present — ONNX Runtime requires a raw filesystem path
+      return if (modelPath.startsWith("file://")) modelPath.substring(7) else modelPath
     }
     val context = appContext.reactContext ?: throw Exception("React context not available")
     val file = File(context.filesDir, modelPath)
@@ -413,6 +414,115 @@ class ExpoLomoHasherModule : Module() {
       attentionMaskTensor.close()
       
       floatArrayToBase64(embedding)
+    }
+
+    AsyncFunction("encodeFaceEmbeddingAsync") { imageUriString: String, boundingBox: Map<String, Any>, modelPath: String ->
+      val uri = Uri.parse(imageUriString)
+      val context = appContext.reactContext ?: throw Exception("React context not available")
+      
+      // Step 1: Decode image
+      val bitmap = context.contentResolver.openInputStream(uri).use { stream ->
+          BitmapFactory.decodeStream(stream)
+      } ?: throw Exception("Could not decode bitmap for: $imageUriString")
+      
+      // Step 2: Extract bounding box and crop
+      var x = (boundingBox["x"] as? Number)?.toInt() ?: 0
+      var y = (boundingBox["y"] as? Number)?.toInt() ?: 0
+      var w = (boundingBox["width"] as? Number)?.toInt() ?: bitmap.width
+      var h = (boundingBox["height"] as? Number)?.toInt() ?: bitmap.height
+
+      // Ensure bounding box is within bitmap dimensions
+      x = Math.max(0, x)
+      y = Math.max(0, y)
+      if (x + w > bitmap.width) w = bitmap.width - x
+      if (y + h > bitmap.height) h = bitmap.height - y
+
+      var croppedBitmap: Bitmap? = null
+      val scaledCrop: Bitmap
+
+      val leftEye = boundingBox["leftEye"] as? Map<*, *>
+      val rightEye = boundingBox["rightEye"] as? Map<*, *>
+
+      if (leftEye != null && rightEye != null) {
+          val lx = (leftEye["x"] as? Number)?.toFloat() ?: 0f
+          val ly = (leftEye["y"] as? Number)?.toFloat() ?: 0f
+          val rx = (rightEye["x"] as? Number)?.toFloat() ?: 0f
+          val ry = (rightEye["y"] as? Number)?.toFloat() ?: 0f
+          
+          val src = floatArrayOf(lx, ly, rx, ry)
+          // ArcFace 112x112 standard eye coordinates
+          val dst = floatArrayOf(
+              38.2946f, 51.6963f,
+              73.5318f, 51.5014f
+          )
+          
+          val matrix = android.graphics.Matrix()
+          matrix.setPolyToPoly(src, 0, dst, 0, 2)
+          
+          scaledCrop = Bitmap.createBitmap(112, 112, Bitmap.Config.ARGB_8888)
+          val canvas = android.graphics.Canvas(scaledCrop)
+          val paint = android.graphics.Paint()
+          paint.isAntiAlias = true
+          paint.isFilterBitmap = true
+          canvas.drawBitmap(bitmap, matrix, paint)
+      } else {
+          croppedBitmap = Bitmap.createBitmap(bitmap, x, y, w, h)
+          scaledCrop = Bitmap.createScaledBitmap(croppedBitmap, 112, 112, true)
+      }
+      
+      // Step 3: Preprocess (112x112, normalized (val - 127.5)/128.0)
+      val stride = 112 * 112
+      val imgData = FloatBuffer.allocate(1 * 3 * stride)
+      imgData.rewind()
+      val bmpData = IntArray(stride)
+      scaledCrop.getPixels(bmpData, 0, 112, 0, 0, 112, 112)
+      
+      for (i in 0 until 112) {
+          for (j in 0 until 112) {
+              val idx = 112 * i + j
+              val pixelValue = bmpData[idx]
+              // SFace / MobileFaceNet typical normalization: (val - 127.5) / 128.0
+              // Extract RGB (Bitmap is ARGB_8888)
+              val r = (pixelValue shr 16 and 0xFF).toFloat()
+              val g = (pixelValue shr 8 and 0xFF).toFloat()
+              val b = (pixelValue and 0xFF).toFloat()
+              
+              // InsightFace models (like w600k_r50.onnx and MobileFaceNet) expect BGR input channel order
+              imgData.put(idx, (b - 127.5f) / 128.0f)              // Channel 0: Blue
+              imgData.put(idx + stride, (g - 127.5f) / 128.0f)     // Channel 1: Green
+              imgData.put(idx + stride * 2, (r - 127.5f) / 128.0f) // Channel 2: Red
+          }
+      }
+      imgData.rewind()
+
+      val session = getVisualSession(modelPath)
+      val inputShape = longArrayOf(1, 3, 112, 112)
+      val inputTensor = OnnxTensor.createTensor(ortEnv, imgData, inputShape)
+      
+      // We pass the tensor to the session. 
+      // SFace input name is typically "input" or "data".
+      val inputName = session.inputNames.iterator().next()
+      val outputs = session.run(java.util.Collections.singletonMap(inputName, inputTensor))
+      val embedding = outputs.use {
+        val raw = ((outputs.get(0).value) as Array<FloatArray>)[0]
+        normalizeL2(raw)
+      }
+      // Encode cropped bitmap to Base64 for CoverImage
+      val outStream = java.io.ByteArrayOutputStream()
+      scaledCrop.compress(Bitmap.CompressFormat.JPEG, 90, outStream)
+      val croppedBase64 = android.util.Base64.encodeToString(outStream.toByteArray(), android.util.Base64.NO_WRAP)
+      
+      inputTensor.close()
+      scaledCrop.recycle()
+      croppedBitmap?.recycle()
+      bitmap.recycle()
+      
+      val result = mapOf(
+          "embedding" to floatArrayToBase64(embedding),
+          "croppedImage" to croppedBase64
+      )
+      
+      result
     }
 
     AsyncFunction("generatePHashAsync") { imageUriString: String ->

@@ -1,4 +1,5 @@
 import { requireNativeModule } from 'expo-modules-core';
+import { Platform } from 'react-native';
 
 export interface LivePhotoBackupResult {
   uri: string;
@@ -17,6 +18,7 @@ type ExpoLomoHasherModuleType = {
   sliceFileAsync(sourceUri: string, destUri: string, offset: number): Promise<boolean>;
   encodeImageEmbeddingAsync(imageUri: string, modelPath: string): Promise<string>;
   encodeTextEmbeddingAsync(text: string, modelPath: string, vocabPath: string, mergesPath: string): Promise<string>;
+  encodeFaceEmbeddingAsync(imageUri: string, boundingBox: any, modelPath: string): Promise<string>;
   generatePHashAsync(imageUri: string): Promise<string>;
 };
 
@@ -54,9 +56,17 @@ export async function encodeTextEmbeddingAsync(text: string, modelPath: string, 
   return await ExpoLomoHasher.encodeTextEmbeddingAsync(text, modelPath, vocabPath, mergesPath);
 }
 
+export async function encodeFaceEmbeddingAsync(
+  imageUri: string,
+  boundingBox: { x: number; y: number; width: number; height: number },
+  modelPath: string
+): Promise<{ embedding: string, croppedImage: string } | "failed"> {
+  if (Platform.OS === 'android') {
+    return await ExpoLomoHasher.encodeFaceEmbeddingAsync(imageUri, boundingBox, modelPath);
+  }
+  return "failed";
+}
+
 export async function generatePHashAsync(imageUri: string): Promise<string> {
   return await ExpoLomoHasher.generatePHashAsync(imageUri);
 }
-
-
-

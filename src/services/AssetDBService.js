@@ -63,13 +63,13 @@ class AssetDBService {
           clipEmbedding TEXT
         );
       `);
-      await db.execAsync('CREATE INDEX IF NOT EXISTS idx_isLocal_hasGeo ON MediaAsset(isLocal, hasGeo);');
-      await db.execAsync('CREATE INDEX IF NOT EXISTS idx_hasGeo ON MediaAsset(hasGeo);');
-      await db.execAsync('CREATE INDEX IF NOT EXISTS idx_hash ON MediaAsset(hash);');
-      await db.execAsync('CREATE INDEX IF NOT EXISTS idx_isLocal ON MediaAsset(isLocal);');
-      await db.execAsync('CREATE INDEX IF NOT EXISTS idx_phash ON MediaAsset(phash);');
-      await db.execAsync('CREATE INDEX IF NOT EXISTS idx_clipEmbedding ON MediaAsset(clipEmbedding);');
-      await db.execAsync('CREATE INDEX IF NOT EXISTS idx_createTime ON MediaAsset(createTime);');
+      try { await db.execAsync('CREATE INDEX IF NOT EXISTS idx_isLocal_hasGeo ON MediaAsset(isLocal, hasGeo);'); } catch (e) {}
+      try { await db.execAsync('CREATE INDEX IF NOT EXISTS idx_hasGeo ON MediaAsset(hasGeo);'); } catch (e) {}
+      try { await db.execAsync('CREATE INDEX IF NOT EXISTS idx_hash ON MediaAsset(hash);'); } catch (e) {}
+      try { await db.execAsync('CREATE INDEX IF NOT EXISTS idx_isLocal ON MediaAsset(isLocal);'); } catch (e) {}
+      try { await db.execAsync('CREATE INDEX IF NOT EXISTS idx_phash ON MediaAsset(phash);'); } catch (e) {}
+      try { await db.execAsync('CREATE INDEX IF NOT EXISTS idx_clipEmbedding ON MediaAsset(clipEmbedding);'); } catch (e) {}
+      try { await db.execAsync('CREATE INDEX IF NOT EXISTS idx_createTime ON MediaAsset(createTime);'); } catch (e) {}
 
       // Handle versioned migrations
       const { user_version } = await db.getFirstAsync('PRAGMA user_version');
@@ -1147,6 +1147,17 @@ class AssetDBService {
       console.log(`[AssetDBService] Bulk deleted ${idsOrHashes.length} assets from SQLite.`);
     } catch (error) {
       console.error('[AssetDBService] Failed to bulk delete assets from SQLite:', error);
+    }
+  }
+
+  async clearFaceData() {
+    await this.initPromise;
+    try {
+      await this.db.execAsync('UPDATE MediaAsset SET faceRecVersion = 0');
+      console.log('[AssetDBService] Cleared all local face detection records (faceRecVersion = 0)');
+    } catch (error) {
+      console.error('[AssetDBService] Failed to clear face data:', error);
+      throw error;
     }
   }
 }

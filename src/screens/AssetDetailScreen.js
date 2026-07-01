@@ -21,6 +21,9 @@ import OfflineCacheService from '../services/OfflineCacheService';
 import AssetDBService from '../services/AssetDBService';
 import GalleryStore from '../store/GalleryStore';
 import ZoomableMedia from '../components/ZoomableMedia';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as ImageManipulator from 'expo-image-manipulator';
+
 
 const { width, height } = Dimensions.get('window');
 
@@ -136,6 +139,49 @@ const OcrBlock = ({ block, idx, isSelected, offsetX, offsetY, renderedWidth, ren
                 />
             </View>
         </GestureDetector>
+    );
+};
+
+// Debug-only face bounding box overlay
+const FaceBox = ({ face, offsetX, offsetY, renderedWidth, renderedHeight, imageW, imageH }) => {
+    // Check if it's the old format (direct from MLKit) or the new rich format
+    const isRich = face.bbox !== undefined;
+    const box = isRich ? face.bbox : { x: face.frame.origin.x, y: face.frame.origin.y, width: face.frame.size.x, height: face.frame.size.y };
+    
+    const x = box.x;
+    const y = box.y;
+    const w = box.width;
+    const h = box.height;
+    const scaleX = renderedWidth / imageW;
+    const scaleY = renderedHeight / imageH;
+    
+    const matchText = isRich && face.bestMatch 
+        ? `${face.bestMatch.id}\n(Sim: ${face.bestMatch.similarity.toFixed(2)})` 
+        : (isRich ? 'No match' : '');
+
+    return (
+        <View
+            pointerEvents="none"
+            style={{
+                position: 'absolute',
+                left: offsetX + x * scaleX,
+                top: offsetY + y * scaleY,
+                width: w * scaleX,
+                height: h * scaleY,
+                borderWidth: 2,
+                borderColor: '#00ff88',
+                borderRadius: 4,
+                backgroundColor: 'rgba(0, 255, 136, 0.08)',
+                justifyContent: 'flex-start',
+                alignItems: 'flex-start',
+            }}
+        >
+            {matchText ? (
+                <View style={{ backgroundColor: 'rgba(0, 0, 0, 0.7)', padding: 2, borderRadius: 2, marginTop: -20 }}>
+                    <Text style={{ color: '#00ff88', fontSize: 10, fontWeight: 'bold' }}>{matchText}</Text>
+                </View>
+            ) : null}
+        </View>
     );
 };
 
@@ -267,6 +313,8 @@ export default function AssetDetailScreen({ route, navigation }) {
     const [selectedOcrIndices, setSelectedOcrIndices] = useState(new Set());
     const [ocrDims, setOcrDims] = useState(null);
     const [loadedDimsMap, setLoadedDimsMap] = useState({});
+    const [debugFaces, setDebugFaces] = useState({ data: [], width: 0, height: 0 });  // debug face bounding boxes
+    const [isDetectingFaces, setIsDetectingFaces] = useState(false);
     const toggleOcrSelection = useCallback((idx) => {
         setSelectedOcrIndices(prev => {
             const newSet = new Set(prev);
@@ -1105,7 +1153,36 @@ export default function AssetDetailScreen({ route, navigation }) {
                                         }}
                                     />
 
+
+                                    {/* Debug Face Bounding Boxes (only in debugMode) */}
+                                    {debugMode && debugFaces.data.length > 0 && item.id === currentAsset.id && (() => {
+                                        const assetW = loadedDimsMap[loadedDimsKey]?.w || currentAsset.width || 1;
+                                        const assetH = loadedDimsMap[loadedDimsKey]?.h || currentAsset.height || 1;
+                                        const scale = Math.min(width / assetW, (height * 0.7) / assetH);
+                                        const renderedW = assetW * scale;
+                                        const renderedH = assetH * scale;
+                                        const offX = (width - renderedW) / 2;
+                                        const offY = (height * 0.7 - renderedH) / 2;
+                                        return (
+                                            <View style={StyleSheet.absoluteFillObject} pointerEvents="none">
+                                                {debugFaces.data.map((face, fi) => (
+                                                    <FaceBox
+                                                        key={fi}
+                                                        face={face}
+                                                        offsetX={offX}
+                                                        offsetY={offY}
+                                                        renderedWidth={renderedW}
+                                                        renderedHeight={renderedH}
+                                                        imageW={debugFaces.width || assetW}
+                                                        imageH={debugFaces.height || assetH}
+                                                    />
+                                                ))}
+                                            </View>
+                                        );
+                                    })()}
+
                                     {/* Dimming Focus Overlay */}
+
                                     {isOcrOverlayVisible && item.id === currentAsset.id && (
                                         <Animated.View 
                                             style={[
@@ -1373,15 +1450,76 @@ export default function AssetDetailScreen({ route, navigation }) {
 
             {debugMode && currentAsset.id ? (
                 <View style={styles.debugPanel}>
-                    <Text style={styles.debugTitle}>--- ASSET DEBUG ---</Text>
+                        <Text style={styles.debugTitle}>--- ASSET DEBUG ---</Text>
                     <Text selectable style={styles.debugText}>ID: {currentAsset.id}</Text>
                     <Text selectable style={styles.debugText}>Hash: {currentAsset.hash || 'MISSING'}</Text>
                     <Text selectable style={styles.debugText}>Status: {currentAsset.status}</Text>
                     <Text selectable style={styles.debugText}>Time Ms: {currentAsset.creationTime}</Text>
                     <Text selectable style={styles.debugText}>UTC: {new Date(currentAsset.creationTime).toISOString()}</Text>
                     <Text selectable style={styles.debugText}>Index: {currentIndex} / {assets.length}</Text>
+                    <TouchableOpacity
+                        style={{ marginTop: 6, paddingHorizontal: 10, paddingVertical: 5, backgroundColor: '#00ff88', borderRadius: 6, alignSelf: 'flex-start' }}
+                        onPress={async () => {
+                            setDebugFaces({ data: [], width: 0, height: 0 });
+                            setIsDetectingFaces(true);
+                            try {
+                                if (currentAsset.status === 'remote') {
+                                    alert('Only works on local photos for now');
+                                    return;
+                                }
+                                // Get real file:// path via getAssetInfo (same as background processor)
+                                let localPath = null;
+                                try {
+                                    const info = await MediaService.getAssetInfo(currentAsset.id);
+                                    localPath = info?.localUri || info?.uri;
+                                } catch (e) {}
+                                // Android fallback: content:// URI
+                                if (!localPath && Platform.OS === 'android') {
+                                    localPath = `content://media/external/images/media/${currentAsset.id}`;
+                                }
+                                if (!localPath) { alert('Could not resolve local path'); return; }
+                                console.log('[FaceDebug] Normalizing EXIF rotation for:', localPath);
+                                // Workaround for EXIF rotation: resave image so it's upright for MLKit
+                                const manipResult = await ImageManipulator.manipulateAsync(
+                                    localPath,
+                                    [], // Empty array just auto-rotates based on EXIF
+                                    { format: ImageManipulator.SaveFormat.JPEG }
+                                );
+                                localPath = manipResult.uri;
+
+                                console.log('[FaceDebug] Detecting and matching faces in:', localPath);
+                                const richFaces = await AIService.debugDetectAndMatch(localPath);
+                                console.log('[FaceDebug] Detection result:', JSON.stringify(richFaces, null, 2));
+                                setDebugFaces({ data: richFaces, width: manipResult.width, height: manipResult.height });
+                                if (richFaces.length === 0) {
+                                    alert('No faces detected');
+                                } else {
+                                    const face = richFaces[0];
+                                    if (face.bestMatch) {
+                                        alert(`Best Match: ${face.bestMatch.title}\nSimilarity: ${face.bestMatch.similarity.toFixed(3)}`);
+                                    } else if (face.allMatches && face.allMatches.length > 0) {
+                                        alert(`No Match.\nTop match was ${face.allMatches[0].title} (${face.allMatches[0].similarity.toFixed(3)})`);
+                                    } else {
+                                        alert('No matches found (Database might be empty).');
+                                    }
+                                }
+                            } catch (e) {
+                                console.error('[FaceDebug] Error:', e);
+                                alert('Detection error: ' + e.message);
+                            } finally {
+                                setIsDetectingFaces(false);
+                            }
+
+                        }}
+                        disabled={isDetectingFaces}
+                    >
+                        <Text style={{ color: '#000', fontWeight: '700', fontSize: 12 }}>
+                            {isDetectingFaces ? 'Detecting...' : `Detect Faces (${debugFaces.data.length})`}
+                        </Text>
+                    </TouchableOpacity>
                 </View>
             ) : null}
+
 
             {/* Sleek Google Lens Style Floating Action Bar */}
             {isOcrOverlayVisible && (

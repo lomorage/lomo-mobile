@@ -14,6 +14,7 @@ import AuthService from './AuthService';
 import MediaService from './MediaService';
 import TaskSchedulerService from './TaskSchedulerService';
 import { recognizeText } from '@infinitered/react-native-mlkit-text-recognition';
+import { RNMLKitFaceDetector } from '@infinitered/react-native-mlkit-face-detection';
 import { pinyin } from 'pinyin-pro';
 import { startKeepAlive, stopKeepAlive } from '../../modules/expo-background-keepalive';
 
@@ -222,6 +223,10 @@ class AIService {
     this.isPrewarming = false;
     this.isPrewarmed = false;
     this.prewarmPromise = null;
+    this.faceAlbumCache = null; // [ { id, title, coverEmbedding, coverImageBase64 } ]
+    this.faceDetector = new RNMLKitFaceDetector({ performanceMode: 'accurate', minFaceSize: 0.1, landmarkMode: true });
+    // Set to true to run face detection WITHOUT writing to DB or server (for debugging)
+    this.faceDryRun = true;
   }
 
   async prewarmVectorCache() {
@@ -741,6 +746,251 @@ class AIService {
     }
   }
 
+  cosineSimilarity(vecA, vecB) {
+    let dotProduct = 0;
+    let normA = 0;
+    let normB = 0;
+    const len = Math.min(vecA.length, vecB.length);
+    for (let i = 0; i < len; i++) {
+      dotProduct += vecA[i] * vecB[i];
+      normA += vecA[i] * vecA[i];
+      normB += vecB[i] * vecB[i];
+    }
+    if (normA === 0 || normB === 0) return 0;
+    return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+  }
+
+  async _refreshFaceAlbumCache() {
+    try {
+      const url = AuthService.getServerUrl();
+      const token = AuthService.getToken();
+      if (!url || !token) return;
+
+      const res = await axios.get(`${url}/album`, { headers: { 'Authorization': `token=${token}` } });
+      const allAlbums = res.data?.Albums || [];
+      const faceAlbums = allAlbums.filter(a => a.Title && a.Title.startsWith('/Faces/'));
+
+      this.faceAlbumCache = [];
+      for (const album of faceAlbums) {
+        let coverEmbedding = null;
+        if (album.CoverImage) {
+          // Crop and calculate embedding. We need a way to pass the base64 cover image to ExpoLomoHasher.
+          // Since ExpoLomoHasher currently expects a file URI, we can write the base64 to a temp file.
+          const tempFileUri = FileSystem.cacheDirectory + `temp_face_cover_${album.ID}.png`;
+          try {
+            await FileSystem.writeAsStringAsync(tempFileUri, album.CoverImage, { encoding: FileSystem.EncodingType.Base64 });
+            // For cover image, we assume it's already tightly cropped, so bounding box is the whole image.
+            const size = await new Promise((resolve, reject) => Image.getSize(tempFileUri, (w, h) => resolve({w,h}), reject));
+            
+            let coverBBox = { x: 0, y: 0, width: size.w, height: size.h };
+            
+            // Attempt to detect landmarks in the cover image to align it properly for ArcFace
+            try {
+              const coverFacesRes = await this.faceDetector.detectFaces(tempFileUri);
+              const coverFaces = coverFacesRes?.faces || [];
+              if (coverFaces.length > 0 && coverFaces[0].landmarks) {
+                const face = coverFaces[0];
+                const leftEye = face.landmarks.find(l => l.type === '4' || l.type === 'LEFT_EYE');
+                const rightEye = face.landmarks.find(l => l.type === '10' || l.type === 'RIGHT_EYE');
+                if (leftEye && rightEye) {
+                  coverBBox.leftEye = { x: leftEye.position.x, y: leftEye.position.y };
+                  coverBBox.rightEye = { x: rightEye.position.x, y: rightEye.position.y };
+                }
+              }
+            } catch (err) {
+              console.warn(`[AIService] Failed to detect landmarks on cover image for album ${album.ID}`);
+            }
+
+            const faceResultObj = await ExpoLomoHasher.encodeFaceEmbeddingAsync(
+              tempFileUri,
+              coverBBox,
+              'w600k_r50.onnx'
+            );
+            if (faceResultObj && faceResultObj !== "failed" && faceResultObj.embedding) {
+              coverEmbedding = base64ToFloat32Array(faceResultObj.embedding);
+            }
+          } catch (e) {
+            console.warn(`[AIService] Failed to generate embedding for Face Album ${album.ID}:`, e.message);
+          } finally {
+            await FileSystem.deleteAsync(tempFileUri, { idempotent: true });
+          }
+        }
+        
+        this.faceAlbumCache.push({
+          id: album.ID,
+          title: album.Title,
+          coverEmbedding: coverEmbedding,
+        });
+      }
+      console.log(`[AIService] Refreshed Face Album cache, found ${this.faceAlbumCache.length} albums.`);
+    } catch (e) {
+      console.warn('[AIService] Failed to refresh Face Album cache:', e.message);
+      this.faceAlbumCache = [];
+    }
+  }
+
+  async fixBrokenFaceData() {
+    const fixed = await SecureStore.getItemAsync('lomorage_face_bug_fixed_v1');
+    if (fixed === 'true') return;
+
+    console.log('[AIService] Running one-time fix for broken face data...');
+    try {
+      // 1. Reset local SQLite
+      if (AssetDBService.db) {
+        await AssetDBService.db.runAsync('UPDATE MediaAsset SET faceRecVersion = 0');
+      }
+      
+      // 2. Clean up broken remote albums
+      const url = AuthService.getServerUrl();
+      const token = AuthService.getToken();
+      if (url && token) {
+        const res = await axios.get(`${url}/album`, { headers: { 'Authorization': `token=${token}` } });
+        const allAlbums = res.data?.Albums || [];
+        for (const album of allAlbums) {
+          if (album.Title && album.Title.startsWith('/Faces/unamed-') && (!album.CoverImage || album.CoverImage === "")) {
+            console.log(`[AIService] Deleting broken album: ${album.Title}`);
+            await axios.delete(`${url}/album/${album.ID}`, { headers: { 'Authorization': `token=${token}` } });
+          }
+        }
+      }
+
+      await SecureStore.setItemAsync('lomorage_face_bug_fixed_v1', 'true');
+      console.log('[AIService] One-time fix completed!');
+    } catch (e) {
+      console.warn('[AIService] Failed to run fix:', e.message);
+    }
+  }
+
+  /**
+   * [CLEANUP] Deletes ALL /Faces/ albums from the server. 
+   * Call this to wipe a polluted server before re-running face detection.
+   * Only run once, then set faceDryRun = false.
+   */
+  async cleanUpAllFaceAlbums() {
+    const url = AuthService.getServerUrl();
+    const token = AuthService.getToken();
+    if (!url || !token) return;
+    console.log('[AIService] Starting cleanup of all /Faces/ albums...');
+    try {
+      const res = await axios.get(`${url}/album`, { headers: { 'Authorization': `token=${token}` } });
+      const allAlbums = res.data?.Albums || [];
+      const faceAlbums = allAlbums.filter(a => a.Title && a.Title.startsWith('/Faces/'));
+      console.log(`[AIService] Found ${faceAlbums.length} face albums to delete.`);
+      for (const album of faceAlbums) {
+        console.log(`[AIService] Deleting face album: ${album.Title} (ID: ${album.ID})`);
+        await axios.delete(`${url}/album/${album.ID}`, { headers: { 'Authorization': `token=${token}` } });
+      }
+      // Also reset local SQLite
+      if (AssetDBService.db) {
+        await AssetDBService.db.runAsync('UPDATE MediaAsset SET faceRecVersion = 0');
+      }
+      this.faceAlbumCache = null;
+      console.log('[AIService] Cleanup complete. All face albums deleted, local DB reset.');
+    } catch (e) {
+      console.error('[AIService] Cleanup failed:', e.message);
+    }
+  }
+
+  /**
+   * [DEBUG ONLY] Detect faces in a local image and match them against existing face albums.
+   * Returns rich debug info without writing anything to DB or server.
+   * @param {string} localPath - file:// or content:// URI to the image
+   * @returns {Promise<Array<{faceIndex, bbox, croppedImageBase64, embedding, bestMatch: {id, title, similarity} | null, allMatches: Array}>>}
+   */
+  async debugDetectAndMatch(localPath) {
+    // Ensure face album cache is loaded
+    if (!this.faceAlbumCache) {
+      await this._refreshFaceAlbumCache();
+    }
+
+    const faceResponse = await this.faceDetector.detectFaces(localPath);
+    let faces = faceResponse?.faces || [];
+    
+    // NMS (Non-Maximum Suppression) to remove overlapping phantom faces
+    const iou = (box1, box2) => {
+      const x1 = Math.max(box1.origin.x, box2.origin.x);
+      const y1 = Math.max(box1.origin.y, box2.origin.y);
+      const x2 = Math.min(box1.origin.x + box1.size.x, box2.origin.x + box2.size.x);
+      const y2 = Math.min(box1.origin.y + box1.size.y, box2.origin.y + box2.size.y);
+      if (x2 < x1 || y2 < y1) return 0;
+      const intersection = (x2 - x1) * (y2 - y1);
+      const area1 = box1.size.x * box1.size.y;
+      const area2 = box2.size.x * box2.size.y;
+      return intersection / (area1 + area2 - intersection);
+    };
+
+    // Sort by size descending, keep largest, remove highly overlapping smaller ones
+    faces.sort((a, b) => (b.frame.size.x * b.frame.size.y) - (a.frame.size.x * a.frame.size.y));
+    const filteredFaces = [];
+    for (const face of faces) {
+      let isOverlap = false;
+      for (const keptFace of filteredFaces) {
+        if (iou(face.frame, keptFace.frame) > 0.3) {
+          isOverlap = true;
+          break;
+        }
+      }
+      if (!isOverlap) filteredFaces.push(face);
+    }
+    faces = filteredFaces;
+
+    const results = [];
+
+    for (let i = 0; i < faces.length; i++) {
+      const face = faces[i];
+      const boundingBox = {
+        x: face.frame.origin.x,
+        y: face.frame.origin.y,
+        width: face.frame.size.x,
+        height: face.frame.size.y,
+      };
+
+      if (face.landmarks) {
+        const leftEye = face.landmarks.find(l => l.type === '4' || l.type === 'LEFT_EYE');
+        const rightEye = face.landmarks.find(l => l.type === '10' || l.type === 'RIGHT_EYE');
+        if (leftEye && rightEye) {
+          boundingBox.leftEye = { x: leftEye.position.x, y: leftEye.position.y };
+          boundingBox.rightEye = { x: rightEye.position.x, y: rightEye.position.y };
+        }
+      }
+
+      let croppedImageBase64 = null;
+      let embedding = null;
+      let bestMatch = null;
+      let allMatches = [];
+
+      try {
+        const faceResultObj = await ExpoLomoHasher.encodeFaceEmbeddingAsync(
+          localPath, boundingBox, 'w600k_r50.onnx'
+        );
+        if (faceResultObj && faceResultObj !== 'failed') {
+          croppedImageBase64 = faceResultObj.croppedImage || null;
+          if (faceResultObj.embedding) {
+            const vec = base64ToFloat32Array(faceResultObj.embedding);
+            embedding = vec;
+            // Compare against all face albums
+            for (const album of this.faceAlbumCache) {
+              if (album.coverEmbedding) {
+                const sim = this.cosineSimilarity(vec, album.coverEmbedding);
+                allMatches.push({ id: album.id, title: album.title, similarity: sim });
+              }
+            }
+            allMatches.sort((a, b) => b.similarity - a.similarity);
+            if (allMatches.length > 0 && allMatches[0].similarity > 0.30) {
+              bestMatch = allMatches[0];
+            }
+          }
+        }
+      } catch (e) {
+        console.warn(`[AIService][debugDetectAndMatch] Face ${i} embedding failed:`, e.message);
+      }
+
+      results.push({ faceIndex: i, bbox: boundingBox, croppedImageBase64, bestMatch, allMatches: allMatches.slice(0, 5) });
+    }
+
+    return results;
+  }
+
   // Generate vector from local image asset
   async getImageEmbedding(imageUri) {
     try {
@@ -756,11 +1006,21 @@ class AIService {
   async processLocalEmbeddings(limit = 10, force = false) {
     if (this.isProcessing) return;
 
+    // Run one-time fix for broken face data
+    await this.fixBrokenFaceData();
+
     const savedAiEnabled = await SecureStore.getItemAsync('lomorage_ai_enabled');
     const aiEnabled = savedAiEnabled !== 'false';
     if (!aiEnabled && !force) {
       console.log('[AIService] Skip background local indexing: AI features disabled.');
       return;
+    }
+
+    const savedFaceDryRun = await SecureStore.getItemAsync('lomorage_face_dry_run');
+    if (savedFaceDryRun !== null) {
+      this.faceDryRun = savedFaceDryRun === 'true';
+    } else {
+      this.faceDryRun = true;
     }
 
     if (!force) {
@@ -793,7 +1053,7 @@ class AIService {
         FROM MediaAsset 
         WHERE isLocal = 1 
           AND mediaType = "photo" 
-          AND ((clipEmbeddingVersion IS NULL OR clipEmbeddingVersion < 1) OR (phash IS NULL OR phash = "") OR (ocrText IS NULL))
+          AND ((clipEmbeddingVersion IS NULL OR clipEmbeddingVersion < 1) OR (phash IS NULL OR phash = "") OR (ocrText IS NULL) OR (faceRecVersion IS NULL OR faceRecVersion < 1))
       `);
       const total = totalRow?.count || 0;
       let processed = 0;
@@ -820,11 +1080,11 @@ class AIService {
         }
 
         const pending = await db.getAllAsync(`
-          SELECT id, hash, isLocal, clipEmbeddingVersion, phash, ocrText 
+          SELECT id, hash, isLocal, clipEmbeddingVersion, phash, ocrText, faceRecVersion 
           FROM MediaAsset 
           WHERE isLocal = 1 
             AND mediaType = "photo" 
-            AND ((clipEmbeddingVersion IS NULL OR clipEmbeddingVersion < 1) OR (phash IS NULL OR phash = "") OR (ocrText IS NULL))
+            AND ((clipEmbeddingVersion IS NULL OR clipEmbeddingVersion < 1) OR (phash IS NULL OR phash = "") OR (ocrText IS NULL) OR (faceRecVersion IS NULL OR faceRecVersion < 1))
           LIMIT ?
         `, [limit]);
 
@@ -848,7 +1108,7 @@ class AIService {
             };
             DeviceEventEmitter.emit('ai_processing_status', this.status);
 
-            console.log(`[AIService] Processing features for local asset ${asset.id}...`);
+            // console.log(`[AIService] Processing features for local asset ${asset.id}...`);
             let localPath = null;
             let imgWidth = 0;
             let imgHeight = 0;
@@ -920,6 +1180,129 @@ class AIService {
                 await AssetDBService.saveAssetOCR(asset.id, "failed");
               }
             }
+
+            // D. Face Clustering
+            if (!asset.faceRecVersion || asset.faceRecVersion < 1) {
+              try {
+                const faceResponse = await this.faceDetector.detectFaces(localPath);
+                const faces = faceResponse?.faces || [];
+                console.log(`[AIService] Detected ${faces.length} faces in ${asset.id}`);
+                
+                if (faces.length > 0) {
+                  if (!this.faceAlbumCache) {
+                    await this._refreshFaceAlbumCache();
+                  }
+
+                  const url = AuthService.getServerUrl();
+                  const token = AuthService.getToken();
+
+                  for (const face of faces) {
+                    const boundingBox = {
+                      x: face.frame.origin.x,
+                      y: face.frame.origin.y,
+                      width: face.frame.size.x,
+                      height: face.frame.size.y
+                    };
+
+                    if (face.landmarks) {
+                      const leftEye = face.landmarks.find(l => l.type === '4' || l.type === 'LEFT_EYE');
+                      const rightEye = face.landmarks.find(l => l.type === '10' || l.type === 'RIGHT_EYE');
+                      if (leftEye && rightEye) {
+                        boundingBox.leftEye = { x: leftEye.position.x, y: leftEye.position.y };
+                        boundingBox.rightEye = { x: rightEye.position.x, y: rightEye.position.y };
+                      }
+                    }
+                    
+                    const faceResultObj = await ExpoLomoHasher.encodeFaceEmbeddingAsync(
+                      localPath,
+                      boundingBox,
+                      'w600k_r50.onnx'
+                    );
+
+                    if (faceResultObj && faceResultObj !== "failed" && faceResultObj.embedding) {
+                      const newFaceVector = base64ToFloat32Array(faceResultObj.embedding);
+                      
+                      let bestMatchId = null;
+                      let highestSimilarity = -1;
+                      
+                      for (const album of this.faceAlbumCache) {
+                        if (album.coverEmbedding) {
+                          const similarity = this.cosineSimilarity(newFaceVector, album.coverEmbedding);
+                          if (similarity > 0.30 && similarity > highestSimilarity) {
+                            highestSimilarity = similarity;
+                            bestMatchId = album.id;
+                          }
+                        }
+                      }
+                      
+                      if (bestMatchId) {
+                        console.log(`[AIService] Match found for local face in ${asset.id} (album: ${bestMatchId}, sim: ${highestSimilarity.toFixed(2)})`);
+                        if (this.faceDryRun) {
+                          console.log(`[AIService][DRY RUN] Would add ${asset.hash} to album ${bestMatchId}`);
+                        } else {
+                          try {
+                            await axios.post(`${url}/album/${bestMatchId}/assets`, JSON.stringify([asset.hash]), {
+                              headers: { 'Authorization': `token=${token}`, 'Content-Type': 'application/json' }
+                            });
+                          } catch (addErr) {
+                            if (addErr.response?.status === 500) {
+                              // ignore
+                            } else {
+                              throw addErr;
+                            }
+                          }
+                        }
+                      } else {
+                        console.log(`[AIService] No match for local face in ${asset.id}, creating new Face Album...`);
+                        const newTitle = `/Faces/unamed-${Math.random().toString(36).substring(2, 15)}`;
+                        
+                        if (this.faceDryRun) {
+                          console.log(`[AIService][DRY RUN] Would create new face album for ${asset.id}`);
+                          this.faceAlbumCache.push({
+                            id: `dry-run-${Date.now()}`,
+                            title: newTitle,
+                            coverEmbedding: newFaceVector,
+                          });
+                        } else {
+                          const createRes = await axios.post(`${url}/album`, {
+                            Title: newTitle,
+                            Description: "",
+                            Author: "lomorage",
+                            CoverImage: faceResultObj.croppedImage
+                          }, { headers: { 'Authorization': `token=${token}`, 'Content-Type': 'application/json' }});
+                          
+                          if (createRes.data && createRes.data.ID) {
+                            const newAlbumId = createRes.data.ID;
+                            await axios.post(`${url}/album/${newAlbumId}/assets`, JSON.stringify([asset.hash]), {
+                              headers: { 'Authorization': `token=${token}`, 'Content-Type': 'application/json' }
+                            });
+                            
+                            this.faceAlbumCache.push({
+                              id: newAlbumId,
+                              title: newTitle,
+                              coverEmbedding: newFaceVector,
+                            });
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+                
+                await AssetDBService.db.runAsync(
+                  'UPDATE MediaAsset SET faceRecVersion = ? WHERE id = ?',
+                  [1, asset.id]
+                );
+                console.log(`[AIService] Processed Face Detection for local asset ${asset.id}`);
+              } catch (fe) {
+                console.warn(`[AIService] Failed Face Detection for local asset ${asset.id}:`, fe.message);
+                await AssetDBService.db.runAsync(
+                  'UPDATE MediaAsset SET faceRecVersion = ? WHERE id = ?',
+                  [-1, asset.id]
+                );
+              }
+            }
+
           } catch (err) {
             console.warn(`[AIService] Failed to process asset ${asset.id}:`, err.message);
             if (!asset.clipEmbeddingVersion || asset.clipEmbeddingVersion < 1) {
@@ -1349,7 +1732,7 @@ class AIService {
             SELECT COUNT(*) as count 
             FROM MediaAsset 
             WHERE isLocal = 0 
-              AND clipEmbedding = "none"
+              AND (clipEmbedding = "none" OR faceRecVersion IS NULL OR faceRecVersion < 1)
           `);
           const totalRemote = totalRemoteRow?.count || 0;
           let processedRemote = 0;
@@ -1358,10 +1741,10 @@ class AIService {
           while (hasMoreRemoteIndex) {
             // Fetch remote assets that don't have embeddings on server (marked as 'none')
             const remotePendingIndex = await db.getAllAsync(`
-              SELECT id, hash 
+              SELECT id, hash, clipEmbedding, faceRecVersion 
               FROM MediaAsset 
               WHERE isLocal = 0 
-                AND clipEmbedding = "none"
+                AND (clipEmbedding = "none" OR faceRecVersion IS NULL OR faceRecVersion < 1)
               LIMIT 10
             `);
 
@@ -1393,59 +1776,186 @@ class AIService {
                 }
 
                 // 2. Extract embedding and phash from downloaded preview file
-                const base64 = await this.getImageEmbedding(downloadRes.uri);
+                let base64 = null;
                 let phash = null;
-                try {
-                  phash = await ExpoLomoHasher.generatePHashAsync(downloadRes.uri);
-                } catch (pe) {
-                  console.warn(`[AIService] Scheme B failed to calculate phash for remote asset ${asset.hash}:`, pe.message);
-                }
-
-                // 3. Save locally in SQLite
-                await this.saveAssetEmbedding(asset.hash, base64, 1);
-                if (phash && phash !== "0") {
-                  await this.saveAssetPHash(asset.hash, phash);
-                }
-                console.log(`[AIService] Saved embedding and phash locally for remote asset ${asset.hash}`);
-
-                // 4. Clean up temporary download file
-                await FileSystem.deleteAsync(tempUri, { idempotent: true });
-
-                // 5. Upload the newly calculated features to server so other devices can pull them!
-                const serverAssetId = await this.getServerAssetIdByHash(asset.hash);
-                if (serverAssetId) {
-                  const device = Platform.OS === 'ios' ? 'ios' : 'android';
-                  const payload = [];
-                  payload.push({
-                    Category: 'similarity',
-                    SourceDevice: device,
-                    AssetID: serverAssetId,
-                    Name: 'shared.similarity.clip.embedding',
-                    Value: base64,
-                    Version: 1
-                  });
-                  if (phash && phash !== "0") {
-                    payload.push({
-                      Category: 'similarity',
-                      SourceDevice: device,
-                      AssetID: serverAssetId,
-                      Name: 'shared.phash.fingerprint',
-                      Value: phash,
-                      Version: 1
-                    });
+                
+                if (asset.clipEmbedding === "none") {
+                  base64 = await this.getImageEmbedding(downloadRes.uri);
+                  try {
+                    phash = await ExpoLomoHasher.generatePHashAsync(downloadRes.uri);
+                  } catch (pe) {
+                    console.warn(`[AIService] Scheme B failed to calculate phash for remote asset ${asset.hash}:`, pe.message);
                   }
 
-                  await axios.post(`${url}/assets/metadata?force=1`, payload, {
-                    headers: { Authorization: `token=${token}` },
-                    timeout: 15000
-                  });
-                  console.log(`[AIService] Uploaded calculated features for remote asset ID ${serverAssetId} successfully.`);
+                  // 3. Save locally in SQLite
+                  await this.saveAssetEmbedding(asset.hash, base64, 1);
+                  if (phash && phash !== "0") {
+                    await this.saveAssetPHash(asset.hash, phash);
+                  }
+                  console.log(`[AIService] Saved embedding and phash locally for remote asset ${asset.hash}`);
+                }
+
+                // 4. Face Detection for remote photo
+                if (!asset.faceRecVersion || asset.faceRecVersion < 1) {
+                  try {
+                    const faceResponse = await this.faceDetector.detectFaces(downloadRes.uri);
+                    const faces = faceResponse?.faces || [];
+                    
+                    if (faces.length > 0) {
+                      if (!this.faceAlbumCache) {
+                        await this._refreshFaceAlbumCache();
+                      }
+
+                      for (const face of faces) {
+                        const boundingBox = {
+                          x: face.frame.origin.x,
+                          y: face.frame.origin.y,
+                          width: face.frame.size.x,
+                          height: face.frame.size.y
+                        };
+
+                        if (face.landmarks) {
+                          const leftEye = face.landmarks.find(l => l.type === '4' || l.type === 'LEFT_EYE');
+                          const rightEye = face.landmarks.find(l => l.type === '10' || l.type === 'RIGHT_EYE');
+                          if (leftEye && rightEye) {
+                            boundingBox.leftEye = { x: leftEye.position.x, y: leftEye.position.y };
+                            boundingBox.rightEye = { x: rightEye.position.x, y: rightEye.position.y };
+                          }
+                        }
+                        
+                        const faceResultObj = await ExpoLomoHasher.encodeFaceEmbeddingAsync(
+                          downloadRes.uri,
+                          boundingBox,
+                          'w600k_r50.onnx'
+                        );
+
+                        if (faceResultObj && faceResultObj !== "failed" && faceResultObj.embedding) {
+                          const newFaceVector = base64ToFloat32Array(faceResultObj.embedding);
+                          
+                          let bestMatchId = null;
+                          let highestSimilarity = -1;
+                          
+                          for (const album of this.faceAlbumCache) {
+                            if (album.coverEmbedding) {
+                              const similarity = this.cosineSimilarity(newFaceVector, album.coverEmbedding);
+                              if (similarity > 0.30 && similarity > highestSimilarity) {
+                                highestSimilarity = similarity;
+                                bestMatchId = album.id;
+                              }
+                            }
+                          }
+                          
+                          if (bestMatchId) {
+                            console.log(`[AIService] Match found for remote face in ${asset.hash} (album: ${bestMatchId}, sim: ${highestSimilarity.toFixed(2)})`);
+                            if (this.faceDryRun) {
+                              console.log(`[AIService][DRY RUN] Would add ${asset.hash} to album ${bestMatchId}`);
+                            } else {
+                              try {
+                                await axios.post(`${url}/album/${bestMatchId}/assets`, JSON.stringify([asset.hash]), {
+                                  headers: { 'Authorization': `token=${token}`, 'Content-Type': 'application/json' }
+                                });
+                              } catch (addErr) {
+                                if (addErr.response?.status === 500) {
+                                  // 500 likely means asset already in album — ignore
+                                } else {
+                                  throw addErr;
+                                }
+                              }
+                            }
+                          } else {
+                            console.log(`[AIService] No match for remote face in ${asset.hash}, creating new Face Album...`);
+                            const newTitle = `/Faces/unamed-${Math.random().toString(36).substring(2, 15)}`;
+                            
+                            if (this.faceDryRun) {
+                              console.log(`[AIService][DRY RUN] Would create new face album for ${asset.hash}`);
+                              this.faceAlbumCache.push({
+                                id: `dry-run-${Date.now()}`,
+                                title: newTitle,
+                                coverEmbedding: newFaceVector,
+                              });
+                            } else {
+                              const createRes = await axios.post(`${url}/album`, {
+                                Title: newTitle,
+                                Description: "",
+                                Author: "lomorage",
+                                CoverImage: faceResultObj.croppedImage
+                              }, { headers: { 'Authorization': `token=${token}`, 'Content-Type': 'application/json' }});
+                              
+                              if (createRes.data && createRes.data.ID) {
+                                const newAlbumId = createRes.data.ID;
+                                await axios.post(`${url}/album/${newAlbumId}/assets`, JSON.stringify([asset.hash]), {
+                                  headers: { 'Authorization': `token=${token}`, 'Content-Type': 'application/json' }
+                                });
+                                
+                                this.faceAlbumCache.push({
+                                  id: newAlbumId,
+                                  title: newTitle,
+                                  coverEmbedding: newFaceVector,
+                                });
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                    
+                    await AssetDBService.db.runAsync(
+                      'UPDATE MediaAsset SET faceRecVersion = ? WHERE hash = ?',
+                      [1, asset.hash]
+                    );
+                    console.log(`[AIService] Processed Face Detection for remote asset ${asset.hash}`);
+                  } catch (fe) {
+                    console.warn(`[AIService] Failed Face Detection for remote asset ${asset.hash}:`, fe.message);
+                    await AssetDBService.db.runAsync(
+                      'UPDATE MediaAsset SET faceRecVersion = ? WHERE hash = ?',
+                      [-1, asset.hash]
+                    );
+                  }
+                }
+
+                // 5. Clean up temporary download file
+                await FileSystem.deleteAsync(tempUri, { idempotent: true });
+
+                // 6. Upload the newly calculated features to server so other devices can pull them!
+                if (base64 || phash) {
+                  const serverAssetId = await this.getServerAssetIdByHash(asset.hash);
+                  if (serverAssetId) {
+                    const device = Platform.OS === 'ios' ? 'ios' : 'android';
+                    const payload = [];
+                    if (base64) {
+                      payload.push({
+                        Category: 'similarity',
+                        SourceDevice: device,
+                        AssetID: serverAssetId,
+                        Name: 'shared.similarity.clip.embedding',
+                        Value: base64,
+                        Version: 1
+                      });
+                    }
+                    if (phash && phash !== "0") {
+                      payload.push({
+                        Category: 'similarity',
+                        SourceDevice: device,
+                        AssetID: serverAssetId,
+                        Name: 'shared.phash.fingerprint',
+                        Value: phash,
+                        Version: 1
+                      });
+                    }
+
+                    await axios.post(`${url}/assets/metadata?force=1`, payload, {
+                      headers: { Authorization: `token=${token}` },
+                      timeout: 15000
+                    });
+                    console.log(`[AIService] Uploaded calculated features for remote asset ID ${serverAssetId} successfully.`);
+                  }
                 }
               } catch (err) {
                 console.warn(`[AIService] Scheme B failed for remote asset ${asset.hash}:`, err.message);
                 try { await FileSystem.deleteAsync(tempUri, { idempotent: true }); } catch (e) {}
-                // Mark as 'failed' instead of 'none' to avoid infinite loops
-                await this.saveAssetEmbedding(asset.hash, 'failed', -1);
+                if (asset.clipEmbedding === "none") {
+                  await this.saveAssetEmbedding(asset.hash, 'failed', -1);
+                }
               }
             }
           }
@@ -2823,6 +3333,21 @@ class AIService {
       console.timeEnd('[AIService] duplicate_scan_total');
       console.error('[AIService] Failed in findDuplicateGroups:', error);
       return [];
+    }
+  }
+
+  // Reset and force recalculate all face records
+  async forceRebuildFaces() {
+    const AssetDBService = require('./AssetDBService').default;
+    try {
+      console.log('[AIService] Resetting all local face tracking records in DB...');
+      await AssetDBService.clearFaceData();
+      console.log('[AIService] All face records reset successfully.');
+      // Trigger extraction in the background asynchronously (respects isIdleForAI config)
+      this.processLocalEmbeddings(50, false).catch(e => console.warn('[AIService] Background face extraction failed:', e.message));
+    } catch (e) {
+      console.error('[AIService] forceRebuildFaces error:', e);
+      throw e;
     }
   }
 

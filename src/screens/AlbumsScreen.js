@@ -60,29 +60,31 @@ export default function AlbumsScreen() {
         }
     };
 
-    const handleAlbumPress = (album) => {
-        navigation.navigate('AlbumDetail', { albumId: album.info.id, albumName: album.name, fullPath: album.info.name });
+    const handleAlbumPress = (album, displayName) => {
+        navigation.navigate('AlbumDetail', { albumId: album.info.id, albumName: displayName, fullPath: album.info.name });
     };
 
     const handleAlbumLongPress = (album) => {
         // Prevent editing system albums or folders for now
         if (!album.info || !album.info.id || album.name.startsWith('/')) return;
         
+        const displayName = album.name.startsWith('unamed-') ? 'Unnamed' : album.name;
+
         Alert.alert(
             'Album Options',
-            `What would you like to do with "${album.name}"?`,
+            `What would you like to do with "${displayName}"?`,
             [
-                { text: 'Rename', onPress: () => setPromptState({ visible: true, action: 'rename', albumId: album.info.id, text: album.name, fullPath: album.info.name }) },
-                { text: 'Delete', style: 'destructive', onPress: () => confirmDeleteAlbum(album) },
+                { text: 'Rename', onPress: () => setPromptState({ visible: true, action: 'rename', albumId: album.info.id, text: displayName === 'Unnamed' ? '' : displayName, fullPath: album.info.name }) },
+                { text: 'Delete', style: 'destructive', onPress: () => confirmDeleteAlbum(album, displayName) },
                 { text: 'Cancel', style: 'cancel' }
             ]
         );
     };
 
-    const confirmDeleteAlbum = (album) => {
+    const confirmDeleteAlbum = (album, displayName) => {
         Alert.alert(
             'Delete Album',
-            `Are you sure you want to delete "${album.name}"? This will not delete the photos inside.`,
+            `Are you sure you want to delete "${displayName}"? This will not delete the photos inside.`,
             [
                 { text: 'Cancel', style: 'cancel' },
                 { text: 'Delete', style: 'destructive', onPress: async () => {
@@ -161,6 +163,7 @@ export default function AlbumsScreen() {
             isFaces = data.name === 'Faces' || (data.fullPath && data.fullPath.includes('/Faces'));
         } else {
             count = data.info && data.info.count ? data.info.count : 0;
+            isFaces = data.info && data.info.name && data.info.name.includes('/Faces/');
             if (data.info && data.info.coverImage) {
                 coverUri = data.info.coverImage.startsWith('data:') 
                     ? data.info.coverImage 
@@ -168,10 +171,17 @@ export default function AlbumsScreen() {
             }
         }
 
+        let displayName = data.name;
+        if (isFolder && data.name === 'Faces') {
+            displayName = 'People';
+        } else if (!isFolder && data.name && data.name.startsWith('unamed-')) {
+            displayName = 'Unnamed';
+        }
+
         return (
             <TouchableOpacity
                 style={styles.listRow}
-                onPress={() => isFolder ? handleFolderPress(data) : handleAlbumPress(data)}
+                onPress={() => isFolder ? handleFolderPress(data) : handleAlbumPress(data, displayName)}
                 onLongPress={() => isFolder ? null : handleAlbumLongPress(data)}
                 delayLongPress={500}
             >
@@ -184,19 +194,19 @@ export default function AlbumsScreen() {
                         coverUri ? (
                             <Image 
                                 source={{ uri: coverUri }} 
-                                style={styles.coverImage} 
+                                style={[styles.coverImage, { borderRadius: isFaces ? 30 : 8 }]} 
                                 contentFit="cover" 
                                 cachePolicy="memory-disk" 
                             />
                         ) : (
-                            <View style={[styles.placeholderCover, { backgroundColor: '#F5F5F5' }]}>
+                            <View style={[styles.placeholderCover, { backgroundColor: '#F5F5F5', borderRadius: isFaces ? 30 : 8 }]}>
                                 <ImageIcon color="#8E8E93" size={28} strokeWidth={1.5} />
                             </View>
                         )
                     )}
                 </View>
                 <View style={styles.infoContainer}>
-                    <Text style={styles.titleText} numberOfLines={1}>{data.name}</Text>
+                    <Text style={styles.titleText} numberOfLines={1}>{displayName}</Text>
                     {count > 0 && <Text style={styles.subtitleText}>{count} items</Text>}
                 </View>
             </TouchableOpacity>
