@@ -12,6 +12,7 @@ import TaskSchedulerService from './TaskSchedulerService';
 import { startKeepAlive, stopKeepAlive } from '../../modules/expo-background-keepalive';
 
 export const BACKGROUND_BACKUP_TASK = 'LOMO_BACKUP_TASK';
+export const BACKGROUND_LOCATION_TASK = 'LOMO_LOCATION_TASK';
 
 class AutoBackupManager {
     constructor() {
@@ -33,7 +34,6 @@ class AutoBackupManager {
         this.activeUploads = {}; // Map of assetId -> progress (0.0 to 1.0)
         this.uploadStats = {}; // Map of assetId -> { startTime, totalBytes, speed }
         this.completedSessionCount = 0;
-        this.completedCount = 0;
 
         this.initSettings();
         
@@ -759,7 +759,6 @@ TaskManager.defineTask(BACKGROUND_BACKUP_TASK, async () => {
     }
 });
 
-export const BACKGROUND_LOCATION_TASK = 'LOMO_LOCATION_TASK';
 
 TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     if (error) {

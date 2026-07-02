@@ -19,9 +19,12 @@ import android.graphics.BitmapFactory
 import android.util.Base64
 import java.nio.FloatBuffer
 import java.nio.IntBuffer
+import android.media.ExifInterface
+import android.graphics.Matrix
 
 class ExpoLomoHasherModule : Module() {
   private var visualSession: OrtSession? = null
+  private var faceSession: OrtSession? = null
   private var textualSession: OrtSession? = null
   private val ortEnv = OrtEnvironment.getEnvironment()
   private var clipTokenizer: ClipTokenizer? = null
@@ -35,21 +38,67 @@ class ExpoLomoHasherModule : Module() {
     val file = File(context.filesDir, modelPath)
     var inputLength = 0L
     try {
-      context.assets.open(modelPath).use { inputLength = it.available().toLong() }
+      val fd = context.assets.openFd(modelPath)
+      inputLength = fd.length
+      fd.close()
     } catch (e: Exception) {
-      return modelPath
+      try {
+        context.assets.open(modelPath).use { inputLength = it.available().toLong() }
+      } catch (e2: Exception) {
+        return modelPath
+      }
     }
     if (file.exists() && file.length() == inputLength) {
       return file.absolutePath
     }
-    context.assets.open(modelPath).use { input ->
-      FileOutputStream(file).use { output ->
-        input.copyTo(output)
+    val tmpFile = File(context.filesDir, "$modelPath.tmp")
+    try {
+      context.assets.open(modelPath).use { input ->
+        FileOutputStream(tmpFile).use { output ->
+          input.copyTo(output)
+        }
       }
+      if (tmpFile.renameTo(file)) {
+        return file.absolutePath
+      }
+    } catch (e: Exception) {
+      tmpFile.delete()
     }
     return file.absolutePath
   }
 
+  private fun getOrientationRotation(context: android.content.Context, uri: Uri): Int {
+    try {
+      context.contentResolver.openInputStream(uri).use { stream ->
+        if (stream != null) {
+          val exif = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            ExifInterface(stream)
+          } else {
+            return 0
+          }
+          val orientation = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+          return when (orientation) {
+            ExifInterface.ORIENTATION_ROTATE_90 -> 90
+            ExifInterface.ORIENTATION_ROTATE_180 -> 180
+            ExifInterface.ORIENTATION_ROTATE_270 -> 270
+            else -> 0
+          }
+        }
+      }
+    } catch (e: Exception) {
+      Log.e("ExpoLomoHasher", "Error reading exif orientation", e)
+    }
+    return 0
+  }
+
+  private fun rotateBitmap(bitmap: Bitmap, degrees: Int): Bitmap {
+    if (degrees == 0) return bitmap
+    val matrix = Matrix()
+    matrix.postRotate(degrees.toFloat())
+    val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+    bitmap.recycle()
+    return rotated
+  }
   private fun getVisualSession(modelPath: String): OrtSession {
     val current = visualSession
     if (current != null) return current
@@ -60,6 +109,19 @@ class ExpoLomoHasherModule : Module() {
     }
     val session = ortEnv.createSession(resolved, options)
     visualSession = session
+    return session
+  }
+
+  private fun getFaceSession(modelPath: String): OrtSession {
+    val current = faceSession
+    if (current != null) return current
+    val resolved = resolveModelPath(modelPath)
+    val options = OrtSession.SessionOptions().apply {
+      setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+      setIntraOpNumThreads(Runtime.getRuntime().availableProcessors().coerceIn(2, 4))
+    }
+    val session = ortEnv.createSession(resolved, options)
+    faceSession = session
     return session
   }
 
@@ -99,10 +161,12 @@ class ExpoLomoHasherModule : Module() {
         cropY = bitmap.height / 2 - bitmap.width / 2
         cropSize = bitmap.width
     }
-    val bitmapCropped = Bitmap.createBitmap(
-        bitmap, cropX, cropY, cropSize, cropSize
-    )
-    return Bitmap.createScaledBitmap(bitmapCropped, imageSize, imageSize, false)
+    val bitmapCropped = Bitmap.createBitmap(bitmap, cropX, cropY, cropSize, cropSize)
+    val scaled = Bitmap.createScaledBitmap(bitmapCropped, imageSize, imageSize, true)
+    if (bitmapCropped != bitmap && bitmapCropped != scaled) {
+      bitmapCropped.recycle()
+    }
+    return scaled
   }
 
   private fun preProcess(bitmap: Bitmap): FloatBuffer {
@@ -154,14 +218,8 @@ class ExpoLomoHasherModule : Module() {
         val uri = Uri.parse(uriString)
         val context = appContext.reactContext ?: throw Exception("React context not available")
         
-        val logFile = File(context.filesDir, "hasher_debug.log")
         fun logToFile(msg: String) {
             Log.d("ExpoLomoHasher", msg)
-            try {
-                logFile.appendText("$msg\n")
-            } catch (e: Exception) {
-                // Ignore log failures
-            }
         }
 
         val inputStream: InputStream = if (uri.scheme == "content") {
@@ -197,11 +255,6 @@ class ExpoLomoHasherModule : Module() {
             buffer = ByteArray(128 * 1024) // 128KB fallback for fragmented heaps
         }
         var totalBytesRead = 0L
-        
-        // Debug file for the specific problematic size or URI
-        val isTargetFile = (uriString.contains("005404073") || uriString.contains("1610379"))
-        val debugFile = if (isTargetFile) File(context.filesDir, "debug_dump.bin") else null
-        val debugOutputStream = debugFile?.let { FileOutputStream(it) }
 
         try {
             while (true) {
@@ -212,19 +265,13 @@ class ExpoLomoHasherModule : Module() {
                     val firstBytes = (0..15).joinToString("") { String.format("%02x", buffer[it]) }
                     logToFile("START BYTES for $uriString: $firstBytes")
                 }
-                
-                debugOutputStream?.write(buffer, 0, read)
 
                 digest.update(buffer, 0, read)
                 totalBytesRead += read
             }
             logToFile("FINISH. Total bytes hashed: $totalBytesRead")
-            if (debugFile != null) {
-                logToFile("Debug dump written to: ${debugFile.absolutePath}")
-            }
         } finally {
             inputStream.close()
-            debugOutputStream?.close()
         }
         
         val sha1 = digest.digest()
@@ -274,7 +321,7 @@ class ExpoLomoHasherModule : Module() {
                 if (skipAttempt <= 0) {
                     val tempBuffer = ByteArray(Math.min(8192L, offset - skipped).toInt())
                     val read = inputStream.read(tempBuffer)
-                    if (read == -1) break
+                    if (read <= 0) break
                     skipped += read
                 } else {
                     skipped += skipAttempt
@@ -332,31 +379,39 @@ class ExpoLomoHasherModule : Module() {
       val decodeOptions = BitmapFactory.Options().apply {
           inSampleSize = inSampleSize
       }
-      val bitmap = context.contentResolver.openInputStream(uri).use { stream ->
+      var bitmap = context.contentResolver.openInputStream(uri).use { stream ->
           BitmapFactory.decodeStream(stream, null, decodeOptions)
       }
       
       if (bitmap == null) {
           throw Exception("Could not decode bitmap for: $imageUriString")
       }
+      
+      val rotation = getOrientationRotation(context, uri)
+      bitmap = rotateBitmap(bitmap, rotation)
 
       val session = getVisualSession(modelPath)
-      val cropped = centerCrop(bitmap, 224)
-      val processed = preProcess(cropped)
+      var cropped: Bitmap? = null
+      var inputTensor: OnnxTensor? = null
       
-      val inputShape = longArrayOf(1, 3, 224, 224)
-      val inputTensor = OnnxTensor.createTensor(ortEnv, processed, inputShape)
-      
-      val outputs = session.run(java.util.Collections.singletonMap("pixel_values", inputTensor))
-      val embedding = outputs.use {
-        val raw = ((outputs.get(0).value) as Array<FloatArray>)[0]
-        normalizeL2(raw)
+      try {
+          cropped = centerCrop(bitmap, 224)
+          val processed = preProcess(cropped)
+          
+          val inputShape = longArrayOf(1, 3, 224, 224)
+          inputTensor = OnnxTensor.createTensor(ortEnv, processed, inputShape)
+          
+          val outputs = session.run(java.util.Collections.singletonMap("pixel_values", inputTensor))
+          val embedding = outputs.use {
+            val raw = ((outputs.get(0).value) as Array<FloatArray>)[0]
+            normalizeL2(raw)
+          }
+          floatArrayToBase64(embedding)
+      } finally {
+          inputTensor?.close()
+          cropped?.recycle()
+          bitmap.recycle()
       }
-      inputTensor.close()
-      cropped.recycle()
-      bitmap.recycle()
-      
-      floatArrayToBase64(embedding)
     }
 
     AsyncFunction("encodeTextEmbeddingAsync") { text: String, modelPath: String, vocabPath: String, mergesPath: String ->
@@ -366,12 +421,13 @@ class ExpoLomoHasherModule : Module() {
       val tokenBOS = 49406
       val tokenEOS = 49407
 
-      val queryFilter = Regex("[^A-Za-z0-9 ]")
+      val queryFilter = Regex("[^A-Za-z0-9' ]")
       val textClean = queryFilter.replace(text, "").lowercase()
       
       val tokens = mutableListOf<Int>()
       tokens.add(tokenBOS)
-      tokens.addAll(tokenizer.encode(textClean))
+      val bodyTokens = tokenizer.encode(textClean).take(75)
+      tokens.addAll(bodyTokens)
       tokens.add(tokenEOS)
 
       val mask = mutableListOf<Int>()
@@ -397,23 +453,27 @@ class ExpoLomoHasherModule : Module() {
       inputIds.rewind()
       attentionMask.rewind()
       
-      val inputIdsTensor = OnnxTensor.createTensor(ortEnv, inputIds, inputShape)
-      val attentionMaskTensor = OnnxTensor.createTensor(ortEnv, attentionMask, inputShape)
+      var inputIdsTensor: OnnxTensor? = null
+      var attentionMaskTensor: OnnxTensor? = null
       
-      val inputMap = hashMapOf<String, OnnxTensor>()
-      inputMap["input_ids"] = inputIdsTensor
-      inputMap["attention_mask"] = attentionMaskTensor
-      
-      val outputs = session.run(inputMap)
-      val embedding = outputs.use {
-        val raw = ((outputs.get(0).value) as Array<FloatArray>)[0]
-        normalizeL2(raw)
+      try {
+          inputIdsTensor = OnnxTensor.createTensor(ortEnv, inputIds, inputShape)
+          attentionMaskTensor = OnnxTensor.createTensor(ortEnv, attentionMask, inputShape)
+          
+          val inputMap = hashMapOf<String, OnnxTensor>()
+          inputMap["input_ids"] = inputIdsTensor
+          inputMap["attention_mask"] = attentionMaskTensor
+          
+          val outputs = session.run(inputMap)
+          val embedding = outputs.use {
+            val raw = ((outputs.get(0).value) as Array<FloatArray>)[0]
+            normalizeL2(raw)
+          }
+          floatArrayToBase64(embedding)
+      } finally {
+          inputIdsTensor?.close()
+          attentionMaskTensor?.close()
       }
-      
-      inputIdsTensor.close()
-      attentionMaskTensor.close()
-      
-      floatArrayToBase64(embedding)
     }
 
     AsyncFunction("encodeFaceEmbeddingAsync") { imageUriString: String, boundingBox: Map<String, Any>, modelPath: String ->
@@ -421,108 +481,118 @@ class ExpoLomoHasherModule : Module() {
       val context = appContext.reactContext ?: throw Exception("React context not available")
       
       // Step 1: Decode image
-      val bitmap = context.contentResolver.openInputStream(uri).use { stream ->
+      var bitmap = context.contentResolver.openInputStream(uri).use { stream ->
           BitmapFactory.decodeStream(stream)
       } ?: throw Exception("Could not decode bitmap for: $imageUriString")
       
-      // Step 2: Extract bounding box and crop
-      var x = (boundingBox["x"] as? Number)?.toInt() ?: 0
-      var y = (boundingBox["y"] as? Number)?.toInt() ?: 0
-      var w = (boundingBox["width"] as? Number)?.toInt() ?: bitmap.width
-      var h = (boundingBox["height"] as? Number)?.toInt() ?: bitmap.height
-
-      // Ensure bounding box is within bitmap dimensions
-      x = Math.max(0, x)
-      y = Math.max(0, y)
-      if (x + w > bitmap.width) w = bitmap.width - x
-      if (y + h > bitmap.height) h = bitmap.height - y
+      val rotation = getOrientationRotation(context, uri)
+      bitmap = rotateBitmap(bitmap, rotation)
 
       var croppedBitmap: Bitmap? = null
-      val scaledCrop: Bitmap
+      var scaledCrop: Bitmap? = null
+      var inputTensor: OnnxTensor? = null
+      
+      try {
+          // Step 2: Extract bounding box and crop
+          var x = (boundingBox["x"] as? Number)?.toInt() ?: 0
+          var y = (boundingBox["y"] as? Number)?.toInt() ?: 0
+          var w = (boundingBox["width"] as? Number)?.toInt() ?: bitmap.width
+          var h = (boundingBox["height"] as? Number)?.toInt() ?: bitmap.height
 
-      val leftEye = boundingBox["leftEye"] as? Map<*, *>
-      val rightEye = boundingBox["rightEye"] as? Map<*, *>
+          // Ensure bounding box is within bitmap dimensions
+          x = Math.max(0, x)
+          y = Math.max(0, y)
+          if (x + w > bitmap.width) w = bitmap.width - x
+          if (y + h > bitmap.height) h = bitmap.height - y
 
-      if (leftEye != null && rightEye != null) {
-          val lx = (leftEye["x"] as? Number)?.toFloat() ?: 0f
-          val ly = (leftEye["y"] as? Number)?.toFloat() ?: 0f
-          val rx = (rightEye["x"] as? Number)?.toFloat() ?: 0f
-          val ry = (rightEye["y"] as? Number)?.toFloat() ?: 0f
+          if (w <= 0 || h <= 0) {
+              throw Exception("Invalid bounding box dimensions: w=$w, h=$h")
+          }
+
+          val leftEye = boundingBox["leftEye"] as? Map<*, *>
+          val rightEye = boundingBox["rightEye"] as? Map<*, *>
+
+          if (leftEye != null && rightEye != null) {
+              val lx = (leftEye["x"] as? Number)?.toFloat() ?: 0f
+              val ly = (leftEye["y"] as? Number)?.toFloat() ?: 0f
+              val rx = (rightEye["x"] as? Number)?.toFloat() ?: 0f
+              val ry = (rightEye["y"] as? Number)?.toFloat() ?: 0f
+              
+              val src = floatArrayOf(lx, ly, rx, ry)
+              // ArcFace 112x112 standard eye coordinates
+              val dst = floatArrayOf(
+                  38.2946f, 51.6963f,
+                  73.5318f, 51.5014f
+              )
+              
+              val matrix = android.graphics.Matrix()
+              matrix.setPolyToPoly(src, 0, dst, 0, 2)
+              
+              scaledCrop = Bitmap.createBitmap(112, 112, Bitmap.Config.ARGB_8888)
+              val canvas = android.graphics.Canvas(scaledCrop)
+              val paint = android.graphics.Paint()
+              paint.isAntiAlias = true
+              paint.isFilterBitmap = true
+              canvas.drawBitmap(bitmap, matrix, paint)
+          } else {
+              croppedBitmap = Bitmap.createBitmap(bitmap, x, y, w, h)
+              scaledCrop = Bitmap.createScaledBitmap(croppedBitmap, 112, 112, true)
+          }
           
-          val src = floatArrayOf(lx, ly, rx, ry)
-          // ArcFace 112x112 standard eye coordinates
-          val dst = floatArrayOf(
-              38.2946f, 51.6963f,
-              73.5318f, 51.5014f
+          // Step 3: Preprocess (112x112, normalized (val - 127.5)/128.0)
+          val stride = 112 * 112
+          val imgData = FloatBuffer.allocate(1 * 3 * stride)
+          imgData.rewind()
+          val bmpData = IntArray(stride)
+          scaledCrop.getPixels(bmpData, 0, 112, 0, 0, 112, 112)
+          
+          for (i in 0 until 112) {
+              for (j in 0 until 112) {
+                  val idx = 112 * i + j
+                  val pixelValue = bmpData[idx]
+                  // SFace / MobileFaceNet typical normalization: (val - 127.5) / 128.0
+                  // Extract RGB (Bitmap is ARGB_8888)
+                  val r = (pixelValue shr 16 and 0xFF).toFloat()
+                  val g = (pixelValue shr 8 and 0xFF).toFloat()
+                  val b = (pixelValue and 0xFF).toFloat()
+                  
+                  // InsightFace models (like w600k_r50.onnx and MobileFaceNet) expect BGR input channel order
+                  imgData.put(idx, (b - 127.5f) / 128.0f)              // Channel 0: Blue
+                  imgData.put(idx + stride, (g - 127.5f) / 128.0f)     // Channel 1: Green
+                  imgData.put(idx + stride * 2, (r - 127.5f) / 128.0f) // Channel 2: Red
+              }
+          }
+          imgData.rewind()
+
+          val session = getFaceSession(modelPath)
+          val inputShape = longArrayOf(1, 3, 112, 112)
+          inputTensor = OnnxTensor.createTensor(ortEnv, imgData, inputShape)
+          
+          // We pass the tensor to the session. 
+          // SFace input name is typically "input" or "data".
+          val inputName = session.inputNames.iterator().next()
+          val outputs = session.run(java.util.Collections.singletonMap(inputName, inputTensor))
+          val embedding = outputs.use {
+            val raw = ((outputs.get(0).value) as Array<FloatArray>)[0]
+            normalizeL2(raw)
+          }
+          // Encode cropped bitmap to Base64 for CoverImage
+          val outStream = java.io.ByteArrayOutputStream()
+          scaledCrop.compress(Bitmap.CompressFormat.JPEG, 90, outStream)
+          val croppedBase64 = android.util.Base64.encodeToString(outStream.toByteArray(), android.util.Base64.NO_WRAP)
+          
+          val result = mapOf(
+              "embedding" to floatArrayToBase64(embedding),
+              "croppedImage" to croppedBase64
           )
           
-          val matrix = android.graphics.Matrix()
-          matrix.setPolyToPoly(src, 0, dst, 0, 2)
-          
-          scaledCrop = Bitmap.createBitmap(112, 112, Bitmap.Config.ARGB_8888)
-          val canvas = android.graphics.Canvas(scaledCrop)
-          val paint = android.graphics.Paint()
-          paint.isAntiAlias = true
-          paint.isFilterBitmap = true
-          canvas.drawBitmap(bitmap, matrix, paint)
-      } else {
-          croppedBitmap = Bitmap.createBitmap(bitmap, x, y, w, h)
-          scaledCrop = Bitmap.createScaledBitmap(croppedBitmap, 112, 112, true)
+          result
+      } finally {
+          inputTensor?.close()
+          scaledCrop?.recycle()
+          croppedBitmap?.recycle()
+          bitmap.recycle()
       }
-      
-      // Step 3: Preprocess (112x112, normalized (val - 127.5)/128.0)
-      val stride = 112 * 112
-      val imgData = FloatBuffer.allocate(1 * 3 * stride)
-      imgData.rewind()
-      val bmpData = IntArray(stride)
-      scaledCrop.getPixels(bmpData, 0, 112, 0, 0, 112, 112)
-      
-      for (i in 0 until 112) {
-          for (j in 0 until 112) {
-              val idx = 112 * i + j
-              val pixelValue = bmpData[idx]
-              // SFace / MobileFaceNet typical normalization: (val - 127.5) / 128.0
-              // Extract RGB (Bitmap is ARGB_8888)
-              val r = (pixelValue shr 16 and 0xFF).toFloat()
-              val g = (pixelValue shr 8 and 0xFF).toFloat()
-              val b = (pixelValue and 0xFF).toFloat()
-              
-              // InsightFace models (like w600k_r50.onnx and MobileFaceNet) expect BGR input channel order
-              imgData.put(idx, (b - 127.5f) / 128.0f)              // Channel 0: Blue
-              imgData.put(idx + stride, (g - 127.5f) / 128.0f)     // Channel 1: Green
-              imgData.put(idx + stride * 2, (r - 127.5f) / 128.0f) // Channel 2: Red
-          }
-      }
-      imgData.rewind()
-
-      val session = getVisualSession(modelPath)
-      val inputShape = longArrayOf(1, 3, 112, 112)
-      val inputTensor = OnnxTensor.createTensor(ortEnv, imgData, inputShape)
-      
-      // We pass the tensor to the session. 
-      // SFace input name is typically "input" or "data".
-      val inputName = session.inputNames.iterator().next()
-      val outputs = session.run(java.util.Collections.singletonMap(inputName, inputTensor))
-      val embedding = outputs.use {
-        val raw = ((outputs.get(0).value) as Array<FloatArray>)[0]
-        normalizeL2(raw)
-      }
-      // Encode cropped bitmap to Base64 for CoverImage
-      val outStream = java.io.ByteArrayOutputStream()
-      scaledCrop.compress(Bitmap.CompressFormat.JPEG, 90, outStream)
-      val croppedBase64 = android.util.Base64.encodeToString(outStream.toByteArray(), android.util.Base64.NO_WRAP)
-      
-      inputTensor.close()
-      scaledCrop.recycle()
-      croppedBitmap?.recycle()
-      bitmap.recycle()
-      
-      val result = mapOf(
-          "embedding" to floatArrayToBase64(embedding),
-          "croppedImage" to croppedBase64
-      )
-      
-      result
     }
 
     AsyncFunction("generatePHashAsync") { imageUriString: String ->

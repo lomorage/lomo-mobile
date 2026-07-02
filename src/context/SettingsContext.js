@@ -180,16 +180,6 @@ export function SettingsProvider({ children }) {
         } catch (error) {}
     };
 
-    const toggleNightBackupOnly = async () => {
-        try {
-            const newValue = !nightBackupOnly;
-            await SecureStore.setItemAsync('lomorage_night_backup', newValue.toString());
-            setNightBackupOnly(newValue);
-        } catch (error) {
-            console.error('Failed to update night backup only setting', error);
-        }
-    };
-
     const toggleAdaptiveConcurrency = async () => {
         try {
             const newValue = !adaptiveConcurrencyEnabled;
@@ -208,8 +198,12 @@ export function SettingsProvider({ children }) {
     };
 
     const updateUploadConcurrency = async (value) => {
-        setUploadConcurrency(value);
-        await SecureStore.setItemAsync('lomorage_upload_concurrency', value.toString());
+        try {
+            await SecureStore.setItemAsync('lomorage_upload_concurrency', value.toString());
+            setUploadConcurrency(value);
+        } catch (error) {
+            console.error('Failed to update upload concurrency setting', error);
+        }
     };
 
     const toggleRemoteAIProcessing = async () => {
@@ -341,7 +335,6 @@ export function SettingsProvider({ children }) {
             toggleChargingOnly,
             nightBackupOnly,
             toggleNightBackup,
-            toggleNightBackupOnly,
             adaptiveConcurrencyEnabled,
             toggleAdaptiveConcurrency,
             hashConcurrency,

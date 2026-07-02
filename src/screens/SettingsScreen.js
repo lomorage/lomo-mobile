@@ -581,19 +581,6 @@ export default function SettingsScreen({ navigation }) {
 
                         <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8, paddingTop: 8 }]}>
                             <View style={styles.settingTextContainer}>
-                                <Text style={styles.settingLabel}>Index Remote Photos Locally</Text>
-                                <Text style={styles.settingDescription}>Download remote photos' previews and extract embeddings locally when charging and on Wi-Fi (for photos without server embeddings).</Text>
-                            </View>
-                            <Switch
-                                value={remoteAIProcessingEnabled}
-                                onValueChange={toggleRemoteAIProcessing}
-                                trackColor={{ false: '#d1d1d1', true: '#4CAF50' }}
-                                thumbColor={'#fff'}
-                            />
-                        </View>
-
-                        <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8, paddingTop: 8 }]}>
-                            <View style={styles.settingTextContainer}>
                                 <Text style={styles.settingLabel}>Face Clustering Dry Run</Text>
                                 <Text style={styles.settingDescription}>Run local face clustering but skip saving to server.</Text>
                             </View>

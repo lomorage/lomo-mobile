@@ -1724,8 +1724,12 @@ class AIService {
       }
 
         // Part C: Scheme B - Local extraction for remote photos (idle Wi-Fi/Charging only)
+        const savedRemoteAI = await SecureStore.getItemAsync('lomorage_remote_ai_processing');
+        const remoteAIEnabled = savedRemoteAI !== 'false';
         const isIdle = force ? true : await this.isIdleForAI();
-        if (!isIdle) {
+        if (!remoteAIEnabled && !force) {
+          console.log('[AIService] Scheme B: Skip remote photos local indexing (remote AI processing disabled).');
+        } else if (!isIdle) {
           console.log('[AIService] Scheme B: Skip remote photos local indexing (device is not charging or not on Wi-Fi).');
         } else {
           const totalRemoteRow = await db.getFirstAsync(`
