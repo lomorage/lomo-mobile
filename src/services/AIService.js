@@ -387,25 +387,7 @@ class AIService {
     }
   }
 
-  // Check if conditions are met for aggressive background indexing
-  async isIdleForAI() {
-    try {
-      const batteryLevel = await Battery.getBatteryLevelAsync();
-      const batteryState = await Battery.getBatteryStateAsync();
-      const isCharging = batteryState === Battery.BatteryState.CHARGING || batteryState === Battery.BatteryState.FULL;
-      
-      // If battery is above 30%, we don't strictly require it to be charging.
-      // If battery is below 30%, it MUST be charging to run heavy background tasks.
-      const hasEnoughBattery = batteryLevel > 0.3 || isCharging;
-      
-      const network = await Network.getNetworkStateAsync();
-      const isWifi = network.type === Network.NetworkStateType.WIFI;
 
-      return hasEnoughBattery && isWifi;
-    } catch (e) {
-      return false;
-    }
-  }
 
   // Register the OS-level background fetch task
   async registerBackgroundSync() {
