@@ -607,7 +607,7 @@ export default function SettingsScreen({ navigation }) {
 
                         <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8, paddingTop: 8, flexDirection: 'column', alignItems: 'stretch' }]}>
                             <View style={{ marginBottom: 10 }}>
-                                <Text style={styles.settingLabelDanger}>Clear Local Face Data</Text>
+                                <Text style={styles.settingLabel}>Clear Local Face Data</Text>
                                 <Text style={styles.settingDescription}>Reset all local face detection records and force a fresh scan of all photos using the new model.</Text>
                             </View>
                             <TouchableOpacity 
@@ -632,7 +632,7 @@ export default function SettingsScreen({ navigation }) {
                                         ]
                                     );
                                 }}
-                                style={{ backgroundColor: '#ef4444', paddingVertical: 10, borderRadius: 8, alignItems: 'center' }}
+                                style={{ backgroundColor: '#007AFF', paddingVertical: 10, borderRadius: 8, alignItems: 'center' }}
                             >
                                 <Text style={{ color: '#fff', fontWeight: 'bold' }}>Clear Local Face Data</Text>
                             </TouchableOpacity>
