@@ -245,7 +245,7 @@ class AutoBackupManager {
             const savedNightBackup = await SecureStore.getItemAsync('lomorage_night_backup');
             if (savedNightBackup !== null) this.nightBackupOnly = savedNightBackup === 'true';
 
-            const savedIosKeepAlive = await SecureStore.getItemAsync('lomorage_ios_keep_alive');
+            const savedIosKeepAlive = await SecureStore.getItemAsync('lomorage_ios_background_keep_alive');
             if (savedIosKeepAlive !== null) this.iosBackgroundKeepAlive = savedIosKeepAlive === 'true';
 
             if (this.autoBackupEnabled) {

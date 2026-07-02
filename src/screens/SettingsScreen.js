@@ -87,7 +87,7 @@ export default function SettingsScreen({ navigation }) {
         faceDryRun,
         updateFaceDryRun,
         iosBackgroundKeepAlive,
-        toggleIosBackgroundKeepAlive
+        updateIosBackgroundKeepAlive
     } = useSettings();
     const { logout } = useAuth();
     const [stats, setStats] = React.useState({ local: 0, remote: 0 });
@@ -461,7 +461,7 @@ export default function SettingsScreen({ navigation }) {
                         </View>
                         <Switch
                             value={iosBackgroundKeepAlive}
-                            onValueChange={toggleIosBackgroundKeepAlive}
+                            onValueChange={updateIosBackgroundKeepAlive}
                             trackColor={{ false: '#d1d1d1', true: '#4CAF50' }}
                             thumbColor={'#fff'}
                         />

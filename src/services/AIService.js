@@ -1038,7 +1038,7 @@ class AIService {
 
     let iosKeepAlive = false;
     try {
-      const savedIosKeepAlive = await SecureStore.getItemAsync('lomorage_ios_keep_alive');
+      const savedIosKeepAlive = await SecureStore.getItemAsync('lomorage_ios_background_keep_alive');
       iosKeepAlive = savedIosKeepAlive === 'true';
       if (iosKeepAlive) startKeepAlive();
     } catch (e) {}
@@ -1391,7 +1391,7 @@ class AIService {
 
     let iosKeepAlive = false;
     try {
-      const savedIosKeepAlive = await SecureStore.getItemAsync('lomorage_ios_keep_alive');
+      const savedIosKeepAlive = await SecureStore.getItemAsync('lomorage_ios_background_keep_alive');
       iosKeepAlive = savedIosKeepAlive === 'true';
       if (iosKeepAlive) startKeepAlive();
     } catch (e) {}
