@@ -19,6 +19,7 @@ import { pinyin } from 'pinyin-pro';
 import { startKeepAlive, stopKeepAlive } from '../../modules/expo-background-keepalive';
 
 export const BACKGROUND_AI_SYNC_TASK = 'LOMO_AI_SYNC_TASK';
+const MIN_FACE_SIZE = 80;
 
 // Pure JS JPEG EXIF orientation reader.
 // Attempts a partial read of the first 64KB of the file to locate the EXIF APP1 marker.
@@ -927,6 +928,10 @@ class AIService {
         height: face.frame.size.y,
       };
 
+      if (boundingBox.width < MIN_FACE_SIZE || boundingBox.height < MIN_FACE_SIZE) {
+        continue;
+      }
+
       if (face.landmarks) {
         const leftEye = face.landmarks.find(l => l.type === '4' || l.type === 'LEFT_EYE');
         const rightEye = face.landmarks.find(l => l.type === '10' || l.type === 'RIGHT_EYE');
@@ -1185,6 +1190,10 @@ class AIService {
                       width: face.frame.size.x,
                       height: face.frame.size.y
                     };
+
+                    if (boundingBox.width < MIN_FACE_SIZE || boundingBox.height < MIN_FACE_SIZE) {
+                      continue;
+                    }
 
                     if (face.landmarks) {
                       const leftEye = face.landmarks.find(l => l.type === '4' || l.type === 'LEFT_EYE');
@@ -1799,6 +1808,10 @@ class AIService {
                           width: face.frame.size.x,
                           height: face.frame.size.y
                         };
+
+                        if (boundingBox.width < MIN_FACE_SIZE || boundingBox.height < MIN_FACE_SIZE) {
+                          continue;
+                        }
 
                         if (face.landmarks) {
                           const leftEye = face.landmarks.find(l => l.type === '4' || l.type === 'LEFT_EYE');
