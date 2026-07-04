@@ -61,6 +61,29 @@ class Logger {
 
         console.log('[Logger] Initialized and capturing logs.');
 
+        // Catch uncaught JS exceptions (these cause the app to quit silently without this).
+        // ErrorUtils is the React Native global crash handler — setting it here means any
+        // unhandled throw anywhere in JS will be written to the log file before the process exits.
+        const previousHandler = global.ErrorUtils?.getGlobalHandler?.();
+        global.ErrorUtils?.setGlobalHandler?.((error, isFatal) => {
+            const tag = isFatal ? 'FATAL' : 'ERROR';
+            const msg = `[${tag}] Uncaught JS exception: ${error?.message}\n${error?.stack || ''}`;
+            this.logBuffer.push(`[${new Date().toISOString()}] [${tag}] ${msg}`);
+            // Flush immediately — the normal 5s timer may never fire after a fatal crash.
+            this._flushToDisk();
+            // Propagate to previous handler (shows red screen in dev, terminates in prod).
+            previousHandler?.(error, isFatal);
+        });
+
+        // Catch unhandled promise rejections (silent crashes from async code).
+        global.addEventListener?.('unhandledrejection', (event) => {
+            const reason = event?.reason;
+            const msg = reason instanceof Error
+                ? `${reason.message}\n${reason.stack || ''}`
+                : String(reason);
+            console.error(`[Logger] Unhandled promise rejection: ${msg}`);
+        });
+
         // Start periodic flush
         this.flushTimer = setInterval(() => {
             this._flushToDisk();
