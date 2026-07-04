@@ -942,9 +942,17 @@ const formatSpeed = (bytesPerSec) => {
             appState.current = nextAppState;
         });
 
+        // Initialize AI and GPS sync throttles to maximum performance
+        global.currentAiThrottle = 100;
+        global.currentGpsThrottle = 50;
+
         // Clear expo-image memory cache when system signals low memory
         const memoryWarning = AppState.addEventListener('memoryWarning', () => {
             console.warn('[HomeScreen] Low memory warning — clearing image memory cache');
+            global.lastMemoryWarning = Date.now();
+            // Back off immediately under system memory pressure
+            global.currentAiThrottle = 2500;
+            global.currentGpsThrottle = 2500;
             Image.clearMemoryCache?.();
         });
         

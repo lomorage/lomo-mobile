@@ -1224,6 +1224,8 @@ class AIService {
                       boundingBox,
                       'w600k_r50.onnx'
                     );
+                    // Yield to the iOS run loop so autorelease pools can release face image/tensor memory
+                    await new Promise(resolve => setTimeout(resolve, 100));
 
                     if (faceResultObj && faceResultObj !== "failed" && faceResultObj.embedding) {
                       const newFaceVector = base64ToFloat32Array(faceResultObj.embedding);
@@ -1322,13 +1324,33 @@ class AIService {
             }
           }
 
-          // Throttle background task processing ONLY when a heavy embedding model was called and app is active
-          if (didCalculateEmbeddingForAsset && AppState.currentState === 'active') {
-            await new Promise(resolve => setTimeout(resolve, 1500));
+          // Unconditionally throttle background task processing after each asset.
+          // This gives the native thread and iOS run loop a chance to drain autorelease pools,
+          // release image buffers, and perform garbage collection, preventing OOM / Jetsam kills.
+          const baseDelay = AppState.currentState === 'active' ? 500 : 100;
+          let throttleDelay = baseDelay;
+
+          if (global.currentAiThrottle === undefined) {
+            global.currentAiThrottle = baseDelay;
           }
+
+          // If a memory warning was received recently, override to maximum back-off (2.5s)
+          if (global.lastMemoryWarning && Date.now() - global.lastMemoryWarning < 15000) {
+            global.currentAiThrottle = 2500;
+          }
+
+          if (global.currentAiThrottle > baseDelay) {
+            // Decay the throttle value slowly by 100ms per photo processed successfully
+            global.currentAiThrottle = Math.max(global.currentAiThrottle - 100, baseDelay);
+            throttleDelay = global.currentAiThrottle;
+          } else {
+            global.currentAiThrottle = baseDelay;
+          }
+
+          await new Promise(resolve => setTimeout(resolve, throttleDelay));
         }
-        // Yield to the JS thread to keep the UI smooth (longer yield if heavy embedding was run in this batch)
-        const sleepDelay = (AppState.currentState === 'active' && didCalculateEmbeddingInBatch) ? 3000 : 100;
+        // Yield to the JS thread at the end of each batch
+        const sleepDelay = AppState.currentState === 'active' ? 1000 : 100;
         await new Promise(resolve => setTimeout(resolve, sleepDelay));
       }
     } catch (error) {

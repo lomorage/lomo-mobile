@@ -6,6 +6,7 @@ import MediaService from './MediaService';
 import AssetDBService from './AssetDBService';
 import MetricsTracker from '../utils/MetricsTracker';
 import * as SecureStore from 'expo-secure-store';
+import { AppState } from 'react-native';
 
 /**
  * Parses a date string from the backend and ensures it's treated as UTC.
@@ -1031,6 +1032,17 @@ class SyncService {
         console.log('[SyncService] syncRemoteGPS: already running, skipping.');
         return;
       }
+
+      // Mutual exclusion: defer if AI is currently running to avoid memory crash
+      try {
+        const AIService = require('./AIService').default;
+        if (AIService.isProcessing) {
+          console.log('[SyncService] Deferring syncRemoteGPS: AIService is actively processing.');
+          setTimeout(() => this.syncRemoteGPS(), 15000);
+          return;
+        }
+      } catch (e) {}
+
       this._isSyncingGPS = true;
       console.log('[SyncService] syncRemoteGPS started.');
       try {
@@ -1040,9 +1052,12 @@ class SyncService {
           console.log('[SyncService] syncRemoteGPS aborted: server url or token is missing.');
           return;
         }
+        let hasUpdates = false;
 
         while (true) {
-          const pending = await AssetDBService.getRemoteAssetsWithoutGeo(50);
+          const isForeground = AppState.currentState === 'active';
+          const batchSize = isForeground ? 10 : 30;
+          const pending = await AssetDBService.getRemoteAssetsWithoutGeo(batchSize);
           console.log(`[SyncService] syncRemoteGPS: retrieved ${pending ? pending.length : 0} pending assets without geo.`);
           if (!pending || pending.length === 0) break;
 
@@ -1084,12 +1099,37 @@ class SyncService {
 
           if (updates.length > 0) {
             await AssetDBService.updateAssetsGeo(updates);
-            const { DeviceEventEmitter } = require('react-native');
-            DeviceEventEmitter.emit('remoteAssetsUpdated');
+            hasUpdates = true;
           }
           if (noGeoIds.length > 0) {
             await AssetDBService.markAssetsGeoProcessed(noGeoIds);
           }
+
+          // Throttle between batches (longer if under memory pressure or active in foreground)
+          const baseDelay = AppState.currentState === 'active' ? 2000 : 50;
+          let remoteDelay = baseDelay;
+
+          if (global.currentGpsThrottle === undefined) {
+            global.currentGpsThrottle = baseDelay;
+          }
+
+          if (global.lastMemoryWarning && Date.now() - global.lastMemoryWarning < 15000) {
+            global.currentGpsThrottle = 6000;
+          }
+
+          if (global.currentGpsThrottle > baseDelay) {
+            // Decay throttle value by 200ms per batch processed successfully
+            global.currentGpsThrottle = Math.max(global.currentGpsThrottle - 200, baseDelay);
+            remoteDelay = global.currentGpsThrottle;
+          } else {
+            global.currentGpsThrottle = baseDelay;
+          }
+
+          await new Promise(resolve => setTimeout(resolve, remoteDelay));
+        }
+        if (hasUpdates) {
+          const { DeviceEventEmitter } = require('react-native');
+          DeviceEventEmitter.emit('remoteAssetsUpdated');
         }
       } finally {
         this._isSyncingGPS = false;
@@ -1104,51 +1144,90 @@ class SyncService {
         console.log('[SyncService] syncLocalGPS: already running, skipping.');
         return;
       }
+
+      // Mutual exclusion: defer if AI is currently running to avoid memory crash
+      try {
+        const AIService = require('./AIService').default;
+        if (AIService.isProcessing) {
+          console.log('[SyncService] Deferring syncLocalGPS: AIService is actively processing.');
+          setTimeout(() => this.syncLocalGPS(), 15000);
+          return;
+        }
+      } catch (e) {}
+
       this._isSyncingLocalGPS = true;
       console.log('[SyncService] syncLocalGPS started.');
       try {
+        let hasUpdates = false;
         while (true) {
-          const pending = await AssetDBService.getLocalAssetsWithoutGeo(50);
+          const isForeground = AppState.currentState === 'active';
+          const batchSize = isForeground ? 10 : 30;
+          const pending = await AssetDBService.getLocalAssetsWithoutGeo(batchSize);
           console.log(`[SyncService] syncLocalGPS: retrieved ${pending ? pending.length : 0} pending assets without geo.`);
           if (!pending || pending.length === 0) break;
 
           const updates = [];
           const noGeoIds = [];
 
-          // Batch requests with Promise.all
-          const promises = pending.map(async (asset) => {
-            try {
-              const info = await MediaService.getAssetInfo(asset.id);
-              if (info && info.location && info.location.latitude && info.location.longitude) {
-                updates.push({
-                  id: asset.id,
-                  latitude: info.location.latitude,
-                  longitude: info.location.longitude
-                });
-              } else {
-                noGeoIds.push(asset.id);
+          // Process in smaller chunks to limit parallel requests to Photos daemon
+          const concurrencyLimit = isForeground ? 3 : 10;
+          for (let i = 0; i < pending.length; i += concurrencyLimit) {
+            const chunk = pending.slice(i, i + concurrencyLimit);
+            await Promise.all(chunk.map(async (asset) => {
+              try {
+                const info = await MediaService.getAssetInfo(asset.id);
+                if (info && info.location && info.location.latitude && info.location.longitude) {
+                  updates.push({
+                    id: asset.id,
+                    latitude: info.location.latitude,
+                    longitude: info.location.longitude
+                  });
+                } else {
+                  noGeoIds.push(asset.id);
+                }
+              } catch (e) {
+                console.warn(`[SyncService] Failed to extract local GPS for ${asset.id}:`, e.message);
+                noGeoIds.push(asset.id); // mark processed anyway to avoid retry loop
               }
-            } catch (e) {
-              console.warn(`[SyncService] Failed to extract local GPS for ${asset.id}:`, e.message);
-              noGeoIds.push(asset.id); // mark processed anyway to avoid retry loop
-            }
-          });
-
-          await Promise.all(promises);
+            }));
+          }
 
           console.log(`[SyncService] syncLocalGPS batch done: updates count = ${updates.length}, noGeo count = ${noGeoIds.length}`);
 
           if (updates.length > 0) {
             await AssetDBService.updateAssetsGeo(updates);
-            const { DeviceEventEmitter } = require('react-native');
-            DeviceEventEmitter.emit('remoteAssetsUpdated');
+            hasUpdates = true;
           }
           if (noGeoIds.length > 0) {
             await AssetDBService.markAssetsGeoProcessed(noGeoIds);
           }
 
-          // yield to event loop briefly
-          await new Promise(resolve => setTimeout(resolve, 50));
+          // yield to event loop briefly (longer if under memory pressure or active in foreground)
+          const baseDelay = isForeground ? 2000 : 50;
+          let gpsDelay = baseDelay;
+
+          if (global.currentGpsThrottle === undefined) {
+            global.currentGpsThrottle = baseDelay;
+          }
+
+          if (global.lastMemoryWarning && Date.now() - global.lastMemoryWarning < 15000) {
+            global.currentGpsThrottle = 6000;
+          }
+
+          if (global.currentGpsThrottle > baseDelay) {
+            // Decay throttle value by 200ms per batch processed successfully
+            global.currentGpsThrottle = Math.max(global.currentGpsThrottle - 200, baseDelay);
+            gpsDelay = global.currentGpsThrottle;
+          } else {
+            global.currentGpsThrottle = baseDelay;
+          }
+
+          await new Promise(resolve => setTimeout(resolve, gpsDelay));
+        }
+
+        if (hasUpdates) {
+          const { DeviceEventEmitter } = require('react-native');
+          DeviceEventEmitter.emit('remoteAssetsUpdated');
         }
       } finally {
         this._isSyncingLocalGPS = false;
