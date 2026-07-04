@@ -643,6 +643,10 @@ class AIService {
         try {
           const info = await MediaService.getAssetInfo(asset.id);
           if (info) {
+            if (Platform.OS === 'ios' && !info.localUri) {
+              console.log(`[AIService] extractOCRForAsset: Asset ${asset.id} is offloaded to iCloud. Skipping.`);
+              return returnFullResult ? { text: 'none', blocks: [] } : 'none';
+            }
             rawWidth = info.width || rawWidth;
             rawHeight = info.height || rawHeight;
             if (!localPath) {
@@ -1103,6 +1107,15 @@ class AIService {
             let imgHeight = 0;
             try {
               const info = await MediaService.getAssetInfo(asset.id);
+              if (Platform.OS === 'ios' && (!info || !info.localUri)) {
+                console.log(`[AIService] Asset ${asset.id} is offloaded to iCloud. Skipping local AI analysis.`);
+                // Mark as skipped/none to prevent infinite pending batch query loop
+                await this.saveAssetEmbedding(asset.id, 'none', 1);
+                await this.saveAssetPHash(asset.id, 'none');
+                await AssetDBService.saveAssetOCR(asset.id, 'none');
+                await db.runAsync('UPDATE MediaAsset SET faceRecVersion = 1 WHERE id = ?', [asset.id]);
+                continue;
+              }
               localPath = info?.localUri || info?.uri;
               imgWidth = info?.width || 0;
               imgHeight = info?.height || 0;
