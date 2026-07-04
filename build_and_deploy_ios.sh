@@ -30,10 +30,8 @@ echo "1. Building Production IPA using Fastlane"
 echo "========================================================"
 echo ""
 
-# Run Fastlane from the ios directory
-cd ios
-fastlane build_production
-cd ..
+# Run Fastlane from the root directory
+bundle exec fastlane build_production
 
 IPA_PATH="ios/build/lomomobile.ipa"
 

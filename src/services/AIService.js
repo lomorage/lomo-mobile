@@ -3096,7 +3096,7 @@ class AIService {
       let imageUri = null;
       if (row && row.isLocal === 1) {
         try {
-          const info = await MediaService.getAssetInfo(assetId);
+          const info = await MediaService.getAssetInfo(assetId, { shouldDownloadFromNetwork: true });
           imageUri = info?.localUri || info?.uri;
         } catch (e) {
           console.warn(`[AIService] Failed to get asset info for ${assetId} during on-the-fly embedding:`, e.message);

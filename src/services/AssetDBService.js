@@ -572,9 +572,16 @@ class AssetDBService {
           }
         }
 
+        // 3. Get existing remote assets that need repair (reset to 0 by migration v13 or corrupted)
+        const repairRows = await this.db.getAllAsync('SELECT id FROM MediaAsset WHERE isLocal = 0 AND (createTime = 0 OR createTime IS NULL)');
+        const repairIds = new Set(repairRows.map(r => r.id));
+
         // Insert only genuinely new assets (those not already in the DB).
         // Existing rows are left untouched to preserve GPS, isFavorite, localCachePath, and AI embeddings.
         const newAssets = assets.filter(asset => !existingIds.has(asset.hash));
+        
+        // Find existing assets from the server that need their timestamps repaired in SQLite
+        const repairAssets = assets.filter(asset => repairIds.has(asset.hash));
 
         if (newAssets.length > 0) {
           console.log(`[AssetDBService] Inserting ${newAssets.length} new remote assets out of ${assets.length}...`);
@@ -611,6 +618,41 @@ class AssetDBService {
             }
           }
           console.log(`[AssetDBService] Inserted ${newAssets.length} remote assets.`);
+        }
+
+        // Repair timestamps for existing assets in a single batch
+        if (repairAssets.length > 0) {
+          console.log(`[AssetDBService] Repairing timestamps for ${repairAssets.length} existing remote assets...`);
+          const chunkSize = 500;
+          for (let i = 0; i < repairAssets.length; i += chunkSize) {
+            const chunk = repairAssets.slice(i, i + chunkSize);
+            await this.db.withExclusiveTransactionAsync(async () => {
+              const statement = await this.db.prepareAsync(`
+                UPDATE MediaAsset 
+                SET createTime = ?, mediaType = ?, filename = ? 
+                WHERE id = ? AND isLocal = 0
+              `);
+              try {
+                for (const asset of chunk) {
+                  const filename = asset.tag || asset.filename || '';
+                  const creationTime = asset.date ? asset.date.getTime() : (asset.creationTime || 0);
+                  const mediaTypeStr = asset.mediaType || (isVideoExtension(filename) ? 'video' : 'photo');
+                  statement.executeSync(
+                    creationTime,
+                    mediaTypeStr,
+                    filename,
+                    asset.hash
+                  );
+                }
+              } finally {
+                await statement.finalizeAsync();
+              }
+            });
+            if (i + chunkSize < repairAssets.length) {
+              await new Promise(resolve => setTimeout(resolve, 5));
+            }
+          }
+          console.log(`[AssetDBService] Repaired ${repairAssets.length} remote asset timestamps.`);
         }
       } catch (error) {
         console.error('[AssetDBService] Failed to sync remote assets:', error);
@@ -887,6 +929,41 @@ class AssetDBService {
       console.log(`[AssetDBService] Healed filenames for ${updates.length} remote assets.`);
     } catch (error) {
       console.error('[AssetDBService] Failed to update remote asset filenames:', error);
+    }
+  }
+
+  // Batch repair remote assets' createTime, filename, and mediaType
+  async repairRemoteAssetTimestamps(updates) {
+    if (!this.db || !updates || updates.length === 0) return;
+
+    try {
+      const chunkSize = 500;
+      for (let i = 0; i < updates.length; i += chunkSize) {
+        const chunk = updates.slice(i, i + chunkSize);
+        await this.db.withExclusiveTransactionAsync(async () => {
+          const statement = await this.db.prepareAsync(`
+            UPDATE MediaAsset SET createTime = ?, filename = ?, mediaType = ? WHERE id = ?
+          `);
+          try {
+            for (const update of chunk) {
+              statement.executeSync(
+                update.creationTime,
+                update.filename,
+                update.mediaType,
+                update.hash
+              );
+            }
+          } finally {
+            await statement.finalizeAsync();
+          }
+        });
+        if (i + chunkSize < updates.length) {
+          await new Promise(resolve => setTimeout(resolve, 5));
+        }
+      }
+      console.log(`[AssetDBService] Repaired database timestamps for ${updates.length} remote assets.`);
+    } catch (error) {
+      console.error('[AssetDBService] Failed to repair remote asset timestamps:', error);
     }
   }
 

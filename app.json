@@ -2,7 +2,7 @@
   "expo": {
     "name": "lomo-mobile",
     "slug": "lomo-mobile",
-    "version": "1.0.134",
+    "version": "1.0.135",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -13,7 +13,7 @@
       "backgroundColor": "#0c1b33"
     },
     "ios": {
-      "buildNumber": "6",
+      "buildNumber": "7",
       "supportsTablet": true,
       "bundleIdentifier": "com.wtao.lomo",
       "infoPlist": {
@@ -54,7 +54,7 @@
         "android.permission.POST_NOTIFICATIONS"
       ],
       "package": "com.wtao.lomo",
-      "versionCode": 1000134
+      "versionCode": 1000135
     },
     "plugins": [
       "expo-notifications",

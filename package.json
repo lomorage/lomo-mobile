@@ -1,6 +1,6 @@
 {
   "name": "lomo-mobile",
-  "version": "1.0.134",
+  "version": "1.0.135",
   "main": "index.js",
   "scripts": {
     "start": "expo start",
@@ -29,6 +29,7 @@
     "axios": "^1.13.5",
     "dotenv": "^17.4.2",
     "expo": "~54.0.33",
+    "expo-background-keepalive": "file:./modules/expo-background-keepalive",
     "expo-background-task": "~1.0.0",
     "expo-battery": "~10.0.8",
     "expo-constants": "~18.0.13",

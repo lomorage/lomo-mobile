@@ -37,7 +37,7 @@ function LazyLocalAsset({ assetId, style, onMetadata, ...rest }) {
         let cancelled = false;
         (async () => {
             try {
-                const info = await MediaService.getAssetInfo(assetId);
+                const info = await MediaService.getAssetInfo(assetId, { shouldDownloadFromNetwork: true });
                 if (cancelled || !info) return;
                 let resolvedUri = info.localUri || info.uri;
                 setUri(resolvedUri);
@@ -225,7 +225,7 @@ function CompareItemPage({ item, index, isSelected, onToggle, setModalMeta, isFo
             if (item.isLocal) {
                 setLoading(true);
                 try {
-                    const info = await MediaService.getAssetInfo(item.id);
+                    const info = await MediaService.getAssetInfo(item.id, { shouldDownloadFromNetwork: true });
                     if (cancelled) return;
                     let resolvedUri = info.localUri || info.uri;
                     setDownloadedUri(resolvedUri);

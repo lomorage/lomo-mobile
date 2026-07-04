@@ -187,9 +187,9 @@ class MediaService {
     return allAssets;
   }
 
-  async getAssetInfo(assetId) {
+  async getAssetInfo(assetId, options = { shouldDownloadFromNetwork: false }) {
     try {
-      const info = await MediaLibrary.getAssetInfoAsync(assetId);
+      const info = await MediaLibrary.getAssetInfoAsync(assetId, options);
       if (info) {
         if (info.uri) info.uri = this.normalizeUri(info.uri);
         if (info.localUri) info.localUri = this.normalizeUri(info.localUri);

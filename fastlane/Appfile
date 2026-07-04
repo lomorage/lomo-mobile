@@ -1,0 +1,5 @@
+app_identifier("com.wtao.lomo") # The bundle identifier of your app
+apple_id("lovejennifer14@gmail.com") # Your Apple email address
+
+# itc_team_id("...") # App Store Connect Team ID
+# team_id("...") # Developer Portal Team ID

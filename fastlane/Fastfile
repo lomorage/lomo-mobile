@@ -1,0 +1,23 @@
+default_platform(:ios)
+
+platform :ios do
+  desc "Push a new beta build to TestFlight"
+  lane :beta do
+    # When running fastlane from the root, we need to specify the iOS project path
+    build_app(
+      workspace: "ios/lomomobile.xcworkspace",
+      scheme: "lomomobile"
+    )
+    upload_to_testflight
+  end
+
+  desc "Build Production IPA"
+  lane :build_production do
+    build_app(
+      workspace: "ios/lomomobile.xcworkspace",
+      scheme: "lomomobile",
+      output_directory: "ios/build",
+      output_name: "lomomobile.ipa"
+    )
+  end
+end

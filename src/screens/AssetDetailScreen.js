@@ -1470,7 +1470,7 @@ export default function AssetDetailScreen({ route, navigation }) {
                                 // Get real file:// path via getAssetInfo (same as background processor)
                                 let localPath = null;
                                 try {
-                                    const info = await MediaService.getAssetInfo(currentAsset.id);
+                                    const info = await MediaService.getAssetInfo(currentAsset.id, { shouldDownloadFromNetwork: true });
                                     localPath = info?.localUri || info?.uri;
                                 } catch (e) {}
                                 // Android fallback: content:// URI

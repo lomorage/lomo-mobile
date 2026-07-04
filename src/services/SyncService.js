@@ -715,6 +715,44 @@ class SyncService {
             DeviceEventEmitter.emit('remoteAssetsUpdated');
           }
         }
+
+        // Heal remote assets with 0/null timestamps (reset by migration v13)
+        const zeroTimeRows = await db.getAllAsync(
+          `SELECT id, hash FROM MediaAsset WHERE isLocal = 0 AND (createTime = 0 OR createTime IS NULL)`
+        );
+
+        if (zeroTimeRows && zeroTimeRows.length > 0) {
+          console.log(`[SyncService] Found ${zeroTimeRows.length} remote assets with 0 timestamps. Healing from remote tree...`);
+          const updates = [];
+
+          const isVideoExtension = (filename) => {
+            if (!filename) return false;
+            const ext = filename.split('.').pop().toLowerCase();
+            return ['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext);
+          };
+
+          for (const row of zeroTimeRows) {
+            const node = this.remoteTree.getNodeByHash(row.hash);
+            if (node) {
+              const filename = node.tag || '';
+              const creationTime = node.date ? node.date.getTime() : 0;
+              const mediaType = isVideoExtension(filename) ? 'video' : 'photo';
+              updates.push({
+                hash: row.hash,
+                creationTime,
+                filename,
+                mediaType
+              });
+            }
+          }
+
+          if (updates.length > 0) {
+            await AssetDBService.repairRemoteAssetTimestamps(updates);
+            console.log(`[SyncService] Successfully healed ${updates.length} remote timestamps.`);
+            const { DeviceEventEmitter } = require('react-native');
+            DeviceEventEmitter.emit('remoteAssetsUpdated');
+          }
+        }
       } catch (e) {
         console.error('[SyncService] Error during auto-healing:', e);
       }

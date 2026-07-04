@@ -188,7 +188,7 @@ class UploadService {
 
         try {
             // 1. Get full asset info
-            const info = await MediaService.getAssetInfo(asset.id);
+            const info = await MediaService.getAssetInfo(asset.id, { shouldDownloadFromNetwork: true });
             // ALWAYS prioritize info.uri (content:// on Android) over localUri.
             // localUri is often an ephemeral cached transcode with a different hash.
             // Using content:// guarantees consistent hashes across app restarts!
