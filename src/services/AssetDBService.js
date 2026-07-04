@@ -223,6 +223,27 @@ class AssetDBService {
         console.log('[AssetDBService] Database migrated to version 12 (Added locationPinyin).');
       }
 
+      if (currentVersion < 13) {
+        // Version 13: One-time repair of remote asset createTime values that were incorrectly
+        // stamped with Date.now() due to a field name mismatch (asset.creationTime was undefined
+        // for MerkleNode objects, causing the || Date.now() fallback to fire).
+        // Any remote asset whose createTime is within the last 30 days is suspect — reset it to 0
+        // so the next sync will write the correct date from the server.
+        try {
+          const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+          const result = await db.runAsync(
+            `UPDATE MediaAsset SET createTime = 0 WHERE isLocal = 0 AND createTime > ?`,
+            [thirtyDaysAgo]
+          );
+          console.log(`[AssetDBService] v13 migration: reset ${result.changes} remote assets with bad createTime.`);
+        } catch (e) {
+          console.warn('[AssetDBService] Failed to migrate database to version 13:', e.message);
+        }
+        await db.execAsync('PRAGMA user_version = 13');
+        currentVersion = 13;
+        console.log('[AssetDBService] Database migrated to version 13 (Repaired remote createTime).');
+      }
+
       // Smooth migration: if local_hash_cache_v2.json exists, migrate it to SQLite
       await this.migrateLocalHashCache(db);
 
@@ -276,7 +297,7 @@ class AssetDBService {
               try {
                 for (const [id, value] of chunk) {
                   if (value && value.hash && value.modificationTime) {
-                    statement.executeSync(value.hash, value.modificationTime, id);
+                    statement.executeSync(value.hash, Math.floor(value.modificationTime), id);
                   }
                 }
               } finally {
@@ -364,9 +385,12 @@ class AssetDBService {
 
   async updateAssetHash(id, hash, modificationTime) {
     if (!this.db) return;
+    // expo-media-library returns modificationTime as a float (seconds since epoch).
+    // SQLite INTEGER truncates floats, so we floor it explicitly to keep the stored
+    // value consistent with what we'll compare against on the next launch.
     await this.db.runAsync(
       'UPDATE MediaAsset SET hash = ?, hashModificationTime = ? WHERE id = ?',
-      [hash, modificationTime, id]
+      [hash, Math.floor(modificationTime), id]
     );
   }
 
@@ -527,9 +551,6 @@ class AssetDBService {
         // 2. Find assets to delete (exist in DB but not in incoming)
         const idsToDelete = [...existingIds].filter(id => !incomingHashes.has(id));
 
-        // 3. Find assets to insert (in incoming but not in DB)
-        const newAssets = assets.filter(asset => !existingIds.has(asset.hash));
-
         if (idsToDelete.length > 0) {
           console.log(`[AssetDBService] Deleting ${idsToDelete.length} stale remote assets...`);
           const chunkSize = 500;
@@ -551,38 +572,40 @@ class AssetDBService {
           }
         }
 
+        // Insert only genuinely new assets (those not already in the DB).
+        // Existing rows are left untouched to preserve GPS, isFavorite, localCachePath, and AI embeddings.
+        const newAssets = assets.filter(asset => !existingIds.has(asset.hash));
+
         if (newAssets.length > 0) {
           console.log(`[AssetDBService] Inserting ${newAssets.length} new remote assets out of ${assets.length}...`);
           const chunkSize = 500;
           for (let i = 0; i < newAssets.length; i += chunkSize) {
             const chunk = newAssets.slice(i, i + chunkSize);
-            console.log(`[AssetDBService] syncRemoteAssets entering withExclusiveTransactionAsync`);
             await this.db.withExclusiveTransactionAsync(async () => {
-              console.log(`[AssetDBService] syncRemoteAssets transaction started`);
               const statement = await this.db.prepareAsync(`
                 INSERT OR IGNORE INTO MediaAsset 
                 (id, hash, isLocal, hasGeo, latitude, longitude, createTime, mediaType, filename) 
                 VALUES (?, ?, 0, 0, 0.0, 0.0, ?, ?, ?)
               `);
-              
               try {
                 for (const asset of chunk) {
-                  const mediaTypeStr = asset.mediaType || (isVideoExtension(asset.filename) ? 'video' : 'photo');
+                  // MerkleNode objects use `tag` for filename and `date` (a Date object) for creation time.
+                  // Fall back to plain `filename`/`creationTime` fields for plain objects.
+                  const filename = asset.tag || asset.filename || '';
+                  const creationTime = asset.date ? asset.date.getTime() : (asset.creationTime || 0);
+                  const mediaTypeStr = asset.mediaType || (isVideoExtension(filename) ? 'video' : 'photo');
                   statement.executeSync(
                     asset.hash,
                     asset.hash,
-                    asset.creationTime || Date.now(),
+                    creationTime,
                     mediaTypeStr,
-                    asset.filename || ''
+                    filename
                   );
                 }
               } finally {
-                console.log(`[AssetDBService] syncRemoteAssets finalizing statement`);
                 await statement.finalizeAsync();
-                console.log(`[AssetDBService] syncRemoteAssets finalized statement`);
               }
             });
-            console.log(`[AssetDBService] syncRemoteAssets transaction finished`);
             if (i + chunkSize < newAssets.length) {
               await new Promise(resolve => setTimeout(resolve, 5));
             }

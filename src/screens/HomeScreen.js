@@ -1677,7 +1677,7 @@ const formatSpeed = (bytesPerSec) => {
             ) : (
                 <View style={styles.header}>
                     <View style={{ flex: 1 }}>
-                        <Text style={styles.title}>Lomorage</Text>
+                        <Text style={styles.title} numberOfLines={1} adjustsFontSizeToFit>Lomorage</Text>
                         <Text style={styles.subtitle}>
                             {`${assets.length} items${syncing ? ` • ${syncProgress?.message || 'Loading...'}` : error ? ' • Offline' : ''}`}
                         </Text>

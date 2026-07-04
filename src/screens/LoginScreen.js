@@ -78,7 +78,7 @@ export default function LoginScreen({ navigation }) {
             >
                 <View style={styles.content}>
                     <View style={styles.headerContainer}>
-                        <Text style={styles.title}>Lomorage</Text>
+                        <Text style={styles.title} numberOfLines={1} adjustsFontSizeToFit>Lomorage</Text>
                         <Text style={styles.subtitle}>Sign in to your private photo backup</Text>
                     </View>
                     

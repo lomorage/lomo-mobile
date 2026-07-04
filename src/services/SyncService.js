@@ -456,15 +456,11 @@ class SyncService {
       let currentIndex = 0;
 
       const worker = async () => {
-        let loops = 0;
+        let loopsSinceYield = 0;
+        let didHash = false;
         while (currentIndex < assets.length) {
-          loops++;
-          // Yield to the JS event loop every 5 iterations for 20ms.
-          // Hashing 800+ assets with only a 5ms/50-iteration yield was starving the JS thread,
-          // causing React state updates (e.g. search token chips) to be blocked for 9+ seconds.
-          if (loops % 5 === 0) {
-            await new Promise(resolve => setTimeout(resolve, 20));
-          }
+          loopsSinceYield++;
+          didHash = false;
 
           const asset = assets[currentIndex++];
           if (!asset) break;
@@ -478,14 +474,14 @@ class SyncService {
           let hash = asset.hash;
           if (!hash) {
             const cached = localHashMap[asset.id];
-            if (cached && cached.modificationTime === asset.modificationTime) {
+            if (cached && Math.floor(cached.modificationTime) === Math.floor(asset.modificationTime)) {
               hash = cached.hash;
             } else {
+              // Actual file I/O + SHA-1 — yield 20ms after this to keep UI responsive.
+              didHash = true;
               try {
                 let uri = asset.uri || asset.localUri;
-                console.log(`[SyncService] precalculate worker starting hash for ${uri}`);
                 hash = await MediaService.calculateHash(uri, true); // silent log
-                console.log(`[SyncService] precalculate worker finished hash for ${uri}, result: ${hash ? 'success' : 'failed'}`);
 
                 if (!hash) {
                   const info = await MediaService.getAssetInfo(asset.id);
@@ -501,8 +497,6 @@ class SyncService {
               }
 
               if (hash) {
-                const filename = asset.filename || 'unknown';
-                const size = asset.mediaSubtypes?.[0] || asset.mediaType;
                 localHashMap[asset.id] = {
                   hash,
                   modificationTime: asset.modificationTime
@@ -534,6 +528,16 @@ class SyncService {
                 triggerUiUpdate: shouldTriggerUi
               });
             }
+          }
+
+          if (didHash) {
+            // After actual SHA-1 I/O, yield 20ms to prevent native thread from starving the UI.
+            loopsSinceYield = 0;
+            await new Promise(resolve => setTimeout(resolve, 20));
+          } else if (loopsSinceYield >= 50) {
+            // Pure cache hits: just release the event loop briefly every 50 iterations (no sleep).
+            loopsSinceYield = 0;
+            await new Promise(resolve => setTimeout(resolve, 0));
           }
         }
       };
@@ -574,7 +578,7 @@ class SyncService {
 
         if (!hash) {
           const cached = localHashMap[asset.id];
-          if (cached && cached.modificationTime === asset.modificationTime) {
+          if (cached && Math.floor(cached.modificationTime) === Math.floor(asset.modificationTime)) {
             hash = cached.hash;
           }
         }

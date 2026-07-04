@@ -209,7 +209,9 @@ class AIService {
   constructor() {
     this.isProcessing = false;
     this.isSyncing = false;
-    this.vectorCapacity = 20000;
+    // Start small — the buffer doubles as vectors are loaded (see _ensureVectorCapacity).
+    // 20,000 × 512 × 4 bytes = 40MB pre-allocated on startup was causing iOS memory warnings.
+    this.vectorCapacity = 1000;
     this.vectorDims = 512;
     this.vectorBuffer = new Float32Array(this.vectorCapacity * this.vectorDims);
     this.vectorIds = new Array(this.vectorCapacity);
@@ -1629,11 +1631,10 @@ class AIService {
               let foundPHash = false;
               let pHashVal = 'none';
               let embeddingVal = 'none';
+              let foundOcr = false;
+              let ocrVal = 'none';
               
               if (data && data.Metadatas) {
-                let foundOcr = false;
-                let ocrVal = 'none';
-                
                 for (const meta of data.Metadatas) {
                   if (meta.Name === 'shared.phash.fingerprint' || meta.Name === 'ios.phash.fingerprint' || meta.Name === 'android.phash.fingerprint') {
                     if (meta.Value && meta.Value.length > 0) {
