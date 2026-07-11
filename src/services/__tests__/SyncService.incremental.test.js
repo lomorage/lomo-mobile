@@ -39,6 +39,7 @@ jest.mock('../AssetDBService', () => ({
   updateRemoteAssetFilenames: jest.fn().mockResolvedValue(),
   getLocalHashesMap: jest.fn().mockResolvedValue({}),
   updateAssetHash: jest.fn().mockResolvedValue(),
+  repairRemoteAssetTimestamps: jest.fn().mockResolvedValue(),
 }));
 
 jest.mock('axios');

@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Alert, Platform, Modal } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
 import { Image } from 'expo-image';
-import { ChevronLeft, Trash2, CheckCircle2, Circle } from 'lucide-react-native';
+import { useVideoPlayer, VideoView } from 'expo-video';
+import { ChevronLeft, Trash2, CheckCircle2, Circle, X } from 'lucide-react-native';
 import AssetDBService from '../services/AssetDBService';
 import MediaService from '../services/MediaService';
 import AuthService from '../services/AuthService';
@@ -13,6 +14,7 @@ export default function FreeUpSpaceScreen({ navigation }) {
     const [loading, setLoading] = useState(true);
     const [selectedIds, setSelectedIds] = useState(new Set());
     const [isDeleting, setIsDeleting] = useState(false);
+    const [previewVideoUri, setPreviewVideoUri] = useState(null);
 
     useEffect(() => {
         loadVideos();
@@ -29,10 +31,13 @@ export default function FreeUpSpaceScreen({ navigation }) {
             
             const withSizes = await Promise.all(candidates.map(async (asset) => {
                 const sizeBytes = await MediaService.getAssetSize(asset.id);
+                const localUri = Platform.OS === 'android'
+                    ? `content://media/external/video/media/${asset.id}/thumbnail`
+                    : `ph://${asset.id}`;
                 return {
                     ...asset,
                     sizeBytes,
-                    uri: `${AuthService.getServerUrl()}/preview/${asset.hash}?width=320&height=-1&token=${AuthService.getToken()}`
+                    uri: localUri
                 };
             }));
 
@@ -113,13 +118,29 @@ export default function FreeUpSpaceScreen({ navigation }) {
         );
     };
 
+    const playVideo = async (item) => {
+        try {
+            const info = await MediaService.getAssetInfo(item.id);
+            const playableUri = info?.localUri || info?.uri;
+            if (playableUri) {
+                setPreviewVideoUri(playableUri);
+            } else {
+                Alert.alert('Error', 'Unable to play local video.');
+            }
+        } catch (e) {
+            console.error('[FreeUpSpaceScreen] Error preparing video preview:', e);
+            Alert.alert('Error', 'Unable to play local video.');
+        }
+    };
+
     const renderItem = ({ item }) => {
         const isSelected = selectedIds.has(item.id);
         
         return (
             <TouchableOpacity 
                 style={styles.card}
-                onPress={() => toggleSelection(item.id)}
+                activeOpacity={0.8}
+                onPress={() => playVideo(item)}
             >
                 <Image 
                     source={{ uri: item.uri }} 
@@ -131,13 +152,20 @@ export default function FreeUpSpaceScreen({ navigation }) {
                         <Text style={styles.sizeText}>{formatSize(item.sizeBytes)}</Text>
                     </View>
                 </View>
-                <View style={styles.checkCircle}>
+                <TouchableOpacity 
+                    style={styles.checkCircle}
+                    activeOpacity={0.8}
+                    onPress={(e) => {
+                        e.stopPropagation();
+                        toggleSelection(item.id);
+                    }}
+                >
                     {isSelected ? (
                         <CheckCircle2 size={24} color="#007AFF" fill="#fff" />
                     ) : (
                         <Circle size={24} color="rgba(255,255,255,0.8)" />
                     )}
-                </View>
+                </TouchableOpacity>
             </TouchableOpacity>
         );
     };
@@ -194,6 +222,12 @@ export default function FreeUpSpaceScreen({ navigation }) {
                     )}
                 </TouchableOpacity>
             </View>
+            {previewVideoUri && (
+                <VideoPreviewModal 
+                    uri={previewVideoUri} 
+                    onClose={() => setPreviewVideoUri(null)} 
+                />
+            )}
         </View>
     );
 }
@@ -320,4 +354,48 @@ const styles = StyleSheet.create({
         fontWeight: '600',
         marginLeft: 8,
     },
+    modalContainer: {
+        flex: 1,
+        backgroundColor: '#000',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    closeButton: {
+        position: 'absolute',
+        top: 50,
+        right: 20,
+        zIndex: 10,
+        padding: 10,
+    },
+    modalVideo: {
+        width: '100%',
+        height: '80%',
+    },
 });
+
+function VideoPreviewModal({ uri, onClose }) {
+    const player = useVideoPlayer(uri, player => {
+        player.loop = true;
+        player.play();
+    });
+
+    return (
+        <Modal 
+            visible={true} 
+            animationType="slide" 
+            onRequestClose={onClose}
+        >
+            <View style={styles.modalContainer}>
+                <TouchableOpacity style={styles.closeButton} onPress={onClose}>
+                    <X size={30} color="#fff" />
+                </TouchableOpacity>
+                <VideoView 
+                    player={player} 
+                    style={styles.modalVideo} 
+                    nativeControls={true}
+                    allowsFullscreen={true}
+                />
+            </View>
+        </Modal>
+    );
+}

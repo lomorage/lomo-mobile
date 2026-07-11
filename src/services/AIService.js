@@ -755,7 +755,10 @@ class AIService {
       const token = AuthService.getToken();
       if (!url || !token) return;
 
-      const res = await axios.get(`${url}/album`, { headers: { 'Authorization': `token=${token}` } });
+      const res = await axios.get(`${url}/album`, {
+        headers: { 'Authorization': `token=${token}` },
+        skipAutoProbe: true
+      });
       const allAlbums = res.data?.Albums || [];
       const faceAlbums = allAlbums.filter(a => a.Title && a.Title.startsWith('/Faces/'));
 
@@ -833,12 +836,18 @@ class AIService {
       const url = AuthService.getServerUrl();
       const token = AuthService.getToken();
       if (url && token) {
-        const res = await axios.get(`${url}/album`, { headers: { 'Authorization': `token=${token}` } });
+        const res = await axios.get(`${url}/album`, {
+          headers: { 'Authorization': `token=${token}` },
+          skipAutoProbe: true
+        });
         const allAlbums = res.data?.Albums || [];
         for (const album of allAlbums) {
           if (album.Title && album.Title.startsWith('/Faces/unamed-') && (!album.CoverImage || album.CoverImage === "")) {
             console.log(`[AIService] Deleting broken album: ${album.Title}`);
-            await axios.delete(`${url}/album/${album.ID}`, { headers: { 'Authorization': `token=${token}` } });
+            await axios.delete(`${url}/album/${album.ID}`, {
+              headers: { 'Authorization': `token=${token}` },
+              skipAutoProbe: true
+            });
           }
         }
       }
@@ -861,13 +870,19 @@ class AIService {
     if (!url || !token) return;
     console.log('[AIService] Starting cleanup of all /Faces/ albums...');
     try {
-      const res = await axios.get(`${url}/album`, { headers: { 'Authorization': `token=${token}` } });
+      const res = await axios.get(`${url}/album`, {
+        headers: { 'Authorization': `token=${token}` },
+        skipAutoProbe: true
+      });
       const allAlbums = res.data?.Albums || [];
       const faceAlbums = allAlbums.filter(a => a.Title && a.Title.startsWith('/Faces/'));
       console.log(`[AIService] Found ${faceAlbums.length} face albums to delete.`);
       for (const album of faceAlbums) {
         console.log(`[AIService] Deleting face album: ${album.Title} (ID: ${album.ID})`);
-        await axios.delete(`${url}/album/${album.ID}`, { headers: { 'Authorization': `token=${token}` } });
+        await axios.delete(`${url}/album/${album.ID}`, {
+          headers: { 'Authorization': `token=${token}` },
+          skipAutoProbe: true
+        });
       }
       // Also reset local SQLite
       if (AssetDBService.db) {
@@ -1250,7 +1265,8 @@ class AIService {
                         } else {
                           try {
                             await axios.post(`${url}/album/${bestMatchId}/assets`, JSON.stringify([asset.hash]), {
-                              headers: { 'Authorization': `token=${token}`, 'Content-Type': 'application/json' }
+                              headers: { 'Authorization': `token=${token}`, 'Content-Type': 'application/json' },
+                              skipAutoProbe: true
                             });
                           } catch (addErr) {
                             if (addErr.response?.status === 500) {
@@ -1277,12 +1293,16 @@ class AIService {
                             Description: "",
                             Author: "lomorage",
                             CoverImage: faceResultObj.croppedImage
-                          }, { headers: { 'Authorization': `token=${token}`, 'Content-Type': 'application/json' }});
+                          }, { 
+                            headers: { 'Authorization': `token=${token}`, 'Content-Type': 'application/json' },
+                            skipAutoProbe: true
+                          });
                           
                           if (createRes.data && createRes.data.ID) {
                             const newAlbumId = createRes.data.ID;
                             await axios.post(`${url}/album/${newAlbumId}/assets`, JSON.stringify([asset.hash]), {
-                              headers: { 'Authorization': `token=${token}`, 'Content-Type': 'application/json' }
+                              headers: { 'Authorization': `token=${token}`, 'Content-Type': 'application/json' },
+                              skipAutoProbe: true
                             });
                             
                             this.faceAlbumCache.push({
@@ -1504,7 +1524,8 @@ class AIService {
 
             await axios.post(`${url}/assets/metadata?force=1`, payload, {
               headers: { Authorization: `token=${token}` },
-              timeout: 15000
+              timeout: 15000,
+              skipAutoProbe: true
             });
             console.log(`[AIService] Uploaded embedding for server asset ID ${serverAssetId} successfully.`);
             // Mark remote asset representation in SQLite as having the embedding to avoid re-upload loop
@@ -1592,7 +1613,8 @@ class AIService {
 
             await axios.post(`${url}/assets/metadata?force=1`, payload, {
               headers: { Authorization: `token=${token}` },
-              timeout: 15000
+              timeout: 15000,
+              skipAutoProbe: true
             });
             console.log(`[AIService] Uploaded phash for server asset ID ${serverAssetId} successfully.`);
             // Mark remote asset representation in SQLite as having the phash to avoid re-upload loop
@@ -1887,7 +1909,8 @@ class AIService {
                             } else {
                               try {
                                 await axios.post(`${url}/album/${bestMatchId}/assets`, JSON.stringify([asset.hash]), {
-                                  headers: { 'Authorization': `token=${token}`, 'Content-Type': 'application/json' }
+                                  headers: { 'Authorization': `token=${token}`, 'Content-Type': 'application/json' },
+                                  skipAutoProbe: true
                                 });
                               } catch (addErr) {
                                 if (addErr.response?.status === 500) {
@@ -1914,12 +1937,16 @@ class AIService {
                                 Description: "",
                                 Author: "lomorage",
                                 CoverImage: faceResultObj.croppedImage
-                              }, { headers: { 'Authorization': `token=${token}`, 'Content-Type': 'application/json' }});
+                              }, { 
+                                headers: { 'Authorization': `token=${token}`, 'Content-Type': 'application/json' },
+                                skipAutoProbe: true
+                              });
                               
                               if (createRes.data && createRes.data.ID) {
                                 const newAlbumId = createRes.data.ID;
                                 await axios.post(`${url}/album/${newAlbumId}/assets`, JSON.stringify([asset.hash]), {
-                                  headers: { 'Authorization': `token=${token}`, 'Content-Type': 'application/json' }
+                                  headers: { 'Authorization': `token=${token}`, 'Content-Type': 'application/json' },
+                                  skipAutoProbe: true
                                 });
                                 
                                 this.faceAlbumCache.push({
@@ -1980,7 +2007,8 @@ class AIService {
 
                     await axios.post(`${url}/assets/metadata?force=1`, payload, {
                       headers: { Authorization: `token=${token}` },
-                      timeout: 15000
+                      timeout: 15000,
+                      skipAutoProbe: true
                     });
                     console.log(`[AIService] Uploaded calculated features for remote asset ID ${serverAssetId} successfully.`);
                   }
@@ -2603,7 +2631,7 @@ class AIService {
             try {
               const res = await axios.get(
                 `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=t&q=${encodeURIComponent(fullSemanticQuery)}`,
-                { timeout: 5000 }
+                { timeout: 5000, skipAutoProbe: true }
               );
               if (res.data?.[0]?.[0]?.[0]) translatedQuery2 = res.data[0][0][0];
             } catch (e) {
@@ -2753,7 +2781,7 @@ class AIService {
           try {
             const res = await axios.get(
               `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=t&q=${encodeURIComponent(fullSemanticQuery)}`,
-              { timeout: 5000 }
+              { timeout: 5000, skipAutoProbe: true }
             );
             if (res.data?.[0]?.[0]?.[0]) {
               translatedQuery = res.data[0][0][0];
@@ -2945,7 +2973,7 @@ class AIService {
             try {
               const res = await axios.get(
                 `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=t&q=${encodeURIComponent(queryTextOrVector)}`,
-                { timeout: 5000 }
+                { timeout: 5000, skipAutoProbe: true }
               );
               if (res.data && res.data[0] && res.data[0][0] && res.data[0][0][0]) {
                 searchQuery = res.data[0][0][0];

@@ -1063,6 +1063,7 @@ class SyncService {
 
           const updates = [];
           const noGeoIds = [];
+          let isNetworkError = false;
 
           // Batch requests with simple Promise.all
           const promises = pending.map(async (asset) => {
@@ -1089,11 +1090,17 @@ class SyncService {
                 noGeoIds.push(asset.id);
               } else {
                 console.warn(`[SyncService] Failed to fetch GPS for ${asset.hash}:`, e.message);
+                isNetworkError = true;
               }
             }
           });
 
           await Promise.all(promises);
+
+          if (isNetworkError) {
+            console.log('[SyncService] Network error encountered during syncRemoteGPS. Aborting loop.');
+            break;
+          }
 
           console.log(`[SyncService] syncRemoteGPS batch done: updates count = ${updates.length}, noGeo count = ${noGeoIds.length}`);
 
