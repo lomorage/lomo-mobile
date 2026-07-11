@@ -32,7 +32,7 @@ export default function FreeUpSpaceScreen({ navigation }) {
             const withSizes = await Promise.all(candidates.map(async (asset) => {
                 const sizeBytes = await MediaService.getAssetSize(asset.id);
                 const localUri = Platform.OS === 'android'
-                    ? `content://media/external/video/media/${asset.id}/thumbnail`
+                    ? `content://media/external/video/media/${asset.id}`
                     : `ph://${asset.id}`;
                 return {
                     ...asset,
@@ -133,40 +133,65 @@ export default function FreeUpSpaceScreen({ navigation }) {
         }
     };
 
+const VideoCard = React.memo(({ item, isSelected, playVideo, toggleSelection, formatSize }) => {
+    const [useRemoteFallback, setUseRemoteFallback] = React.useState(false);
+
+    const remoteFallbackUri = item.hash
+        ? `${AuthService.getServerUrl()}/preview/${item.hash}?width=512&height=-1&token=${AuthService.getToken()}`
+        : null;
+
+    const displayUri = (useRemoteFallback && remoteFallbackUri) ? remoteFallbackUri : item.uri;
+
+    return (
+        <TouchableOpacity 
+            style={styles.card}
+            activeOpacity={0.8}
+            onPress={() => playVideo(item)}
+        >
+            <Image 
+                source={{ uri: displayUri }} 
+                style={styles.thumbnail}
+                contentFit="cover"
+                onError={() => {
+                    if (remoteFallbackUri && !useRemoteFallback) {
+                        setUseRemoteFallback(true);
+                    }
+                }}
+            />
+            <View style={styles.overlay}>
+                <View style={styles.sizeBadge}>
+                    <Text style={styles.sizeText}>{formatSize(item.sizeBytes)}</Text>
+                </View>
+            </View>
+            <TouchableOpacity 
+                style={styles.checkCircle}
+                activeOpacity={0.8}
+                onPress={(e) => {
+                    e.stopPropagation();
+                    toggleSelection(item.id);
+                }}
+            >
+                {isSelected ? (
+                    <CheckCircle2 size={24} color="#007AFF" fill="#fff" />
+                ) : (
+                    <Circle size={24} color="rgba(255,255,255,0.8)" />
+                )}
+            </TouchableOpacity>
+        </TouchableOpacity>
+    );
+});
+
     const renderItem = ({ item }) => {
         const isSelected = selectedIds.has(item.id);
         
         return (
-            <TouchableOpacity 
-                style={styles.card}
-                activeOpacity={0.8}
-                onPress={() => playVideo(item)}
-            >
-                <Image 
-                    source={{ uri: item.uri }} 
-                    style={styles.thumbnail}
-                    contentFit="cover"
-                />
-                <View style={styles.overlay}>
-                    <View style={styles.sizeBadge}>
-                        <Text style={styles.sizeText}>{formatSize(item.sizeBytes)}</Text>
-                    </View>
-                </View>
-                <TouchableOpacity 
-                    style={styles.checkCircle}
-                    activeOpacity={0.8}
-                    onPress={(e) => {
-                        e.stopPropagation();
-                        toggleSelection(item.id);
-                    }}
-                >
-                    {isSelected ? (
-                        <CheckCircle2 size={24} color="#007AFF" fill="#fff" />
-                    ) : (
-                        <Circle size={24} color="rgba(255,255,255,0.8)" />
-                    )}
-                </TouchableOpacity>
-            </TouchableOpacity>
+            <VideoCard
+                item={item}
+                isSelected={isSelected}
+                playVideo={playVideo}
+                toggleSelection={toggleSelection}
+                formatSize={formatSize}
+            />
         );
     };
 

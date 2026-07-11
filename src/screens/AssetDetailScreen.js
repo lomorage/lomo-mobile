@@ -1085,8 +1085,6 @@ export default function AssetDetailScreen({ route, navigation }) {
                 // Fetch high-quality preview for full screen viewing to avoid high memory/bandwidth usage and OOM crashes
                 staticImageUri = `${baseUrl}/preview/${item.hash}?width=1280&height=-1&token=${token}`;
             }
-        } else if (!isRemote && item.mediaType === 'video' && Platform.OS === 'android' && staticImageUri && staticImageUri.startsWith('content://')) {
-            staticImageUri = `${staticImageUri}/thumbnail`;
         }
         // Offline Cache overriding logic:
         if (item.status === 'remote' && item.localCachePath && item.mediaType !== 'video') {

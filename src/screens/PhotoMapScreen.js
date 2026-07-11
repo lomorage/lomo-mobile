@@ -55,8 +55,9 @@ function AssetVideoPlayer({ uri, style, shouldPlay, nativeControls = false }) {
 // Separate component so each marker manages its own tracksViewChanges lifecycle.
 // tracksViewChanges=true while image is loading, then false after onLoad fires,
 // so Android re-captures the marker bitmap exactly once after the image appears.
-const PhotoMarker = React.memo(({ coordinate, thumbUrl, onPress }) => {
+const PhotoMarker = React.memo(({ coordinate, thumbUrl, fallbackUrl, onPress }) => {
   const [tracksViewChanges, setTracksViewChanges] = useState(true);
+  const [useRemoteFallback, setUseRemoteFallback] = useState(false);
 
   const stopTracking = useCallback(() => {
     // A brief delay to let the map capture the final rendered image
@@ -85,7 +86,7 @@ const PhotoMarker = React.memo(({ coordinate, thumbUrl, onPress }) => {
       onPress={onPress}
     >
       <Image
-        source={{ uri: thumbUrl || '' }}
+        source={{ uri: (useRemoteFallback && fallbackUrl) ? fallbackUrl : (thumbUrl || '') }}
         style={{
           width: 52,
           height: 52,
@@ -96,6 +97,12 @@ const PhotoMarker = React.memo(({ coordinate, thumbUrl, onPress }) => {
         }}
         contentFit="cover"
         onLoad={stopTracking}
+        onError={() => {
+            if (fallbackUrl && !useRemoteFallback) {
+                setUseRemoteFallback(true);
+                setTracksViewChanges(true); // Re-enable tracking to capture the fallback image
+            }
+        }}
       />
     </Marker>
   );
@@ -184,10 +191,7 @@ export default function PhotoMapScreen() {
       return `ph://${id}`;
     } else {
       const type = mediaType === 'video' ? 'video' : 'images';
-      let uri = `content://media/external/${type}/media/${id}`;
-      if (isThumbnail && mediaType === 'video' && Platform.OS === 'android') {
-        uri = `${uri}/thumbnail`;
-      }
+      const uri = `content://media/external/${type}/media/${id}`;
       return uri;
     }
   }, []);
@@ -571,6 +575,7 @@ export default function PhotoMapScreen() {
     // Single point
     const { assetId, hash, isLocal, mediaType } = cluster.properties;
     const thumbUrl = isLocal ? getLocalUri(assetId, mediaType, true) : (hash ? getThumbnailUrl(hash) : null);
+    const fallbackUrl = (isLocal && mediaType === 'video' && hash) ? getThumbnailUrl(hash) : null;
     const fullUrl = isLocal ? getLocalUri(assetId, mediaType) : (hash ? (mediaType === 'video' ? getFullVideoUrl(hash) : getFullImageUrl(hash)) : null);
     
     return (
@@ -578,6 +583,7 @@ export default function PhotoMapScreen() {
         key={`asset-${assetId}`}
         coordinate={{ latitude, longitude }}
         thumbUrl={thumbUrl}
+        fallbackUrl={fallbackUrl}
         onPress={(e) => {
           e.stopPropagation();
           openPhoto({ thumbUrl, fullUrl, hash, isLocal });

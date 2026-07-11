@@ -498,9 +498,6 @@ export default function HomeScreen({ navigation, route }) {
         if (!uri) return null;
         if (uri.startsWith('http')) return uri;
         if (uri.startsWith('content://')) {
-            if (Platform.OS === 'android' && (mediaType === 'video' || uri.includes('/video/'))) {
-                return `${uri}/thumbnail`;
-            }
             return uri;
         }
         // iOS Photos framework URIs — must be passed as-is to the Image component
@@ -1219,8 +1216,14 @@ const formatSpeed = (bytesPerSec) => {
 
     const RenderAsset = memo(({ asset, globalIndex, navigation, debugMode, currentAssetId, activeAssetIds, activeLoadRef, source }) => {
         const loadStartTime = useRef(0);
+        // Only used as fallback if local video thumbnail decoding fails (e.g. WeChat codec)
+        const [useRemoteFallback, setUseRemoteFallback] = useState(false);
 
         let thumbnailUri = safeUri(asset.uri, asset.mediaType);
+        // For synced videos: build remote preview URL to use only on onError
+        const remoteFallbackUri = (asset.status === 'synced' && asset.mediaType === 'video' && asset.hash)
+            ? `${AuthService.getServerUrl()}/preview/${asset.hash}?width=512&height=-1&token=${AuthService.getToken()}`
+            : null;
 
         if (asset.status === 'remote') {
             if (asset.localCachePath && asset.mediaType !== 'video') {
@@ -1229,6 +1232,9 @@ const formatSpeed = (bytesPerSec) => {
                 // ALWAYS use /preview/ for remote assets to prevent Glide OOM on large files/videos
                 thumbnailUri = `${AuthService.getServerUrl()}/preview/${asset.hash}?width=512&height=-1&token=${AuthService.getToken()}`;
             }
+        } else if (remoteFallbackUri && useRemoteFallback) {
+            // Local decoding failed (WeChat video etc.) — use remote preview
+            thumbnailUri = remoteFallbackUri;
         }
 
         return (
@@ -1259,6 +1265,11 @@ const formatSpeed = (bytesPerSec) => {
                     }}
                     onError={(e) => {
                             if (asset.status === 'remote') activeLoadRef.current--;
+                            if (remoteFallbackUri && !useRemoteFallback) {
+                                // Local video thumbnail failed (e.g. WeChat codec) — fall back to remote preview
+                                setUseRemoteFallback(true);
+                                return;
+                            }
                             if (debugMode) {
                                 const diff = loadStartTime.current > 0 ? Date.now() - loadStartTime.current : 'N/A';
                                 console.log(`[Metrics] Remote asset ${asset.id} error after ${diff}ms (Concurrent: ${activeLoadRef.current}):`, e.error || e);

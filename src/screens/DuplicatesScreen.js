@@ -31,13 +31,15 @@ const { width } = Dimensions.get('window');
 
 // Lazily resolves the local URI + size/dimensions for a local asset on first render.
 // onMetadata(uri, width, height, size) is called once info is available.
-function LazyLocalAsset({ assetId, style, onMetadata, ...rest }) {
+function LazyLocalAsset({ asset, style, onMetadata, ...rest }) {
     const [uri, setUri] = React.useState(null);
+    const [useRemoteFallback, setUseRemoteFallback] = React.useState(false);
+
     React.useEffect(() => {
         let cancelled = false;
         (async () => {
             try {
-                const info = await MediaService.getAssetInfo(assetId, { shouldDownloadFromNetwork: true });
+                const info = await MediaService.getAssetInfo(asset.id, { shouldDownloadFromNetwork: true });
                 if (cancelled || !info) return;
                 let resolvedUri = info.localUri || info.uri;
                 setUri(resolvedUri);
@@ -52,8 +54,26 @@ function LazyLocalAsset({ assetId, style, onMetadata, ...rest }) {
             } catch (_) {}
         })();
         return () => { cancelled = true; };
-    }, [assetId]);
-    return <Image source={{ uri }} style={style} {...rest} />;
+    }, [asset.id]);
+
+    const remoteFallbackUri = (asset.mediaType === 'video' && asset.hash)
+        ? `${AuthService.getServerUrl()}/preview/${asset.hash}?width=512&height=-1&token=${AuthService.getToken()}`
+        : null;
+
+    const displayUri = (useRemoteFallback && remoteFallbackUri) ? remoteFallbackUri : uri;
+
+    return (
+        <Image
+            source={displayUri ? { uri: displayUri } : null}
+            style={style}
+            onError={() => {
+                if (remoteFallbackUri && !useRemoteFallback) {
+                    setUseRemoteFallback(true);
+                }
+            }}
+            {...rest}
+        />
+    );
 }
 
 // Standalone card for one asset within a duplicate group.
@@ -80,7 +100,7 @@ const AssetCard = React.memo(function AssetCard({ asset, idx, isSelected, onTogg
                 >
                     {asset.isLocal && !asset.displayUri ? (
                         <LazyLocalAsset
-                            assetId={asset.id}
+                            asset={asset}
                             style={styles.thumbnail}
                             contentFit="cover"
                             cachePolicy="memory-disk"
