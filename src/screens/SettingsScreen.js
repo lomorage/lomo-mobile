@@ -935,6 +935,36 @@ export default function SettingsScreen({ navigation }) {
                         <Text style={styles.settingDescription}>Disconnect from this server and return to the login screen.</Text>
                     </View>
                 </TouchableOpacity>
+                <TouchableOpacity 
+                    style={[styles.settingRow, { marginTop: 10 }]}
+                    onPress={() => {
+                        Alert.alert(
+                            "Delete Account",
+                            "Are you sure you want to completely delete your account and all associated data on this server? This action cannot be undone.",
+                            [
+                                { text: "Cancel", style: "cancel" },
+                                { 
+                                    text: "Delete Account", 
+                                    style: "destructive",
+                                    onPress: async () => {
+                                        try {
+                                            await AuthService.deleteAccount();
+                                            await logout();
+                                            Alert.alert("Account Deleted", "Your account has been successfully deleted.");
+                                        } catch (error) {
+                                            Alert.alert("Deletion Failed", "Failed to delete account. Please try again or contact the server administrator.");
+                                        }
+                                    }
+                                }
+                            ]
+                        );
+                    }}
+                >
+                    <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabelDanger}>Delete Account</Text>
+                        <Text style={styles.settingDescription}>Permanently delete your account and all data from this server.</Text>
+                    </View>
+                </TouchableOpacity>
             </View>
 
             <View style={styles.section}>

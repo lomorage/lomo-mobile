@@ -18,8 +18,7 @@
       "bundleIdentifier": "com.wtao.lomo",
       "infoPlist": {
         "UIBackgroundModes": [
-          "fetch",
-          "audio"
+          "fetch"
         ],
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true,
@@ -61,8 +60,8 @@
       [
         "expo-media-library",
         {
-          "photosPermission": "Allow Lomorage to access your photos.",
-          "savePhotosPermission": "Allow Lomorage to save photos to your library.",
+          "photosPermission": "Allow Lomorage to access your photos to upload and backup your memories to your Lomorage server.",
+          "savePhotosPermission": "Allow Lomorage to save downloaded photos to your library.",
           "isAccessMediaLocationEnabled": true,
           "isStandard": false
         }
@@ -70,14 +69,14 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Allow Lomorage to access your photos.",
-          "cameraPermission": "Allow Lomorage to take photos."
+          "photosPermission": "Allow Lomorage to access your photos to upload and backup your memories to your Lomorage server.",
+          "cameraPermission": "Allow Lomorage to take photos to upload directly to your server."
         }
       ],
       [
         "expo-location",
         {
-          "locationAlwaysAndWhenInUsePermission": "Allow Lomorage to use your location."
+          "locationAlwaysAndWhenInUsePermission": "Allow Lomorage to use your location to organize your photos by where they were taken and provide background backup services."
         }
       ],
       "expo-secure-store",

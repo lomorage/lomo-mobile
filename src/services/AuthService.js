@@ -544,6 +544,31 @@ class AuthService {
       console.error('Error clearing secure store', e);
     }
   }
+
+  async deleteAccount() {
+    if (!this.serverUrl || !this.token) {
+      throw new Error('Not authenticated');
+    }
+    const username = await SecureStore.getItemAsync(USERNAME_KEY);
+    if (!username) {
+      throw new Error('Username not found');
+    }
+    try {
+      console.log(`Deleting user account for ${username} at ${this.serverUrl}/user/${username}`);
+      const response = await axios.delete(`${this.serverUrl}/user/${username}`, {
+        headers: { 'Authorization': `token=${this.token}` }
+      });
+      if (response.status === 200) {
+        console.log('Account deleted successfully');
+        return true;
+      } else {
+        throw new Error('Server returned an error during account deletion');
+      }
+    } catch (error) {
+      console.error('Delete account error:', error.message);
+      throw new Error(error.message || 'Failed to delete account');
+    }
+  }
 }
 
 const authService = new AuthService();
