@@ -921,7 +921,7 @@ export default function AssetDetailScreen({ route, navigation }) {
                          // Switch URI to the backend because the local file is now physically destroyed
                          const baseUrl = AuthService.getServerUrl();
                          const token = AuthService.getToken();
-                         updatedAsset.uri = `${baseUrl}/preview/${currentAsset.hash}?width=320&height=-1&token=${token}`;
+                         updatedAsset.uri = `${baseUrl}/preview/${currentAsset.hash}?width=${currentAsset.mediaType === 'video' ? 480 : 320}&height=-1&token=${token}`;
                     }
 
                     const newAssets = [...assets];
@@ -1074,7 +1074,7 @@ export default function AssetDetailScreen({ route, navigation }) {
         }
 
         let thumbUri = (item.status === 'remote' && item.hash)
-            ? `${baseUrl}/preview/${item.hash}?width=320&height=-1&token=${token}`
+            ? `${baseUrl}/preview/${item.hash}?width=${item.mediaType === 'video' ? 480 : 320}&height=-1&token=${token}`
             : null;
 
         let staticImageUri = uri;
@@ -1083,7 +1083,7 @@ export default function AssetDetailScreen({ route, navigation }) {
                 staticImageUri = thumbUri;
             } else {
                 // Fetch high-quality preview for full screen viewing to avoid high memory/bandwidth usage and OOM crashes
-                staticImageUri = `${baseUrl}/preview/${item.hash}?width=1280&height=-1&token=${token}`;
+                staticImageUri = `${baseUrl}/preview/${item.hash}?width=640&height=-1&token=${token}`;
             }
         }
         // Offline Cache overriding logic:

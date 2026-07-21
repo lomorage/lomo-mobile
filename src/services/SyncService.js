@@ -7,6 +7,7 @@ import AssetDBService from './AssetDBService';
 import MetricsTracker from '../utils/MetricsTracker';
 import * as SecureStore from 'expo-secure-store';
 import { AppState } from 'react-native';
+import TaskSchedulerService from './TaskSchedulerService';
 
 /**
  * Parses a date string from the backend and ensures it's treated as UTC.
@@ -535,10 +536,12 @@ class SyncService {
             // After actual SHA-1 I/O, yield 20ms to prevent native thread from starving the UI.
             loopsSinceYield = 0;
             await new Promise(resolve => setTimeout(resolve, 20));
+            await TaskSchedulerService.waitUntilIdle();
           } else if (loopsSinceYield >= 50) {
             // Pure cache hits: just release the event loop briefly every 50 iterations (no sleep).
             loopsSinceYield = 0;
             await new Promise(resolve => setTimeout(resolve, 0));
+            await TaskSchedulerService.waitUntilIdle();
           }
         }
       };
@@ -573,6 +576,7 @@ class SyncService {
         // Yield to the JS event loop every 500 iterations to prevent blocking during tree construction
         if (i % 500 === 0) {
           await new Promise(resolve => setTimeout(resolve, 0));
+          await TaskSchedulerService.waitUntilIdle();
         }
         const asset = assets[i];
         let hash = asset.hash;
@@ -912,6 +916,7 @@ class SyncService {
 
           // Yield after each batch to keep UI smooth
           await new Promise(resolve => setTimeout(resolve, 5));
+          await TaskSchedulerService.waitUntilIdle();
         }
         let yieldCounter = 0;
 
@@ -925,6 +930,7 @@ class SyncService {
                   if (yieldCounter % 500 === 0) {
                     // Yield back to the JS event loop to keep the UI responsive during tree building
                     await new Promise(resolve => setTimeout(resolve, 5));
+                    await TaskSchedulerService.waitUntilIdle();
                   }
 
                   const lowerHash = a.Hash.toLowerCase();
@@ -1179,6 +1185,7 @@ class SyncService {
           // Process in smaller chunks to limit parallel requests to Photos daemon
           const concurrencyLimit = isForeground ? 3 : 10;
           for (let i = 0; i < pending.length; i += concurrencyLimit) {
+            await TaskSchedulerService.waitUntilIdle();
             const chunk = pending.slice(i, i + concurrencyLimit);
             await Promise.all(chunk.map(async (asset) => {
               try {
@@ -1339,6 +1346,7 @@ class SyncService {
 
     // 1. New local assets -> Upload
     for (const node of diff.upload) {
+      await TaskSchedulerService.waitUntilIdle();
       const potentials = [];
       this.localTree._collectAssets(node, potentials);
       for (const asset of potentials) {
@@ -1355,6 +1363,7 @@ class SyncService {
 
     // 2. New remote assets -> Download
     for (const node of diff.download) {
+      await TaskSchedulerService.waitUntilIdle();
       if (ctx.networkError) break; // Stop iterating if server went offline mid-sync
       if (level === 'day' && !node.tag && node.children.length === 0) {
         // We found a day that exists on remote but we don't have detail yet
@@ -1393,6 +1402,7 @@ class SyncService {
 
     // 3. Changed nodes -> Drill down
     for (const { local, remote } of diff.pending) {
+      await TaskSchedulerService.waitUntilIdle();
       if (ctx.networkError) break; // Stop iterating on error
       if (level === 'year') {
         await this.findDiffWithDrillDown(local, remote, upload, download, 'month', ctx);

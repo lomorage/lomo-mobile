@@ -1525,8 +1525,10 @@ class AIService {
             await axios.post(`${url}/assets/metadata?force=1`, payload, {
               headers: { Authorization: `token=${token}` },
               timeout: 15000,
-              skipAutoProbe: true
+              skipAutoProbe: true,
+              priority: 5
             });
+            await new Promise(resolve => setTimeout(resolve, 50));
             console.log(`[AIService] Uploaded embedding for server asset ID ${serverAssetId} successfully.`);
             // Mark remote asset representation in SQLite as having the embedding to avoid re-upload loop
             await db.runAsync(
@@ -1614,8 +1616,10 @@ class AIService {
             await axios.post(`${url}/assets/metadata?force=1`, payload, {
               headers: { Authorization: `token=${token}` },
               timeout: 15000,
-              skipAutoProbe: true
+              skipAutoProbe: true,
+              priority: 5
             });
+            await new Promise(resolve => setTimeout(resolve, 50));
             console.log(`[AIService] Uploaded phash for server asset ID ${serverAssetId} successfully.`);
             // Mark remote asset representation in SQLite as having the phash to avoid re-upload loop
             await db.runAsync(
@@ -1668,6 +1672,7 @@ class AIService {
           const embeddingUpdates = [];
 
           for (const asset of remotePendingDownload) {
+              await TaskSchedulerService.waitUntilIdle();
             try {
               processedDownloads++;
               this.status = {
@@ -1681,8 +1686,10 @@ class AIService {
               const res = await axios.get(`${url}/asset/metadata/${asset.hash}`, {
                 headers: { Authorization: `token=${token}` },
                 timeout: 10000,
-                skipAutoProbe: true
+                skipAutoProbe: true,
+                priority: 5
               });
+              await new Promise(resolve => setTimeout(resolve, 50));
               const data = res.data;
               let foundEmbedding = false;
               let foundPHash = false;
@@ -1824,6 +1831,7 @@ class AIService {
                 
                 console.log(`[AIService] Downloading preview for remote asset ${asset.hash}...`);
                 const downloadRes = await FileSystem.downloadAsync(previewUrl, tempUri);
+                await new Promise(resolve => setTimeout(resolve, 100)); // Yield to prevent starving video playback
                 if (downloadRes.status !== 200) {
                   throw new Error(`Failed to download preview, HTTP status ${downloadRes.status}`);
                 }
@@ -2008,8 +2016,10 @@ class AIService {
                     await axios.post(`${url}/assets/metadata?force=1`, payload, {
                       headers: { Authorization: `token=${token}` },
                       timeout: 15000,
-                      skipAutoProbe: true
+                      skipAutoProbe: true,
+                      priority: 5
                     });
+                    await new Promise(resolve => setTimeout(resolve, 50));
                     console.log(`[AIService] Uploaded calculated features for remote asset ID ${serverAssetId} successfully.`);
                   }
                 }
@@ -2163,7 +2173,8 @@ class AIService {
           const res = await axios.get(`${url}/asset/metadata/${hash}`, {
             headers: { Authorization: `token=${token}` },
             timeout: 10000,
-            skipAutoProbe: true
+            skipAutoProbe: true,
+            priority: 5
           });
           const data = res.data;
           if (data) {

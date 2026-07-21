@@ -8,6 +8,23 @@ import axios from 'axios';
 import AuthService from './AuthService';
 
 class MediaService {
+  /**
+   * Generates a preview URL strictly adhering to the lomorage backend's pre-generated dimensions 
+   * to avoid expensive server-side dynamic transcoding.
+   */
+  getPreviewUrl(hash, mediaType, isLarge = false) {
+    if (!hash) return null;
+    let width = 320; // Default small image preview
+    if (mediaType === 'video') {
+      width = 480; // Default video preview
+    } else if (isLarge) {
+      width = 640; // Max image preview
+    }
+    const token = AuthService.getToken();
+    return `${AuthService.getServerUrl()}/preview/${hash}?width=${width}&height=-1&token=${token}`;
+  }
+
+
   async requestPermissions() {
     console.log('Checking permissions for', Platform.OS, Platform.Version);
     const existing = await MediaLibrary.getPermissionsAsync();

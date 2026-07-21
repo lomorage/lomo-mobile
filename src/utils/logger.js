@@ -1,6 +1,7 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import JSZip from 'jszip';
+import { DeviceEventEmitter } from 'react-native';
 
 const LOG_FILE_PATH = FileSystem.cacheDirectory + 'lomorage_app.log';
 const MAX_LOG_LINES = 5000;
@@ -51,6 +52,9 @@ class Logger {
                 }
 
                 this.hasNewLogs = true;
+                
+                // Emit to React Native listeners (e.g. for debug overlay)
+                DeviceEventEmitter.emit('app_debug_log', logLine);
             };
         };
 

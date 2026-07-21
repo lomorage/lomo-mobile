@@ -95,7 +95,7 @@ export default function AlbumDetailScreen() {
                     return {
                         id: localAsset ? localAsset.id : hash, // Use hash as ID to prevent FlatList key collisions
                         hash: hash,
-                        uri: `${serverUrl}/preview/${hash}?width=320&height=-1&token=${token}`,
+                        uri: `${serverUrl}/preview/${hash}?width=${(localAsset ? localAsset.mediaType : 'image') === 'video' ? 480 : 320}&height=-1&token=${token}`,
                         status: 'remote',
                         creationTime: localAsset ? localAsset.creationTime : Date.now(),
                         mediaType: localAsset ? localAsset.mediaType : 'image', // Fallback to image if not in DB

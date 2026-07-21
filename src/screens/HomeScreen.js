@@ -249,6 +249,20 @@ export default function HomeScreen({ navigation, route }) {
     const aiPillTimer = useRef(null);
     
     const { debugMode, excludedAlbums } = useSettings();
+    const [debugLogs, setDebugLogs] = useState([]);
+
+    useEffect(() => {
+        if (!debugMode) return;
+        const sub = DeviceEventEmitter.addListener('app_debug_log', (log) => {
+            setDebugLogs(prev => {
+                const newLogs = [...prev, log];
+                if (newLogs.length > 20) newLogs.shift();
+                return newLogs;
+            });
+        });
+        return () => sub.remove();
+    }, [debugMode]);
+
 
     const isMounted = useRef(true);
     const isProgrammaticSearchRef = useRef(false);
@@ -450,7 +464,7 @@ export default function HomeScreen({ navigation, route }) {
                         status: res.isLocal ? 'synced' : 'remote',
                         uri: res.isLocal 
                             ? (Platform.OS === 'android' ? `content://media/external/images/media/${res.id}` : `ph://${res.id}`)
-                            : `${AuthService.getServerUrl()}/preview/${res.hash}?width=320&height=-1&token=${AuthService.getToken()}`
+                            : `${AuthService.getServerUrl()}/preview/${res.hash}?width=${res.mediaType === 'video' ? 480 : 320}&height=-1&token=${AuthService.getToken()}`
                     };
                 });
 
@@ -642,7 +656,7 @@ const formatSpeed = (bytesPerSec) => {
                 return {
                     id: asset.id,
                     hash: asset.hash,
-                    uri: `${serverUrl}/preview/${asset.hash}?width=320&height=-1&token=${token}`,
+                    uri: `${serverUrl}/preview/${asset.hash}?width=${asset.mediaType === 'video' ? 480 : 320}&height=-1&token=${token}`,
                     status: 'remote',
                     creationTime: asset.creationTime || 0,
                     mediaType: asset.mediaType || (isVideoExtension(filename) ? 'video' : 'photo'),
@@ -1083,7 +1097,7 @@ const formatSpeed = (bytesPerSec) => {
             const mappedOnThisDay = sqliteOnThisDayAssets.map(asset => ({
                 id: asset.id,
                 hash: asset.hash,
-                uri: `${serverUrl}/preview/${asset.hash}?width=320&height=-1&token=${token}`,
+                uri: `${serverUrl}/preview/${asset.hash}?width=512&height=-1&token=${token}`,
                 status: 'remote',
                 creationTime: asset.createTime || 0,
                 mediaType: asset.mediaType || (isVidExt(asset.filename) ? 'video' : 'photo'),
@@ -1222,7 +1236,7 @@ const formatSpeed = (bytesPerSec) => {
         let thumbnailUri = safeUri(asset.uri, asset.mediaType);
         // For synced videos: build remote preview URL to use only on onError
         const remoteFallbackUri = (asset.status === 'synced' && asset.mediaType === 'video' && asset.hash)
-            ? `${AuthService.getServerUrl()}/preview/${asset.hash}?width=512&height=-1&token=${AuthService.getToken()}`
+            ? `${AuthService.getServerUrl()}/preview/${asset.hash}?width=${asset.mediaType === 'video' ? 480 : 320}&height=-1&token=${AuthService.getToken()}`
             : null;
 
         if (asset.status === 'remote') {
@@ -1230,7 +1244,7 @@ const formatSpeed = (bytesPerSec) => {
                 thumbnailUri = asset.localCachePath;
             } else if (asset.hash) {
                 // ALWAYS use /preview/ for remote assets to prevent Glide OOM on large files/videos
-                thumbnailUri = `${AuthService.getServerUrl()}/preview/${asset.hash}?width=512&height=-1&token=${AuthService.getToken()}`;
+                thumbnailUri = `${AuthService.getServerUrl()}/preview/${asset.hash}?width=${asset.mediaType === 'video' ? 480 : 320}&height=-1&token=${AuthService.getToken()}`;
             }
         } else if (remoteFallbackUri && useRemoteFallback) {
             // Local decoding failed (WeChat video etc.) — use remote preview
@@ -1561,6 +1575,15 @@ const formatSpeed = (bytesPerSec) => {
 
     return (
         <View style={styles.container}>
+            {debugMode && debugLogs.length > 0 && (
+                <View style={styles.debugOverlay} pointerEvents="none">
+                    <ScrollView showsVerticalScrollIndicator={false}>
+                        {debugLogs.map((log, i) => (
+                            <Text key={i} style={styles.debugLogText}>{log}</Text>
+                        ))}
+                    </ScrollView>
+                </View>
+            )}
             {isSearching ? (
                 <View 
                     style={{ backgroundColor: '#fff', zIndex: 10 }}
@@ -1948,6 +1971,23 @@ const styles = StyleSheet.create({
     container: {
         flex: 1,
         backgroundColor: '#fff',
+    },
+    debugOverlay: {
+        position: 'absolute',
+        top: 100,
+        left: 10,
+        right: 10,
+        height: 250,
+        backgroundColor: 'rgba(0, 0, 0, 0.7)',
+        borderRadius: 8,
+        padding: 10,
+        zIndex: 9999,
+    },
+    debugLogText: {
+        color: '#00FF00',
+        fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+        fontSize: 10,
+        marginBottom: 2,
     },
     smartBannerContainer: {
         position: 'relative',

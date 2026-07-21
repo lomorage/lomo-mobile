@@ -137,7 +137,7 @@ const VideoCard = React.memo(({ item, isSelected, playVideo, toggleSelection, fo
     const [useRemoteFallback, setUseRemoteFallback] = React.useState(false);
 
     const remoteFallbackUri = item.hash
-        ? `${AuthService.getServerUrl()}/preview/${item.hash}?width=512&height=-1&token=${AuthService.getToken()}`
+        ? `${AuthService.getServerUrl()}/preview/${item.hash}?width=480&height=-1&token=${AuthService.getToken()}`
         : null;
 
     const displayUri = (useRemoteFallback && remoteFallbackUri) ? remoteFallbackUri : item.uri;

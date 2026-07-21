@@ -1,4 +1,5 @@
 import * as SQLite from 'expo-sqlite';
+import TaskSchedulerService from './TaskSchedulerService';
 import * as FileSystem from 'expo-file-system/legacy';
 import MetricsTracker from '../utils/MetricsTracker';
 import { pinyin } from 'pinyin-pro';
@@ -285,7 +286,7 @@ class AssetDBService {
         const entries = Object.entries(cache);
         
         if (entries.length > 0) {
-          const chunkSize = 100;
+          const chunkSize = 50;
           for (let i = 0; i < entries.length; i += chunkSize) {
             const chunk = entries.slice(i, i + chunkSize);
             await db.withExclusiveTransactionAsync(async () => {
@@ -306,6 +307,7 @@ class AssetDBService {
             });
             if (i + chunkSize < entries.length) {
               await new Promise(resolve => setTimeout(resolve, 5));
+              await TaskSchedulerService.waitUntilIdle();
             }
           }
           console.log(`[AssetDBService] Successfully migrated ${entries.length} hashes to DB.`);
@@ -329,7 +331,7 @@ class AssetDBService {
       `);
       if (rows && rows.length > 0) {
         console.log(`[AssetDBService] Found ${rows.length} assets missing location pinyin. Backfilling...`);
-        const chunkSize = 100;
+        const chunkSize = 50;
         for (let i = 0; i < rows.length; i += chunkSize) {
           const chunk = rows.slice(i, i + chunkSize);
           await db.withExclusiveTransactionAsync(async () => {
@@ -480,7 +482,7 @@ class AssetDBService {
 
     return await MetricsTracker.measure('AssetDBService_insertLocalAssets', async () => {
       try {
-        const chunkSize = 100;
+        const chunkSize = 50;
         for (let i = 0; i < assets.length; i += chunkSize) {
           const chunk = assets.slice(i, i + chunkSize);
           await this.db.withExclusiveTransactionAsync(async () => {
@@ -519,6 +521,7 @@ class AssetDBService {
           
           if (i + chunkSize < assets.length) {
             await new Promise(resolve => setTimeout(resolve, 5));
+              await TaskSchedulerService.waitUntilIdle();
           }
         }
         console.log(`[AssetDBService] Inserted ${assets.length} local assets.`);
@@ -553,7 +556,7 @@ class AssetDBService {
 
         if (idsToDelete.length > 0) {
           console.log(`[AssetDBService] Deleting ${idsToDelete.length} stale remote assets...`);
-          const chunkSize = 500;
+          const chunkSize = 50;
           for (let i = 0; i < idsToDelete.length; i += chunkSize) {
             const chunk = idsToDelete.slice(i, i + chunkSize);
             await this.db.withExclusiveTransactionAsync(async () => {
@@ -568,6 +571,7 @@ class AssetDBService {
             });
             if (i + chunkSize < idsToDelete.length) {
               await new Promise(resolve => setTimeout(resolve, 5));
+              await TaskSchedulerService.waitUntilIdle();
             }
           }
         }
@@ -585,7 +589,7 @@ class AssetDBService {
 
         if (newAssets.length > 0) {
           console.log(`[AssetDBService] Inserting ${newAssets.length} new remote assets out of ${assets.length}...`);
-          const chunkSize = 500;
+          const chunkSize = 50;
           for (let i = 0; i < newAssets.length; i += chunkSize) {
             const chunk = newAssets.slice(i, i + chunkSize);
             await this.db.withExclusiveTransactionAsync(async () => {
@@ -615,6 +619,7 @@ class AssetDBService {
             });
             if (i + chunkSize < newAssets.length) {
               await new Promise(resolve => setTimeout(resolve, 5));
+              await TaskSchedulerService.waitUntilIdle();
             }
           }
           console.log(`[AssetDBService] Inserted ${newAssets.length} remote assets.`);
@@ -623,7 +628,7 @@ class AssetDBService {
         // Repair timestamps for existing assets in a single batch
         if (repairAssets.length > 0) {
           console.log(`[AssetDBService] Repairing timestamps for ${repairAssets.length} existing remote assets...`);
-          const chunkSize = 500;
+          const chunkSize = 50;
           for (let i = 0; i < repairAssets.length; i += chunkSize) {
             const chunk = repairAssets.slice(i, i + chunkSize);
             await this.db.withExclusiveTransactionAsync(async () => {
@@ -650,6 +655,7 @@ class AssetDBService {
             });
             if (i + chunkSize < repairAssets.length) {
               await new Promise(resolve => setTimeout(resolve, 5));
+              await TaskSchedulerService.waitUntilIdle();
             }
           }
           console.log(`[AssetDBService] Repaired ${repairAssets.length} remote asset timestamps.`);
@@ -696,7 +702,7 @@ class AssetDBService {
     if (!this.db || !updates || updates.length === 0) return;
 
     try {
-      const chunkSize = 100;
+      const chunkSize = 50;
       for (let i = 0; i < updates.length; i += chunkSize) {
         const chunk = updates.slice(i, i + chunkSize);
         console.log(`[AssetDBService] updateAssetsGeo entering withExclusiveTransactionAsync`);
@@ -737,7 +743,7 @@ class AssetDBService {
     if (!this.db || !ids || ids.length === 0) return;
 
     try {
-      const chunkSize = 100;
+      const chunkSize = 50;
       for (let i = 0; i < ids.length; i += chunkSize) {
         const chunk = ids.slice(i, i + chunkSize);
         console.log(`[AssetDBService] markAssetsGeoProcessed entering withExclusiveTransactionAsync`);
@@ -903,7 +909,7 @@ class AssetDBService {
     if (!this.db || !updates || updates.length === 0) return;
 
     try {
-      const chunkSize = 500;
+      const chunkSize = 50;
       for (let i = 0; i < updates.length; i += chunkSize) {
         const chunk = updates.slice(i, i + chunkSize);
         await this.db.withExclusiveTransactionAsync(async () => {
@@ -924,6 +930,7 @@ class AssetDBService {
         });
         if (i + chunkSize < updates.length) {
           await new Promise(resolve => setTimeout(resolve, 5));
+              await TaskSchedulerService.waitUntilIdle();
         }
       }
       console.log(`[AssetDBService] Healed filenames for ${updates.length} remote assets.`);
@@ -937,7 +944,7 @@ class AssetDBService {
     if (!this.db || !updates || updates.length === 0) return;
 
     try {
-      const chunkSize = 500;
+      const chunkSize = 50;
       for (let i = 0; i < updates.length; i += chunkSize) {
         const chunk = updates.slice(i, i + chunkSize);
         await this.db.withExclusiveTransactionAsync(async () => {
@@ -959,6 +966,7 @@ class AssetDBService {
         });
         if (i + chunkSize < updates.length) {
           await new Promise(resolve => setTimeout(resolve, 5));
+              await TaskSchedulerService.waitUntilIdle();
         }
       }
       console.log(`[AssetDBService] Repaired database timestamps for ${updates.length} remote assets.`);
@@ -1099,7 +1107,7 @@ class AssetDBService {
   async ignoreAssetsForDuplicates(assetIds) {
     if (!this.db || !assetIds || assetIds.length === 0) return;
     try {
-      const chunkSize = 100;
+      const chunkSize = 50;
       for (let i = 0; i < assetIds.length; i += chunkSize) {
         const chunk = assetIds.slice(i, i + chunkSize);
         await this.db.withExclusiveTransactionAsync(async () => {
@@ -1114,6 +1122,7 @@ class AssetDBService {
         });
         if (i + chunkSize < assetIds.length) {
           await new Promise(resolve => setTimeout(resolve, 5));
+              await TaskSchedulerService.waitUntilIdle();
         }
       }
       console.log(`[AssetDBService] Ignored ${assetIds.length} assets for duplicates.`);
@@ -1227,7 +1236,7 @@ class AssetDBService {
   async deleteAssets(idsOrHashes) {
     if (!this.db || !idsOrHashes || idsOrHashes.length === 0) return;
     try {
-      const chunkSize = 100;
+      const chunkSize = 50;
       for (let i = 0; i < idsOrHashes.length; i += chunkSize) {
         const chunk = idsOrHashes.slice(i, i + chunkSize);
         await this.db.withExclusiveTransactionAsync(async () => {
@@ -1242,6 +1251,7 @@ class AssetDBService {
         });
         if (i + chunkSize < idsOrHashes.length) {
           await new Promise(resolve => setTimeout(resolve, 5));
+              await TaskSchedulerService.waitUntilIdle();
         }
       }
       console.log(`[AssetDBService] Bulk deleted ${idsOrHashes.length} assets from SQLite.`);
