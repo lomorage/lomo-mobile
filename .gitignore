@@ -60,3 +60,7 @@ upload_certificate.pem
 
 # SQLite databases
 *.db
+
+# Fastlane
+fastlane/report.xml
+fastlane/README.md
