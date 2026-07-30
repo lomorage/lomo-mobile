@@ -3,7 +3,7 @@ import { StyleSheet, View, Dimensions, TouchableOpacity, Text, ActivityIndicator
 import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 import { FlashList } from '@shopify/flash-list';
-import { Cloud, CheckCircle, Smartphone, PlayCircle, PauseCircle, Settings as SettingsIcon, UploadCloud, X, MapPin, Heart, Search, ScanText, Clock, Calendar } from 'lucide-react-native';
+import { Cloud, CheckCircle, Smartphone, PlayCircle, PauseCircle, Settings as SettingsIcon, UploadCloud, X, MapPin, Heart, Search, ScanText, Clock, Calendar, WifiOff } from 'lucide-react-native';
 import MediaService from '../services/MediaService';
 import SyncService from '../services/SyncService';
 import OfflineCacheService from '../services/OfflineCacheService';
@@ -1449,6 +1449,13 @@ const formatSpeed = (bytesPerSec) => {
         return Math.min(1, Math.max(0, totalProgress));
     }, [backupState.completedCount, backupState.totalCount, activeUploads]);
 
+    // Distinguish "can't reach the home server" from real errors, so a Wi-Fi/NAS
+    // hiccup reads as reassuring status rather than an alarming failure.
+    const isOfflineError = useMemo(() => {
+        if (!error) return false;
+        return /network error|timeout|econnrefused|econnaborted|enotfound|failed to fetch|net::err|unable to resolve host/i.test(error);
+    }, [error]);
+
     const flashListExtraData = useMemo(() => ({
         isScrubbing,
         currentAssetId: backupState.currentAssetId,
@@ -1721,7 +1728,7 @@ const formatSpeed = (bytesPerSec) => {
                     <View style={{ flex: 1 }}>
                         <Text style={styles.title} numberOfLines={1} adjustsFontSizeToFit>Lomorage</Text>
                         <Text style={styles.subtitle}>
-                            {`${assets.length} items${syncing ? ` • ${syncProgress?.message || 'Loading...'}` : error ? ' • Offline' : ''}`}
+                            {`${assets.length} items${syncing ? ` • ${syncProgress?.message || 'Loading...'}` : isOfflineError ? ' • Server offline' : error ? ' • Error' : ''}`}
                         </Text>
                         {syncing && syncProgress?.total > 0 && syncProgress?.current !== undefined ? (
                             <Text style={styles.progressText}>
@@ -1768,12 +1775,25 @@ const formatSpeed = (bytesPerSec) => {
             {/* REMOVED BIG BANNER FOR OPTION A */}
 
             {error ? (
-                <View style={styles.errorBanner}>
-                    <Text style={styles.errorText} numberOfLines={1}>{error}</Text>
-                    <TouchableOpacity onPress={loadAndSync} style={styles.retryButton}>
-                        <Text style={styles.retryText}>Retry</Text>
-                    </TouchableOpacity>
-                </View>
+                isOfflineError ? (
+                    <View style={styles.offlineBanner}>
+                        <WifiOff size={16} color="#5B7290" />
+                        <View style={{ flex: 1, marginLeft: 10 }}>
+                            <Text style={styles.offlineTitle}>Can't reach your server</Text>
+                            <Text style={styles.offlineSubtext}>Your local photos are safe on this phone — we'll keep syncing automatically once it's back.</Text>
+                        </View>
+                        <TouchableOpacity onPress={loadAndSync} style={styles.offlineRetryButton}>
+                            <Text style={styles.offlineRetryText}>Retry</Text>
+                        </TouchableOpacity>
+                    </View>
+                ) : (
+                    <View style={styles.errorBanner}>
+                        <Text style={styles.errorText} numberOfLines={1}>{error}</Text>
+                        <TouchableOpacity onPress={loadAndSync} style={styles.retryButton}>
+                            <Text style={styles.retryText}>Retry</Text>
+                        </TouchableOpacity>
+                    </View>
+                )
             ) : null}
 
             {(loading && assets.length === 0) ? (
@@ -2143,6 +2163,40 @@ const styles = StyleSheet.create({
     },
     retryText: {
         color: 'white',
+        fontSize: 12,
+        fontWeight: 'bold',
+    },
+    offlineBanner: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: '#EAF1FB',
+        borderWidth: 1,
+        borderColor: '#D3E3F5',
+        padding: 12,
+        marginHorizontal: 15,
+        borderRadius: 8,
+        marginBottom: 10,
+    },
+    offlineTitle: {
+        color: '#2A3B4D',
+        fontSize: 13,
+        fontWeight: '600',
+    },
+    offlineSubtext: {
+        color: '#5B7290',
+        fontSize: 12,
+        marginTop: 2,
+    },
+    offlineRetryButton: {
+        borderWidth: 1,
+        borderColor: '#5B7290',
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+        borderRadius: 4,
+        marginLeft: 10,
+    },
+    offlineRetryText: {
+        color: '#5B7290',
         fontSize: 12,
         fontWeight: 'bold',
     },

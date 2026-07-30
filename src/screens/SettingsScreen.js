@@ -1,6 +1,6 @@
 import React from 'react';
 import { StyleSheet, View, ScrollView, Text, Switch, TouchableOpacity, Alert, ActivityIndicator, Platform, Modal, TextInput, DeviceEventEmitter, FlatList, Dimensions, Pressable } from 'react-native';
-import { ChevronLeft, Trash2, RefreshCcw, Server, ChevronRight, Globe } from 'lucide-react-native';
+import { ChevronLeft, Trash2, RefreshCcw, Server, ChevronRight, Globe, ShieldCheck } from 'lucide-react-native';
 import Constants from 'expo-constants';
 import { useSettings } from '../context/SettingsContext';
 import { useAuth } from '../context/AuthContext';
@@ -473,10 +473,17 @@ export default function SettingsScreen({ navigation }) {
             <View style={styles.section}>
                 <Text style={styles.sectionTitle}>AI & Search Settings</Text>
 
+                <View style={styles.privacyNote}>
+                    <ShieldCheck size={16} color="#2E7D5B" />
+                    <Text style={styles.privacyNoteText}>
+                        Photo recognition runs on this phone, and any syncing only ever talks to your own server — never a third-party cloud.
+                    </Text>
+                </View>
+
                 <View style={styles.settingRow}>
                     <View style={styles.settingTextContainer}>
                         <Text style={styles.settingLabel}>Local AI Features</Text>
-                        <Text style={styles.settingDescription}>Enable on-device duplicate detection and semantic search. Uses offline machine learning models.</Text>
+                        <Text style={styles.settingDescription}>Duplicate detection and semantic search run entirely on this device. Nothing is uploaded anywhere to make this work.</Text>
                     </View>
                     <Switch
                         value={aiEnabled}
@@ -517,7 +524,7 @@ export default function SettingsScreen({ navigation }) {
                         <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8, paddingTop: 8 }]}>
                             <View style={styles.settingTextContainer}>
                                 <Text style={styles.settingLabel}>Sync Remote AI Features</Text>
-                                <Text style={styles.settingDescription}>Download and sync CLIP embeddings and photo fingerprints from the server for remote photos.</Text>
+                                <Text style={styles.settingDescription}>Sync CLIP embeddings and photo fingerprints with your own server, so search covers remote photos too. This only ever reaches the server you log into — not a third-party AI service.</Text>
                             </View>
                             <Switch
                                 value={remoteAIProcessingEnabled}
@@ -1269,6 +1276,22 @@ const styles = StyleSheet.create({
         color: '#888',
         marginTop: 4,
         lineHeight: 18,
+    },
+    privacyNote: {
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        backgroundColor: '#EDF7F1',
+        borderRadius: 8,
+        padding: 12,
+        marginHorizontal: 16,
+        marginBottom: 12,
+    },
+    privacyNoteText: {
+        flex: 1,
+        marginLeft: 8,
+        fontSize: 12.5,
+        lineHeight: 17,
+        color: '#2E5941',
     },
     serverBadge: {
         fontSize: 12,
