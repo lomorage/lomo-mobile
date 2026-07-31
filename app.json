@@ -79,6 +79,12 @@
           "locationAlwaysAndWhenInUsePermission": "Allow Lomorage to use your location to organize your photos by where they were taken and provide background backup services."
         }
       ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Lomorage to use the camera to scan a sign-in QR code from a family member's device."
+        }
+      ],
       "expo-secure-store",
       "expo-task-manager",
       "expo-background-task",

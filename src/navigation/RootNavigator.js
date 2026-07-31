@@ -10,6 +10,7 @@ import HomeScreen from '../screens/HomeScreen';
 import AssetDetailScreen from '../screens/AssetDetailScreen';
 import LoginScreen from '../screens/LoginScreen';
 import RegisterScreen from '../screens/RegisterScreen';
+import ScanLoginScreen from '../screens/ScanLoginScreen';
 import SettingsScreen from '../screens/SettingsScreen';
 import FreeUpSpaceScreen from '../screens/FreeUpSpaceScreen';
 import PhotoMapScreen from '../screens/PhotoMapScreen';
@@ -109,9 +110,14 @@ function Navigation() {
                             component={LoginScreen} 
                             options={{ headerShown: false }}
                         />
-                        <Stack.Screen 
-                            name="Register" 
-                            component={RegisterScreen} 
+                        <Stack.Screen
+                            name="Register"
+                            component={RegisterScreen}
+                            options={{ headerShown: false }}
+                        />
+                        <Stack.Screen
+                            name="ScanLogin"
+                            component={ScanLoginScreen}
                             options={{ headerShown: false }}
                         />
                     </>
