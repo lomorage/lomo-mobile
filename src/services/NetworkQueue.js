@@ -43,7 +43,7 @@ class NetworkQueue {
     enqueue(config, resolve, reject) {
         const priority = config.priority ?? 2; // Default NORMAL priority
         const groupId = config.groupId;
-        
+
         if (groupId) {
             const controller = this._getController(groupId);
             // Only assign if signal isn't manually set by the caller
@@ -52,14 +52,25 @@ class NetworkQueue {
             }
         }
 
-        this.queue.push({ config, resolve, reject, priority, groupId });
+        const item = { config, resolve, reject, priority, groupId };
+
+        // Insert in priority order (lower number = higher priority) so the queue
+        // stays sorted without re-sorting the whole thing on every enqueue/response —
+        // that used to run an O(n log n) sort on every single request completion too,
+        // even though completions never change the queue's order.
+        let insertAt = this.queue.length;
+        for (let i = 0; i < this.queue.length; i++) {
+            if (this.queue[i].priority > priority) {
+                insertAt = i;
+                break;
+            }
+        }
+        this.queue.splice(insertAt, 0, item);
+
         this._processQueue();
     }
 
     _processQueue() {
-        // Sort queue by priority: lower number = higher priority
-        this.queue.sort((a, b) => a.priority - b.priority);
-
         while (this.activeCount < this.MAX_CONCURRENT && this.queue.length > 0) {
             const item = this.queue.shift();
             
