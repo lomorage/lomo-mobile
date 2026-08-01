@@ -32,14 +32,13 @@ index 7500f91..4927dd8 100644
          val image: InputImage = RNMLKitImage(Uri.parse(imagePath), appContext.reactContext!!).image
  
 diff --git a/node_modules/@infinitered/react-native-mlkit-text-recognition/ios/RNMLKitTextRecognition.podspec b/node_modules/@infinitered/react-native-mlkit-text-recognition/ios/RNMLKitTextRecognition.podspec
-index cb80592..82fa6a3 100644
+index cb80592..1e7bf71 100644
 --- a/node_modules/@infinitered/react-native-mlkit-text-recognition/ios/RNMLKitTextRecognition.podspec
 +++ b/node_modules/@infinitered/react-native-mlkit-text-recognition/ios/RNMLKitTextRecognition.podspec
-@@ -17,7 +17,7 @@ Pod::Spec.new do |s|
- 
+@@ -18,6 +18,7 @@ Pod::Spec.new do |s|
    s.dependency 'ExpoModulesCore'
    s.dependency 'RNMLKitCore'
--  s.dependency 'GoogleMLKit/TextRecognition'
+   s.dependency 'GoogleMLKit/TextRecognition'
 +  s.dependency 'GoogleMLKit/TextRecognitionChinese'
  
    # Swift/Objective-C compatibility
