@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, View, Text, TextInput, TouchableOpacity, ActivityIndicator, KeyboardAvoidingView, Platform, Alert, ScrollView, Modal } from 'react-native';
-import QRCode from 'react-native-qrcode-svg';
+import { StyleSheet, View, Text, TextInput, TouchableOpacity, ActivityIndicator, KeyboardAvoidingView, Platform, Alert, ScrollView } from 'react-native';
 import AuthService from '../services/AuthService';
 import DiscoveryService from '../services/DiscoveryService';
-import { Eye, EyeOff, ArrowLeft, HardDrive, CheckCircle, ShieldAlert } from 'lucide-react-native';
+import { Eye, EyeOff, ArrowLeft, HardDrive, CheckCircle } from 'lucide-react-native';
 import { useAuth } from '../context/AuthContext';
 import { PAIRING_QR_TYPE } from '../constants/pairing';
+import PairingQRModal from '../components/PairingQRModal';
 
 export default function RegisterScreen({ navigation, route }) {
     const { register: contextRegister } = useAuth();
@@ -242,39 +242,16 @@ export default function RegisterScreen({ navigation, route }) {
             </ScrollView>
         </KeyboardAvoidingView>
 
-        <Modal visible={!!pairingPayload} animationType="fade" transparent>
-            <View style={styles.qrOverlay}>
-                <View style={styles.qrCard}>
-                    <Text style={styles.qrTitle}>Account created</Text>
-                    <Text style={styles.qrSubtitle}>
-                        Hand your phone to {username || 'them'} and have them open Lomorage → Scan to Sign In.
-                    </Text>
-
-                    {pairingPayload && (
-                        <View style={styles.qrCodeWrap}>
-                            <QRCode value={JSON.stringify(pairingPayload)} size={200} />
-                        </View>
-                    )}
-
-                    <View style={styles.qrWarning}>
-                        <ShieldAlert size={16} color="#B45309" />
-                        <Text style={styles.qrWarningText}>
-                            This code contains their password. Only let them scan it directly — don't screenshot or forward it.
-                        </Text>
-                    </View>
-
-                    <TouchableOpacity
-                        style={[styles.button, styles.qrDoneButton]}
-                        onPress={() => {
-                            setPairingPayload(null);
-                            navigation.goBack();
-                        }}
-                    >
-                        <Text style={styles.buttonText}>Done</Text>
-                    </TouchableOpacity>
-                </View>
-            </View>
-        </Modal>
+        <PairingQRModal
+            visible={!!pairingPayload}
+            payload={pairingPayload}
+            title="Account created"
+            subtitle={`Hand your phone to ${username || 'them'} and have them open Lomorage → Scan to Sign In.`}
+            onDone={() => {
+                setPairingPayload(null);
+                navigation.goBack();
+            }}
+        />
         </>
     );
 }
@@ -304,12 +281,4 @@ const styles = StyleSheet.create({
     buttonDisabled: { backgroundColor: '#A0AEC0' },
     buttonText: { color: '#fff', fontSize: 16, fontWeight: '700' },
     emptyText: { fontSize: 12, color: '#A0AEC0', textAlign: 'center', fontStyle: 'italic' },
-    qrOverlay: { flex: 1, backgroundColor: 'rgba(15,23,42,0.6)', alignItems: 'center', justifyContent: 'center', padding: 24 },
-    qrCard: { width: '100%', maxWidth: 340, backgroundColor: '#fff', borderRadius: 20, padding: 24, alignItems: 'center' },
-    qrTitle: { fontSize: 20, fontWeight: '800', color: '#1A202C', marginBottom: 6 },
-    qrSubtitle: { fontSize: 14, color: '#718096', textAlign: 'center', lineHeight: 19, marginBottom: 20 },
-    qrCodeWrap: { padding: 16, backgroundColor: '#fff', borderRadius: 12, borderWidth: 1.5, borderColor: '#E2E8F0', marginBottom: 16 },
-    qrWarning: { flexDirection: 'row', alignItems: 'flex-start', backgroundColor: '#FFF7ED', borderRadius: 10, padding: 12, marginBottom: 20 },
-    qrWarningText: { flex: 1, marginLeft: 8, fontSize: 12.5, lineHeight: 17, color: '#92400E' },
-    qrDoneButton: { alignSelf: 'stretch' },
 });

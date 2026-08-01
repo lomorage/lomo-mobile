@@ -908,13 +908,23 @@ export default function SettingsScreen({ navigation }) {
                     <Globe color="#007AFF" size={20} />
                 </TouchableOpacity>
 
-                <TouchableOpacity 
+                <TouchableOpacity
                     style={[styles.settingRow, { marginTop: 10 }]}
                     onPress={() => navigation.navigate('Register', { fromSettings: true })}
                 >
                     <View style={styles.settingTextContainer}>
                         <Text style={styles.settingLabel}>Create New Account</Text>
                         <Text style={styles.settingDescription}>Register a new user on this Lomorage server.</Text>
+                    </View>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                    style={[styles.settingRow, { marginTop: 10 }]}
+                    onPress={() => navigation.navigate('ShowSignInCode')}
+                >
+                    <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabel}>Show Sign-In Code</Text>
+                        <Text style={styles.settingDescription}>Re-generate a family member's QR code any time, so they can scan it to sign in again.</Text>
                     </View>
                 </TouchableOpacity>
 

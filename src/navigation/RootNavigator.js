@@ -11,6 +11,7 @@ import AssetDetailScreen from '../screens/AssetDetailScreen';
 import LoginScreen from '../screens/LoginScreen';
 import RegisterScreen from '../screens/RegisterScreen';
 import ScanLoginScreen from '../screens/ScanLoginScreen';
+import ShowSignInCodeScreen from '../screens/ShowSignInCodeScreen';
 import SettingsScreen from '../screens/SettingsScreen';
 import FreeUpSpaceScreen from '../screens/FreeUpSpaceScreen';
 import PhotoMapScreen from '../screens/PhotoMapScreen';
@@ -166,9 +167,14 @@ function Navigation() {
                             component={DuplicatesScreen} 
                             options={{ headerShown: false }}
                         />
-                        <Stack.Screen 
-                            name="Register" 
-                            component={RegisterScreen} 
+                        <Stack.Screen
+                            name="Register"
+                            component={RegisterScreen}
+                            options={{ headerShown: false }}
+                        />
+                        <Stack.Screen
+                            name="ShowSignInCode"
+                            component={ShowSignInCodeScreen}
                             options={{ headerShown: false }}
                         />
                     </>
