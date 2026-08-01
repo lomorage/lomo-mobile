@@ -25,6 +25,14 @@ class MediaService {
   }
 
 
+  /**
+   * Read-only permission check that never triggers the OS dialog, so callers
+   * can decide whether to show an explanation first.
+   */
+  async getPermissionStatus() {
+    return MediaLibrary.getPermissionsAsync();
+  }
+
   async requestPermissions() {
     console.log('Checking permissions for', Platform.OS, Platform.Version);
     const existing = await MediaLibrary.getPermissionsAsync();
