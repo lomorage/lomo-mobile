@@ -12,39 +12,33 @@ TARGET_DEVICE=""
 
 # Help message
 show_help() {
-    echo "Usage: ./run-ios-simulator.sh [options]"
+    echo "Usage: ./run-ios-device.sh [options]"
     echo ""
     echo "Options:"
     echo "  -c, --clean         Perform a clean build (removes ios/ folder, regenerates files, and runs pod install)"
-    echo "  -d, --device        Specify a device/simulator name or UDID (e.g. \"iPhone 17\")"
-    echo "  -s, --simulator     Specify a simulator name (alias for -d)"
+    echo "  -d, --device        Specify a device name or UDID (e.g. \"iPhone 17\")"
     echo "  -h, --help          Show this help message"
     echo ""
     echo "Examples:"
-    echo "  ./run-ios-simulator.sh"
-    echo "  ./run-ios-simulator.sh --clean"
-    echo "  ./run-ios-simulator.sh --device \"iPhone 17\""
-    echo "  ./run-ios-simulator.sh -c -s \"iPhone 17\""
+    echo "  ./run-ios-device.sh"
+    echo "  ./run-ios-device.sh --clean"
+    echo "  ./run-ios-device.sh --device \"iPhone 17\""
+    echo "  ./run-ios-device.sh -c -d \"iPhone 17\""
 }
 
 # Parse arguments
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         -c|--clean) CLEAN=true ;;
-        -d|--device|-s|--simulator) TARGET_DEVICE="$2"; shift ;;
+        -d|--device) TARGET_DEVICE="$2"; shift ;;
         -h|--help) show_help; exit 0 ;;
         *) echo "Unknown parameter: $1"; show_help; exit 1 ;;
     esac
     shift
 done
 
-apply_simulator_arch_fix() {
-    # No longer needed, we use ARCHS=x86_64 explicitly below
-    echo "✅ No simulator arch fix needed for generic build."
-}
-
 echo "=============================================="
-echo "🚀 Starting iOS Simulator Build and Run Process"
+echo "🚀 Starting iOS Device Build and Run Process"
 echo "=============================================="
 
 if [ "$CLEAN" = true ]; then
@@ -67,33 +61,23 @@ else
     fi
 fi
 
-ARCH_ARGS=""
-ARCH_PREFIX=""
-if [ "$(uname -m)" = "arm64" ]; then
-    echo "💻 Apple Silicon Mac detected. Building x86_64 binary for Simulator..."
-    ARCH_PREFIX="arch -x86_64 "
-    ARCH_ARGS="ARCHS=x86_64 ONLY_ACTIVE_ARCH=NO"
-fi
-
-echo "🔨 Building iOS App..."
-# Build generically for the simulator
-eval "${ARCH_PREFIX}xcodebuild -workspace ios/lomomobile.xcworkspace -configuration Debug -scheme lomomobile -sdk iphonesimulator -destination \"generic/platform=iOS Simulator\" -derivedDataPath ios/build $ARCH_ARGS build"
-
-APP_PATH="ios/build/Build/Products/Debug-iphonesimulator/lomomobile.app"
-
-if [ ! -d "$APP_PATH" ]; then
-    echo "❌ Build failed. App not found at $APP_PATH"
-    exit 1
-fi
-
 echo "📱 Launching Expo..."
-RUN_CMD="npx expo run:ios --binary \"$APP_PATH\""
+RUN_CMD="npx expo run:ios --no-bundler"
 
 if [ -n "$TARGET_DEVICE" ]; then
     RUN_CMD="$RUN_CMD --device \"$TARGET_DEVICE\""
+else
+    RUN_CMD="$RUN_CMD --device"
 fi
 
 echo ""
 echo "Running: $RUN_CMD"
 echo "=============================================="
 eval $RUN_CMD
+
+echo ""
+echo "=============================================="
+echo "🌐 Starting Development Server..."
+echo "=============================================="
+npx expo start
+
