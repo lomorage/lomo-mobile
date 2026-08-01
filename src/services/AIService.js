@@ -218,6 +218,7 @@ class AIService {
     this.vectorIdToIndex = new Map();
     this.vectorCount = 0;
     this.ocrCache = new Map(); // id -> string
+    this.lastReconnectAttempt = 0; // throttles _tryReconnectOnNetworkError below
     this.status = { isProcessing: false, current: 0, total: 0, message: 'Idle' };
     this.isPHashClearedInMemory = false;
     this.isCLIPClearedInMemory = false;
@@ -230,6 +231,30 @@ class AIService {
     this.faceDetector = new RNMLKitFaceDetector({ performanceMode: 'accurate', minFaceSize: 0.1, landmarkMode: true });
     // Set to true to run face detection WITHOUT writing to DB or server (for debugging)
     this.faceDryRun = true;
+  }
+
+  /**
+   * Background sync calls set skipAutoProbe (to avoid popping the "Connection Lost"
+   * alert on every single failed item), which also means AuthService's dual-connection
+   * failover never runs for them. If the server URL has actually gone stale (not just a
+   * one-off blip), nothing else would fix it until some other foreground request happens
+   * to fail without skipAutoProbe. So on a network-type error here, silently attempt the
+   * same failover AuthService uses, throttled so a broken connection isn't hammered.
+   */
+  async _tryReconnectOnNetworkError(e) {
+    const isNetworkError = !e.response && (
+      e.code === 'ECONNABORTED' ||
+      e.message?.includes('Network Error') ||
+      e.code === 'ETIMEDOUT'
+    );
+    if (!isNetworkError) return;
+    if (Date.now() - this.lastReconnectAttempt < 30000) return;
+    this.lastReconnectAttempt = Date.now();
+    try {
+      await AuthService.determineBestConnection();
+    } catch (err) {
+      console.warn('[AIService] Silent reconnect attempt failed:', err.message);
+    }
   }
 
   async prewarmVectorCache() {
@@ -1629,6 +1654,7 @@ class AIService {
             await this.saveAssetPHash(asset.hash, asset.phash);
           } catch (e) {
             console.warn(`[AIService] Failed to upload phash for ${asset.hash}:`, e.message);
+            this._tryReconnectOnNetworkError(e);
           }
         }
         await new Promise(resolve => setTimeout(resolve, 300));
@@ -1746,6 +1772,7 @@ class AIService {
                 await AssetDBService.saveAssetOCR(asset.hash, 'none');
               } else {
                 console.warn(`[AIService] Failed to get metadata for remote asset ${asset.hash}:`, e.message);
+                this._tryReconnectOnNetworkError(e);
               }
             }
           }

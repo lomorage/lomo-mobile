@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
-import { StyleSheet, View, Dimensions, TouchableOpacity, Text, ActivityIndicator, RefreshControl, DeviceEventEmitter, AppState, PanResponder, Animated, Modal, TextInput, ScrollView, Alert, Platform, Keyboard } from 'react-native';
+import { StyleSheet, View, Dimensions, TouchableOpacity, Text, ActivityIndicator, RefreshControl, DeviceEventEmitter, AppState, PanResponder, Animated, Modal, TextInput, ScrollView, Alert, Platform, Keyboard, Linking } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 import { FlashList } from '@shopify/flash-list';
-import { Cloud, CheckCircle, Smartphone, PlayCircle, PauseCircle, Settings as SettingsIcon, UploadCloud, X, MapPin, Heart, Search, ScanText, Clock, Calendar, WifiOff } from 'lucide-react-native';
+import { Cloud, CheckCircle, Smartphone, PlayCircle, PauseCircle, Settings as SettingsIcon, UploadCloud, X, MapPin, Heart, Search, ScanText, Clock, Calendar, WifiOff, Images as ImagesIcon } from 'lucide-react-native';
 import MediaService from '../services/MediaService';
 import SyncService from '../services/SyncService';
 import OfflineCacheService from '../services/OfflineCacheService';
@@ -21,6 +21,15 @@ import { pinyin } from 'pinyin-pro';
 const { width } = Dimensions.get('window');
 const COLUMN_COUNT = 3;
 const ITEM_SIZE = width / COLUMN_COUNT;
+
+// Grid thumbnails intentionally skip the memory cache. We tried gating this on
+// Device.totalMemory (memory-disk above 4GB), but confirmed on a real 11.8GB-RAM
+// device mid-sync that total installed RAM doesn't predict *available* RAM under
+// real-world system pressure — the OS low-memory-killer still took the app down
+// (logcat: "lowmemorykiller: Kill 'com.wtao.lomo' ... reason: low watermark is
+// breached", other apps killed in the same window). Disk-only avoids that class
+// of crash entirely; re-decoding on scroll-back is a cheaper trade than an OOM kill.
+const GRID_IMAGE_CACHE_POLICY = 'disk';
 
 const SMART_TAGS = [
     { label: '🐱 Cats', query: 'cat' },
@@ -247,6 +256,9 @@ export default function HomeScreen({ navigation, route }) {
     const [aiStatus, setAiStatus] = useState(null);
     const aiPillOpacity = useRef(new Animated.Value(0)).current;
     const aiPillTimer = useRef(null);
+    // Bumped whenever AuthService switches local/remote server URLs, so already-rendered
+    // remote thumbnails (which read getServerUrl() once at render time) know to retry.
+    const [serverEpoch, setServerEpoch] = useState(0);
     
     const { debugMode, excludedAlbums } = useSettings();
     const [debugLogs, setDebugLogs] = useState([]);
@@ -1018,6 +1030,12 @@ const formatSpeed = (bytesPerSec) => {
             }
         });
 
+        // Server URL changed (e.g. dual-connection failover found a reachable path) —
+        // force remote-asset thumbnails to recompute their URI and retry.
+        const subServerUrl = DeviceEventEmitter.addListener('onServerUrlChanged', () => {
+            setServerEpoch(prev => prev + 1);
+        });
+
         // AI processing status pill
         const subAI = DeviceEventEmitter.addListener('ai_processing_status', (status) => {
             setAiStatus(status);
@@ -1045,6 +1063,7 @@ const formatSpeed = (bytesPerSec) => {
             subBackupState.remove();
             subBackupProgress.remove();
             subRemoteAssets.remove();
+            subServerUrl.remove();
             subAI.remove();
         };
     }, [loadAndSync]);
@@ -1060,12 +1079,23 @@ const formatSpeed = (bytesPerSec) => {
 
 
 
-    const loadAndSync = useCallback(async () => {
+    const loadAndSync = useCallback(async (skipPriming = false) => {
         if (assetsCountRef.current === 0) {
             setLoading(true);
         }
         setError(null);
         try {
+            if (!skipPriming) {
+                // Check without triggering the OS dialog, so a first-time user sees an
+                // explanation before the system prompt rather than a blind ask.
+                const existing = await MediaService.getPermissionStatus();
+                if (!existing.granted) {
+                    setPermissionStatus(existing.canAskAgain === false ? 'denied' : 'priming');
+                    setLoading(false);
+                    return;
+                }
+            }
+
             const granted = await MediaService.requestPermissions();
             setPermissionStatus(granted ? 'granted' : 'denied');
             if (!granted) {
@@ -1094,15 +1124,20 @@ const formatSpeed = (bytesPerSec) => {
                 return ['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext);
             };
             
-            const mappedOnThisDay = sqliteOnThisDayAssets.map(asset => ({
-                id: asset.id,
-                hash: asset.hash,
-                uri: `${serverUrl}/preview/${asset.hash}?width=512&height=-1&token=${token}`,
-                status: 'remote',
-                creationTime: asset.createTime || 0,
-                mediaType: asset.mediaType || (isVidExt(asset.filename) ? 'video' : 'photo'),
-                filename: asset.filename || ''
-            }));
+            // Only surface already-synced memories here: a local (isLocal=1) row may not
+            // have its hash computed yet, which used to build a broken "/preview/null" URL
+            // and render as a blank tile.
+            const mappedOnThisDay = sqliteOnThisDayAssets
+                .filter(asset => asset.isLocal === 0 && asset.hash)
+                .map(asset => ({
+                    id: asset.id,
+                    hash: asset.hash,
+                    uri: `${serverUrl}/preview/${asset.hash}?width=512&height=-1&token=${token}`,
+                    status: 'remote',
+                    creationTime: asset.createTime || 0,
+                    mediaType: asset.mediaType || (isVidExt(asset.filename) ? 'video' : 'photo'),
+                    filename: asset.filename || ''
+                }));
             setOnThisDayAssets(mappedOnThisDay);
             GalleryStore.setAssets(mappedOnThisDay, 'onThisDay');
 
@@ -1228,10 +1263,23 @@ const formatSpeed = (bytesPerSec) => {
         }
     });
 
-    const RenderAsset = memo(({ asset, globalIndex, navigation, debugMode, currentAssetId, activeAssetIds, activeLoadRef, source }) => {
+    const RenderAsset = memo(({ asset, globalIndex, navigation, debugMode, currentAssetId, activeAssetIds, activeLoadRef, source, serverEpoch }) => {
         const loadStartTime = useRef(0);
         // Only used as fallback if local video thumbnail decoding fails (e.g. WeChat codec)
         const [useRemoteFallback, setUseRemoteFallback] = useState(false);
+        // Grid rows recycle this component across different assets (stable `col-N` keys),
+        // so per-asset retry state must reset whenever the underlying asset changes.
+        const retryCountRef = useRef(0);
+        const retryTimeoutRef = useRef(null);
+        const [retryTick, setRetryTick] = useState(0);
+        useEffect(() => {
+            retryCountRef.current = 0;
+            setRetryTick(0);
+            if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
+        }, [asset.id]);
+        useEffect(() => () => {
+            if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
+        }, []);
 
         let thumbnailUri = safeUri(asset.uri, asset.mediaType);
         // For synced videos: build remote preview URL to use only on onError
@@ -1245,10 +1293,20 @@ const formatSpeed = (bytesPerSec) => {
             } else if (asset.hash) {
                 // ALWAYS use /preview/ for remote assets to prevent Glide OOM on large files/videos
                 thumbnailUri = `${AuthService.getServerUrl()}/preview/${asset.hash}?width=${asset.mediaType === 'video' ? 480 : 320}&height=-1&token=${AuthService.getToken()}`;
+            } else {
+                // No hash or local cache yet — don't hand Glide an empty/invalid source,
+                // just show the placeholder tile until this asset has enough data.
+                thumbnailUri = null;
             }
         } else if (remoteFallbackUri && useRemoteFallback) {
             // Local decoding failed (WeChat video etc.) — use remote preview
             thumbnailUri = remoteFallbackUri;
+        }
+
+        // Force a refetch after a retry or a server URL switch (bare URL alone won't
+        // re-trigger the image loader since the string would otherwise be identical).
+        if (thumbnailUri && asset.status === 'remote' && (retryTick > 0 || serverEpoch > 0)) {
+            thumbnailUri += `${thumbnailUri.includes('?') ? '&' : '?'}_r=${serverEpoch}.${retryTick}`;
         }
 
         return (
@@ -1256,40 +1314,57 @@ const formatSpeed = (bytesPerSec) => {
                 style={styles.itemContainer}
                 onPress={() => navigation.navigate('AssetDetail', { initialIndex: globalIndex, source })}
             >
-                <Image
-                    source={{ uri: thumbnailUri }}
-                    style={styles.image}
-                    contentFit="cover"
-                    cachePolicy="disk"
-                    transition={0}
-                    recyclingKey={asset.id ? String(asset.id) : null}
-                    onLoadStart={() => {
-                        if (asset.status === 'remote') {
-                            loadStartTime.current = Date.now();
-                            activeLoadRef.current++;
-                        }
-                    }}
-                    onLoad={() => {
-                        if (asset.status === 'remote' && loadStartTime.current > 0) {
-                            activeLoadRef.current--;
-                            const diff = Date.now() - loadStartTime.current;
-                            if (debugMode) console.log(`[Metrics] Remote asset ${asset.hash.substring(0, 8)} loaded in ${diff}ms (Concurrent: ${activeLoadRef.current})`);
-                            loadStartTime.current = 0;
-                        }
-                    }}
-                    onError={(e) => {
-                            if (asset.status === 'remote') activeLoadRef.current--;
-                            if (remoteFallbackUri && !useRemoteFallback) {
-                                // Local video thumbnail failed (e.g. WeChat codec) — fall back to remote preview
-                                setUseRemoteFallback(true);
-                                return;
+                {thumbnailUri ? (
+                    <Image
+                        source={{ uri: thumbnailUri }}
+                        style={styles.image}
+                        contentFit="cover"
+                        cachePolicy={GRID_IMAGE_CACHE_POLICY}
+                        transition={0}
+                        recyclingKey={asset.id ? String(asset.id) : null}
+                        onLoadStart={() => {
+                            if (asset.status === 'remote') {
+                                loadStartTime.current = Date.now();
+                                activeLoadRef.current++;
                             }
-                            if (debugMode) {
-                                const diff = loadStartTime.current > 0 ? Date.now() - loadStartTime.current : 'N/A';
-                                console.log(`[Metrics] Remote asset ${asset.id} error after ${diff}ms (Concurrent: ${activeLoadRef.current}):`, e.error || e);
+                        }}
+                        onLoad={() => {
+                            if (asset.status === 'remote' && loadStartTime.current > 0) {
+                                activeLoadRef.current--;
+                                const diff = Date.now() - loadStartTime.current;
+                                if (debugMode) console.log(`[Metrics] Remote asset ${asset.hash.substring(0, 8)} loaded in ${diff}ms (Concurrent: ${activeLoadRef.current})`);
+                                loadStartTime.current = 0;
                             }
-                    }}
-                />
+                        }}
+                        onError={(e) => {
+                                if (asset.status === 'remote') activeLoadRef.current--;
+                                if (remoteFallbackUri && !useRemoteFallback) {
+                                    // Local video thumbnail failed (e.g. WeChat codec) — fall back to remote preview
+                                    setUseRemoteFallback(true);
+                                    return;
+                                }
+                                // Remote preview fetch failed (e.g. transient server/connection
+                                // blip) — retry a few times with backoff instead of leaving a
+                                // permanently blank tile.
+                                if (asset.status === 'remote' && retryCountRef.current < 3) {
+                                    const attempt = retryCountRef.current + 1;
+                                    retryCountRef.current = attempt;
+                                    const backoffMs = [1000, 3000, 6000][attempt - 1];
+                                    retryTimeoutRef.current = setTimeout(() => {
+                                        setRetryTick(t => t + 1);
+                                    }, backoffMs);
+                                }
+                                if (debugMode) {
+                                    const diff = loadStartTime.current > 0 ? Date.now() - loadStartTime.current : 'N/A';
+                                    console.log(`[Metrics] Remote asset ${asset.id} error after ${diff}ms (Concurrent: ${activeLoadRef.current}):`, e.error || e);
+                                }
+                        }}
+                    />
+                ) : (
+                    // No usable URI yet (e.g. remote asset whose hash hasn't synced down) —
+                    // show the placeholder tile instead of handing Glide an empty source.
+                    <View style={styles.image} />
+                )}
                 <StatusIcon item={asset} currentAssetId={currentAssetId} activeAssetIds={activeAssetIds} />
                 {isLivePhoto(asset) ? (
                     <View style={styles.livePhotoBadge}>
@@ -1345,6 +1420,7 @@ const formatSpeed = (bytesPerSec) => {
             prevProps.source !== nextProps.source
         ) return false;
         if (prevProps.debugMode !== nextProps.debugMode) return false;
+        if (prevProps.serverEpoch !== nextProps.serverEpoch) return false;
         if (prevProps.currentAssetId !== nextProps.currentAssetId && (prevProps.asset.id === prevProps.currentAssetId || prevProps.asset.id === nextProps.currentAssetId)) return false;
         
         const prevActive = prevProps.activeAssetIds || [];
@@ -1356,19 +1432,20 @@ const formatSpeed = (bytesPerSec) => {
         return true;
     });
 
-    const TimelineRow = memo(({ item, navigation, debugMode, currentAssetId, activeAssetIds, activeLoadCountRef, source }) => (
+    const TimelineRow = memo(({ item, navigation, debugMode, currentAssetId, activeAssetIds, activeLoadCountRef, source, serverEpoch }) => (
         <View style={styles.row}>
             {item.items.map((asset, index) => (
-                <RenderAsset 
+                <RenderAsset
                     key={`col-${index}`}
-                    asset={asset} 
-                    globalIndex={asset.globalIndex} 
+                    asset={asset}
+                    globalIndex={asset.globalIndex}
                     navigation={navigation}
                     debugMode={debugMode}
                     currentAssetId={currentAssetId}
                     activeAssetIds={activeAssetIds}
                     activeLoadRef={activeLoadCountRef}
                     source={source}
+                    serverEpoch={serverEpoch}
                 />
             ))}
             {Array.from({ length: COLUMN_COUNT - item.items.length }).map((_, i) => (
@@ -1378,6 +1455,7 @@ const formatSpeed = (bytesPerSec) => {
     ), (prevProps, nextProps) => {
         if (prevProps.debugMode !== nextProps.debugMode) return false;
         if (prevProps.source !== nextProps.source) return false;
+        if (prevProps.serverEpoch !== nextProps.serverEpoch) return false;
 
         const prevItems = prevProps.item.items;
         const nextItems = nextProps.item.items;
@@ -1429,6 +1507,7 @@ const formatSpeed = (bytesPerSec) => {
                 isScrubbing={extraData?.isScrubbing || false}
                 activeLoadCountRef={globalActiveLoadCount}
                 source={extraData?.source || 'gallery'}
+                serverEpoch={extraData?.serverEpoch || 0}
             />
         );
     }, [navigation]);
@@ -1461,8 +1540,9 @@ const formatSpeed = (bytesPerSec) => {
         currentAssetId: backupState.currentAssetId,
         activeAssetIds: backupState.activeAssetIds,
         debugMode,
+        serverEpoch,
         source: isSearching && (searchTokens.length > 0 || searchQuery.trim() !== '') ? 'search' : 'gallery'
-    }), [isScrubbing, backupState.currentAssetId, backupState.activeAssetIds, debugMode, isSearching, searchQuery, searchTokens]);
+    }), [isScrubbing, backupState.currentAssetId, backupState.activeAssetIds, debugMode, serverEpoch, isSearching, searchQuery, searchTokens]);
 
     const renderOnThisDay = () => {
         if (!onThisDayAssets || onThisDayAssets.length === 0 || isSearching) return null;
@@ -1774,6 +1854,35 @@ const formatSpeed = (bytesPerSec) => {
 
             {/* REMOVED BIG BANNER FOR OPTION A */}
 
+            {(permissionStatus === 'priming' || permissionStatus === 'denied') ? (
+                <View style={styles.permissionScreen}>
+                    <View style={[styles.permissionIconCircle, permissionStatus === 'denied' && styles.permissionIconCircleDenied]}>
+                        <ImagesIcon size={36} color={permissionStatus === 'denied' ? '#B45309' : '#007AFF'} />
+                    </View>
+                    {permissionStatus === 'priming' ? (
+                        <>
+                            <Text style={styles.permissionTitle}>Access your photos</Text>
+                            <Text style={styles.permissionText}>
+                                Lomorage needs to see your photo library to back it up to your own server. Nothing uploads until you allow it, and it never leaves your server.
+                            </Text>
+                            <TouchableOpacity style={styles.button} onPress={() => loadAndSync(true)}>
+                                <Text style={styles.buttonText}>Continue</Text>
+                            </TouchableOpacity>
+                        </>
+                    ) : (
+                        <>
+                            <Text style={styles.permissionTitle}>Photo access is off</Text>
+                            <Text style={styles.permissionText}>
+                                Lomorage can't back up your photos without access to your library. Turn it on in Settings, then come back here.
+                            </Text>
+                            <TouchableOpacity style={styles.button} onPress={() => Linking.openSettings()}>
+                                <Text style={styles.buttonText}>Open Settings</Text>
+                            </TouchableOpacity>
+                        </>
+                    )}
+                </View>
+            ) : (
+            <>
             {error ? (
                 isOfflineError ? (
                     <View style={styles.offlineBanner}>
@@ -1782,14 +1891,14 @@ const formatSpeed = (bytesPerSec) => {
                             <Text style={styles.offlineTitle}>Can't reach your server</Text>
                             <Text style={styles.offlineSubtext}>Your local photos are safe on this phone — we'll keep syncing automatically once it's back.</Text>
                         </View>
-                        <TouchableOpacity onPress={loadAndSync} style={styles.offlineRetryButton}>
+                        <TouchableOpacity onPress={() => loadAndSync()} style={styles.offlineRetryButton}>
                             <Text style={styles.offlineRetryText}>Retry</Text>
                         </TouchableOpacity>
                     </View>
                 ) : (
                     <View style={styles.errorBanner}>
                         <Text style={styles.errorText} numberOfLines={1}>{error}</Text>
-                        <TouchableOpacity onPress={loadAndSync} style={styles.retryButton}>
+                        <TouchableOpacity onPress={() => loadAndSync()} style={styles.retryButton}>
                             <Text style={styles.retryText}>Retry</Text>
                         </TouchableOpacity>
                     </View>
@@ -1880,6 +1989,8 @@ const formatSpeed = (bytesPerSec) => {
                     )}
                 </View>
             )}
+            </>
+            )}
 
             {isSearching && suggestions.length > 0 && (
                 <View style={[styles.suggestionsDropdown, { top: headerHeight }]}>
@@ -1941,7 +2052,7 @@ const formatSpeed = (bytesPerSec) => {
                                 const statsText = [sizeStr, speedStr].filter(Boolean).join(' • ');
                                 return (
                                     <View key={asset.id} style={styles.activeUploadRow}>
-                                        <Image source={{ uri: safeUri(asset.uri, asset.mediaType) }} style={styles.activeUploadThumb} cachePolicy="disk" />
+                                        <Image source={{ uri: safeUri(asset.uri, asset.mediaType) }} style={styles.activeUploadThumb} cachePolicy={GRID_IMAGE_CACHE_POLICY} />
                                         <View style={{ flex: 1, marginLeft: 12 }}>
                                             <Text style={styles.activeUploadName} numberOfLines={1}>{asset.filename || asset.id}</Text>
                                             {statsText ? (
@@ -2165,6 +2276,53 @@ const styles = StyleSheet.create({
         color: 'white',
         fontSize: 12,
         fontWeight: 'bold',
+    },
+    permissionScreen: {
+        flex: 1,
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingHorizontal: 32,
+        paddingBottom: 80,
+    },
+    permissionIconCircle: {
+        width: 88,
+        height: 88,
+        borderRadius: 44,
+        backgroundColor: '#F0F7FF',
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginBottom: 20,
+    },
+    permissionIconCircleDenied: {
+        backgroundColor: '#FEF3E2',
+    },
+    permissionTitle: {
+        fontSize: 20,
+        fontWeight: '700',
+        color: '#1A202C',
+        marginBottom: 10,
+        textAlign: 'center',
+    },
+    permissionText: {
+        fontSize: 15,
+        lineHeight: 21,
+        color: '#4A5568',
+        textAlign: 'center',
+        marginBottom: 24,
+    },
+    button: {
+        backgroundColor: '#007AFF',
+        height: 52,
+        borderRadius: 12,
+        justifyContent: 'center',
+        alignItems: 'center',
+        paddingHorizontal: 32,
+    },
+    buttonText: {
+        color: '#FFFFFF',
+        fontSize: 16,
+        fontWeight: '700',
+        letterSpacing: 0.5,
     },
     offlineBanner: {
         flexDirection: 'row',
