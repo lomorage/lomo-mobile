@@ -17,164 +17,14 @@ import { recognizeText } from '@infinitered/react-native-mlkit-text-recognition'
 import { RNMLKitFaceDetector } from '@infinitered/react-native-mlkit-face-detection';
 import { pinyin } from 'pinyin-pro';
 import { startKeepAlive, stopKeepAlive } from '../../modules/expo-background-keepalive';
+import { readJpegExifOrientation, readImagePhysicalDimensions, base64ToFloat32Array } from './ai/imageBinaryParsing';
+import { cosineSimilarity } from './ai/vectorMath';
+import { extractTimeRange } from './ai/searchQueryParser';
+import { processBlocksToMetadata } from './ai/ocrUtils';
+import { buildFaceBoundingBox, isFaceTooSmall, attachEyeLandmarks } from './ai/faceGeometry';
 
 export const BACKGROUND_AI_SYNC_TASK = 'LOMO_AI_SYNC_TASK';
-const MIN_FACE_SIZE = 80;
 
-// Pure JS JPEG EXIF orientation reader.
-// Attempts a partial read of the first 64KB of the file to locate the EXIF APP1 marker.
-// Returns the EXIF Orientation integer (1╬ô├ç├┤8), or 1 (no rotation) on failure.
-async function readJpegExifOrientation(filePath) {
-  try {
-    const fileUri = filePath.startsWith('file://') ? filePath : `file://${filePath}`;
-    let b64;
-    try {
-      // Try partial read first (supported by expo-file-system legacy on both platforms)
-      b64 = await FileSystem.readAsStringAsync(fileUri, {
-        encoding: FileSystem.EncodingType.Base64,
-        length: 65536,
-        position: 0,
-      });
-    } catch (_) {
-      // Fallback: read the full file (may be slow for large photos)
-      b64 = await FileSystem.readAsStringAsync(fileUri, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-      // Only process the first 87382 characters (~65KB of binary)
-      if (b64.length > 87382) b64 = b64.substring(0, 87382);
-    }
-
-    const binary = atob(b64);
-    const len = Math.min(binary.length, 65536);
-    const view = new Uint8Array(len);
-    for (let i = 0; i < len; i++) view[i] = binary.charCodeAt(i);
-
-    // Check JPEG SOI marker (0xFFD8)
-    if (view[0] !== 0xFF || view[1] !== 0xD8) return 1;
-
-    let offset = 2;
-    while (offset < len - 4) {
-      if (view[offset] !== 0xFF) break;
-      const marker = view[offset + 1];
-      const segLength = (view[offset + 2] << 8) | view[offset + 3];
-      // APP1 marker (0xFFE1) contains EXIF data
-      if (marker === 0xE1) {
-        // Check for "Exif\0\0" header at offset+4
-        if (offset + 10 < len &&
-            view[offset + 4] === 0x45 && // E
-            view[offset + 5] === 0x78 && // x
-            view[offset + 6] === 0x69 && // i
-            view[offset + 7] === 0x66 && // f
-            view[offset + 8] === 0x00 && // null
-            view[offset + 9] === 0x00) { // null
-          // TIFF header starts at offset + 10
-          const tiffStart = offset + 10;
-          if (tiffStart + 8 > len) return 1;
-          // Byte order: 0x4949 = little-endian, 0x4D4D = big-endian
-          const isLE = view[tiffStart] === 0x49 && view[tiffStart + 1] === 0x49;
-          const readU16 = (pos) => isLE
-            ? (view[pos] | (view[pos + 1] << 8))
-            : ((view[pos] << 8) | view[pos + 1]);
-          const readU32 = (pos) => isLE
-            ? ((view[pos] | (view[pos + 1] << 8) | (view[pos + 2] << 16) | (view[pos + 3] << 24)) >>> 0)
-            : (((view[pos] << 24) | (view[pos + 1] << 16) | (view[pos + 2] << 8) | view[pos + 3]) >>> 0);
-          const ifdOffset = tiffStart + readU32(tiffStart + 4);
-          if (ifdOffset + 2 > len) return 1;
-          const numEntries = readU16(ifdOffset);
-          for (let e = 0; e < numEntries; e++) {
-            const entryOffset = ifdOffset + 2 + e * 12;
-            if (entryOffset + 12 > len) break;
-            const tag = readU16(entryOffset);
-            if (tag === 0x0112) { // Orientation tag
-              const orientation = readU16(entryOffset + 8);
-              console.log(`[AIService] EXIF Orientation from file: ${orientation}`);
-              return orientation;
-            }
-          }
-        }
-        break; // Only one APP1 segment
-      }
-      if (marker === 0xDA) break; // SOS = image data starts, stop parsing
-      offset += 2 + segLength;
-    }
-  } catch (e) {
-    console.warn('[AIService] readJpegExifOrientation failed:', e.message);
-  }
-  return 1; // Default: no rotation
-}
-
-// Helper: Parse PNG and JPEG file headers directly to extract physical dimensions.
-// Reads the first 64KB as base64, decodes to binary, and parses structure in JS.
-async function readImagePhysicalDimensions(filePath) {
-  try {
-    const fileUri = filePath.startsWith('file://') ? filePath : `file://${filePath}`;
-    let b64;
-    try {
-      b64 = await FileSystem.readAsStringAsync(fileUri, {
-        encoding: FileSystem.EncodingType.Base64,
-        length: 65536,
-        position: 0,
-      });
-    } catch (_) {
-      b64 = await FileSystem.readAsStringAsync(fileUri, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-      if (b64.length > 87382) b64 = b64.substring(0, 87382);
-    }
-
-    const binary = atob(b64);
-    const len = Math.min(binary.length, 65536);
-    const view = new Uint8Array(len);
-    for (let i = 0; i < len; i++) view[i] = binary.charCodeAt(i);
-
-    // 1. Check PNG signature: 89 50 4E 47
-    if (view[0] === 0x89 && view[1] === 0x50 && view[2] === 0x4E && view[3] === 0x47) {
-      if (len >= 24) {
-        // Width is at offset 16 (4 bytes, big-endian)
-        const w = (view[16] << 24) | (view[17] << 16) | (view[18] << 8) | view[19];
-        // Height is at offset 20 (4 bytes, big-endian)
-        const h = (view[20] << 24) | (view[21] << 16) | (view[22] << 8) | view[23];
-        console.log(`[AIService] Parsed PNG physical dimensions: ${w}x${h}`);
-        return { w, h };
-      }
-    }
-
-    // 2. Check JPEG SOI marker: FF D8
-    if (view[0] === 0xFF && view[1] === 0xD8) {
-      let offset = 2;
-      while (offset < len - 8) {
-        if (view[offset] !== 0xFF) break;
-        const marker = view[offset + 1];
-        const segLength = (view[offset + 2] << 8) | view[offset + 3];
-
-        // SOF markers: 0xC0 - 0xCF (excluding 0xC4, 0xC8, 0xCC)
-        if (marker >= 0xC0 && marker <= 0xCF && marker !== 0xC4 && marker !== 0xC8 && marker !== 0xCC) {
-          const h = (view[offset + 5] << 8) | view[offset + 6];
-          const w = (view[offset + 7] << 8) | view[offset + 8];
-          console.log(`[AIService] Parsed JPEG physical dimensions: ${w}x${h}`);
-          return { w, h };
-        }
-
-        if (marker === 0xDA) break; // SOS = start of scan, stop parsing
-        offset += 2 + segLength;
-      }
-    }
-  } catch (e) {
-    console.warn('[AIService] readImagePhysicalDimensions failed:', e.message);
-  }
-  return null;
-}
-
-// Base64 helper to convert base64 string to Float32Array
-function base64ToFloat32Array(base64) {
-  const binaryString = atob(base64);
-  const len = binaryString.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
-  return new Float32Array(bytes.buffer);
-}
 // Local translation dictionary to bypass network requests for common search keywords
 const LOCAL_TRANSLATION_DICT = {
   '猫': 'cat', '猫咪': 'cat', '小猫': 'cat',
@@ -628,26 +478,7 @@ class AIService {
   }
 
   _processBlocksToMetadata(result, asset) {
-    if (!result || !result.blocks || !asset.width || !asset.height) return null;
-    console.log(`[AIService] _processBlocksToMetadata: Normalizing coordinates using asset.width=${asset.width}, asset.height=${asset.height}`);
-    const blocksList = [];
-    for (let i = 0; i < result.blocks.length; i++) {
-      const block = result.blocks[i];
-      if (block.frame) {
-        if (i < 5) {
-          console.log(`[AIService] Block ${i}: text="${block.text.replace(/\n/g, ' ')}", frame: left=${block.frame.left}, top=${block.frame.top}, right=${block.frame.right}, bottom=${block.frame.bottom}`);
-        }
-        const w = (block.frame.right - block.frame.left) / asset.width;
-        const h = (block.frame.bottom - block.frame.top) / asset.height;
-        const x = block.frame.left / asset.width;
-        const y = block.frame.top / asset.height; // top-left origin
-        blocksList.push({
-           text: block.text,
-           frame: { x, y, w, h }
-        });
-      }
-    }
-    return blocksList;
+    return processBlocksToMetadata(result, asset);
   }
 
   // Extract OCR manually for an asset
@@ -761,17 +592,7 @@ class AIService {
   }
 
   cosineSimilarity(vecA, vecB) {
-    let dotProduct = 0;
-    let normA = 0;
-    let normB = 0;
-    const len = Math.min(vecA.length, vecB.length);
-    for (let i = 0; i < len; i++) {
-      dotProduct += vecA[i] * vecB[i];
-      normA += vecA[i] * vecA[i];
-      normB += vecB[i] * vecB[i];
-    }
-    if (normA === 0 || normB === 0) return 0;
-    return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+    return cosineSimilarity(vecA, vecB);
   }
 
   async _refreshFaceAlbumCache() {
@@ -805,14 +626,8 @@ class AIService {
             try {
               const coverFacesRes = await this.faceDetector.detectFaces(tempFileUri);
               const coverFaces = coverFacesRes?.faces || [];
-              if (coverFaces.length > 0 && coverFaces[0].landmarks) {
-                const face = coverFaces[0];
-                const leftEye = face.landmarks.find(l => l.type === '4' || l.type === 'LEFT_EYE');
-                const rightEye = face.landmarks.find(l => l.type === '10' || l.type === 'RIGHT_EYE');
-                if (leftEye && rightEye) {
-                  coverBBox.leftEye = { x: leftEye.position.x, y: leftEye.position.y };
-                  coverBBox.rightEye = { x: rightEye.position.x, y: rightEye.position.y };
-                }
+              if (coverFaces.length > 0) {
+                attachEyeLandmarks(coverBBox, coverFaces[0]);
               }
             } catch (err) {
               console.warn(`[AIService] Failed to detect landmarks on cover image for album ${album.ID}`);
@@ -967,25 +782,13 @@ class AIService {
 
     for (let i = 0; i < faces.length; i++) {
       const face = faces[i];
-      const boundingBox = {
-        x: face.frame.origin.x,
-        y: face.frame.origin.y,
-        width: face.frame.size.x,
-        height: face.frame.size.y,
-      };
+      const boundingBox = buildFaceBoundingBox(face);
 
-      if (boundingBox.width < MIN_FACE_SIZE || boundingBox.height < MIN_FACE_SIZE) {
+      if (isFaceTooSmall(boundingBox)) {
         continue;
       }
 
-      if (face.landmarks) {
-        const leftEye = face.landmarks.find(l => l.type === '4' || l.type === 'LEFT_EYE');
-        const rightEye = face.landmarks.find(l => l.type === '10' || l.type === 'RIGHT_EYE');
-        if (leftEye && rightEye) {
-          boundingBox.leftEye = { x: leftEye.position.x, y: leftEye.position.y };
-          boundingBox.rightEye = { x: rightEye.position.x, y: rightEye.position.y };
-        }
-      }
+      attachEyeLandmarks(boundingBox, face);
 
       let croppedImageBase64 = null;
       let embedding = null;
@@ -1239,25 +1042,13 @@ class AIService {
                   const token = AuthService.getToken();
 
                   for (const face of faces) {
-                    const boundingBox = {
-                      x: face.frame.origin.x,
-                      y: face.frame.origin.y,
-                      width: face.frame.size.x,
-                      height: face.frame.size.y
-                    };
+                    const boundingBox = buildFaceBoundingBox(face);
 
-                    if (boundingBox.width < MIN_FACE_SIZE || boundingBox.height < MIN_FACE_SIZE) {
+                    if (isFaceTooSmall(boundingBox)) {
                       continue;
                     }
 
-                    if (face.landmarks) {
-                      const leftEye = face.landmarks.find(l => l.type === '4' || l.type === 'LEFT_EYE');
-                      const rightEye = face.landmarks.find(l => l.type === '10' || l.type === 'RIGHT_EYE');
-                      if (leftEye && rightEye) {
-                        boundingBox.leftEye = { x: leftEye.position.x, y: leftEye.position.y };
-                        boundingBox.rightEye = { x: rightEye.position.x, y: rightEye.position.y };
-                      }
-                    }
+                    attachEyeLandmarks(boundingBox, face);
                     
                     const faceResultObj = await ExpoLomoHasher.encodeFaceEmbeddingAsync(
                       localPath,
@@ -1895,25 +1686,13 @@ class AIService {
                       }
 
                       for (const face of faces) {
-                        const boundingBox = {
-                          x: face.frame.origin.x,
-                          y: face.frame.origin.y,
-                          width: face.frame.size.x,
-                          height: face.frame.size.y
-                        };
+                        const boundingBox = buildFaceBoundingBox(face);
 
-                        if (boundingBox.width < MIN_FACE_SIZE || boundingBox.height < MIN_FACE_SIZE) {
+                        if (isFaceTooSmall(boundingBox)) {
                           continue;
                         }
 
-                        if (face.landmarks) {
-                          const leftEye = face.landmarks.find(l => l.type === '4' || l.type === 'LEFT_EYE');
-                          const rightEye = face.landmarks.find(l => l.type === '10' || l.type === 'RIGHT_EYE');
-                          if (leftEye && rightEye) {
-                            boundingBox.leftEye = { x: leftEye.position.x, y: leftEye.position.y };
-                            boundingBox.rightEye = { x: rightEye.position.x, y: rightEye.position.y };
-                          }
-                        }
+                        attachEyeLandmarks(boundingBox, face);
                         
                         const faceResultObj = await ExpoLomoHasher.encodeFaceEmbeddingAsync(
                           downloadRes.uri,
@@ -2350,169 +2129,7 @@ class AIService {
   }
 
   extractTimeRange(queryText) {
-    if (!queryText) return { startTime: null, endTime: null, remainingText: '' };
-    let text = queryText;
-    let startTime = null;
-    let endTime = null;
-    const now = new Date();
-
-    const startOfDay = (d) => {
-      const nd = new Date(d);
-      nd.setHours(0, 0, 0, 0);
-      return nd.getTime();
-    };
-    const endOfDay = (d) => {
-      const nd = new Date(d);
-      nd.setHours(23, 59, 59, 999);
-      return nd.getTime();
-    };
-
-    // 1. Check relative date terms (longest terms first to avoid partial matches)
-    const relativePatterns = [
-      { patterns: [/\blast week\b/i, /上周/g, /上星期/g], getRange: () => {
-          const lastWeek = new Date();
-          lastWeek.setDate(now.getDate() - 7);
-          return { start: startOfDay(lastWeek), end: endOfDay(now) };
-      }},
-      { patterns: [/\blast month\b/i, /上个月/g], getRange: () => {
-          const start = new Date(now.getFullYear(), now.getMonth() - 1, 1, 0, 0, 0, 0).getTime();
-          const end = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999).getTime();
-          return { start, end };
-      }},
-      { patterns: [/\blast year\b/i, /去年/g], getRange: () => {
-          const start = new Date(now.getFullYear() - 1, 0, 1, 0, 0, 0, 0).getTime();
-          const end = new Date(now.getFullYear() - 1, 11, 31, 23, 59, 59, 999).getTime();
-          return { start, end };
-      }},
-      { patterns: [/\bthis year\b/i, /今年/g], getRange: () => {
-          const start = new Date(now.getFullYear(), 0, 1, 0, 0, 0, 0).getTime();
-          return { start, end: endOfDay(now) };
-      }},
-      { patterns: [/\bthis month\b/i, /这个月/g], getRange: () => {
-          const start = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0).getTime();
-          return { start, end: endOfDay(now) };
-      }},
-      { patterns: [/\byesterday\b/i, /昨天/g], getRange: () => {
-          const yesterday = new Date();
-          yesterday.setDate(now.getDate() - 1);
-          return { start: startOfDay(yesterday), end: endOfDay(yesterday) };
-      }},
-      { patterns: [/\btoday\b/i, /今天/g], getRange: () => {
-          return { start: startOfDay(now), end: endOfDay(now) };
-      }}
-    ];
-
-    for (const item of relativePatterns) {
-      for (const pat of item.patterns) {
-        if (pat.test(text)) {
-          const range = item.getRange();
-          startTime = range.start;
-          endTime = range.end;
-          text = text.replace(pat, '');
-          return { startTime, endTime, remainingText: text.trim() };
-        }
-      }
-    }
-
-    // 2. YYYY-MM-DD or YYYY/MM/DD or YYYY.MM.DD
-    const ymdPattern = /\b(\d{4})[-/.](0?[1-9]|1[0-2])[-/.](0?[1-9]|[12]\d|3[01])\b/;
-    const ymdMatch = text.match(ymdPattern);
-    if (ymdMatch) {
-      const y = parseInt(ymdMatch[1], 10);
-      const m = parseInt(ymdMatch[2], 10) - 1;
-      const d = parseInt(ymdMatch[3], 10);
-      const dateObj = new Date(y, m, d);
-      startTime = startOfDay(dateObj);
-      endTime = endOfDay(dateObj);
-      text = text.replace(ymdPattern, '');
-      return { startTime, endTime, remainingText: text.trim() };
-    }
-
-    // Chinese YYYY年MM月DD日
-    const ymdCnPattern = /(\d{4})年(0?[1-9]|1[0-2])月(0?[1-9]|[12]\d|3[01])日/;
-    const ymdCnMatch = text.match(ymdCnPattern);
-    if (ymdCnMatch) {
-      const y = parseInt(ymdCnMatch[1], 10);
-      const m = parseInt(ymdCnMatch[2], 10) - 1;
-      const d = parseInt(ymdCnMatch[3], 10);
-      const dateObj = new Date(y, m, d);
-      startTime = startOfDay(dateObj);
-      endTime = endOfDay(dateObj);
-      text = text.replace(ymdCnPattern, '');
-      return { startTime, endTime, remainingText: text.trim() };
-    }
-
-    // 8-digit YYYYMMDD
-    const ymd8Pattern = /\b(\d{4})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\b/;
-    const ymd8Match = text.match(ymd8Pattern);
-    if (ymd8Match) {
-      const y = parseInt(ymd8Match[1], 10);
-      const m = parseInt(ymd8Match[2], 10) - 1;
-      const d = parseInt(ymd8Match[3], 10);
-      const dateObj = new Date(y, m, d);
-      startTime = startOfDay(dateObj);
-      endTime = endOfDay(dateObj);
-      text = text.replace(ymd8Pattern, '');
-      return { startTime, endTime, remainingText: text.trim() };
-    }
-
-    // 3. YYYY-MM or YYYY/MM or YYYY.MM
-    const ymPattern = /\b(\d{4})[-/.](0?[1-9]|1[0-2])\b/;
-    const ymMatch = text.match(ymPattern);
-    if (ymMatch) {
-      const y = parseInt(ymMatch[1], 10);
-      const m = parseInt(ymMatch[2], 10) - 1;
-      const start = new Date(y, m, 1, 0, 0, 0, 0).getTime();
-      const end = new Date(y, m + 1, 0, 23, 59, 59, 999).getTime();
-      startTime = start;
-      endTime = end;
-      text = text.replace(ymPattern, '');
-      return { startTime, endTime, remainingText: text.trim() };
-    }
-
-    // Chinese YYYY年MM月
-    const ymCnPattern = /(\d{4})年(0?[1-9]|1[0-2])月/;
-    const ymCnMatch = text.match(ymCnPattern);
-    if (ymCnMatch) {
-      const y = parseInt(ymCnMatch[1], 10);
-      const m = parseInt(ymCnMatch[2], 10) - 1;
-      const start = new Date(y, m, 1, 0, 0, 0, 0).getTime();
-      const end = new Date(y, m + 1, 0, 23, 59, 59, 999).getTime();
-      startTime = start;
-      endTime = end;
-      text = text.replace(ymCnPattern, '');
-      return { startTime, endTime, remainingText: text.trim() };
-    }
-
-    // 4. YYYY年
-    const yCnPattern = /(\d{4})年/;
-    const yCnMatch = text.match(yCnPattern);
-    if (yCnMatch) {
-      const y = parseInt(yCnMatch[1], 10);
-      const start = new Date(y, 0, 1, 0, 0, 0, 0).getTime();
-      const end = new Date(y, 11, 31, 23, 59, 59, 999).getTime();
-      startTime = start;
-      endTime = end;
-      text = text.replace(yCnPattern, '');
-      return { startTime, endTime, remainingText: text.trim() };
-    }
-
-    // Numeric YYYY (restrict to reasonable years e.g. 1990 - 2100)
-    const yPattern = /\b(\d{4})\b/;
-    const yMatch = text.match(yPattern);
-    if (yMatch) {
-      const y = parseInt(yMatch[1], 10);
-      if (y >= 1990 && y <= 2100) {
-        const start = new Date(y, 0, 1, 0, 0, 0, 0).getTime();
-        const end = new Date(y, 11, 31, 23, 59, 59, 999).getTime();
-        startTime = start;
-        endTime = end;
-        text = text.replace(yPattern, '');
-        return { startTime, endTime, remainingText: text.trim() };
-      }
-    }
-
-    return { startTime, endTime, remainingText: text.trim() };
+    return extractTimeRange(queryText);
   }
 
   // 2.7 Hybrid search matching location tokens, time tokens and semantic CLIP similarity
