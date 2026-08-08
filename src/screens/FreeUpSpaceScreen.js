@@ -8,6 +8,7 @@ import AssetDBService from '../services/AssetDBService';
 import MediaService from '../services/MediaService';
 import AuthService from '../services/AuthService';
 import GalleryStore from '../store/GalleryStore';
+import { formatBytesLog } from '../utils/formatters';
 
 export default function FreeUpSpaceScreen({ navigation }) {
     const [videos, setVideos] = useState([]);
@@ -60,13 +61,7 @@ export default function FreeUpSpaceScreen({ navigation }) {
         });
     }, []);
 
-    const formatSize = (bytes) => {
-        if (!bytes || bytes === 0) return '0 B';
-        const k = 1024;
-        const sizes = ['B', 'KB', 'MB', 'GB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-    };
+    const formatSize = (bytes) => formatBytesLog(bytes, { decimals: 1 });
 
     const totalSelectedSize = useMemo(() => {
         let total = 0;

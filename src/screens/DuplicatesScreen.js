@@ -26,6 +26,7 @@ import AuthService from '../services/AuthService';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Device from 'expo-device';
 import { useSettings } from '../context/SettingsContext';
+import { formatBytesLog } from '../utils/formatters';
 
 const { width } = Dimensions.get('window');
 
@@ -82,13 +83,7 @@ const AssetCard = React.memo(function AssetCard({ asset, idx, isSelected, onTogg
     const isBest = idx === 0;
     const [localMeta, setLocalMeta] = React.useState({ width: 0, height: 0, size: 0 });
 
-    const formatSizeLocal = (bytes) => {
-        if (!bytes) return '';
-        const k = 1024;
-        const sizes = ['B', 'KB', 'MB', 'GB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-    };
+    const formatSizeLocal = (bytes) => formatBytesLog(bytes, { fallback: '' });
 
     return (
         <View style={styles.photoContainer}>
@@ -359,13 +354,7 @@ function CompareItemPage({ item, index, isSelected, onToggle, setModalMeta, isFo
         return () => { cancelled = true; };
     }, [item.id, item.hash, item.isLocal, item.mediaType, useOriginalVideo]);
 
-    const formatSizeLocal = (bytes) => {
-        if (!bytes) return 'Unknown';
-        const k = 1024;
-        const sizes = ['B', 'KB', 'MB', 'GB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-    };
+    const formatSizeLocal = (bytes) => formatBytesLog(bytes, { fallback: 'Unknown' });
 
     return (
         <View style={[styles.modalItemPage, { width }]}>
@@ -593,13 +582,7 @@ export default function DuplicatesScreen() {
         });
     });
 
-    const formatSize = (bytes) => {
-        if (!bytes) return '0 B';
-        const k = 1024;
-        const sizes = ['B', 'KB', 'MB', 'GB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-    };
+    const formatSize = (bytes) => formatBytesLog(bytes);
 
     // Perform bulk deletion of selected duplicates
     const handleDeleteSelected = async () => {

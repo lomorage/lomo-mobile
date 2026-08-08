@@ -8,6 +8,7 @@ import SyncService from '../services/SyncService';
 import AuthService from '../services/AuthService';
 import Logger from '../utils/logger';
 import AIService from '../services/AIService';
+import { formatBytesLog } from '../utils/formatters';
 import { Send, Folder, X, PlayCircle } from 'lucide-react-native';
 import * as MediaLibrary from 'expo-media-library';
 import { Image } from 'expo-image';
@@ -248,13 +249,7 @@ export default function SettingsScreen({ navigation }) {
         setStats(s);
     };
 
-    const formatSize = (bytes) => {
-        if (!bytes) return '0 B';
-        const k = 1024;
-        const sizes = ['B', 'KB', 'MB', 'GB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-    };
+    const formatSize = (bytes) => formatBytesLog(bytes);
 
     const handleReProbe = async () => {
         if (isScanning) return;

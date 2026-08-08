@@ -14,3 +14,16 @@ export function formatSpeed(bytesPerSec) {
   if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
   return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`;
 }
+
+// Formats a byte count using log-scaled B/KB/MB/GB tiers (unlike formatBytes
+// above, this one does go up to GB). This was duplicated near-verbatim across
+// DuplicatesScreen (x3), FreeUpSpaceScreen, and SettingsScreen, each with a
+// slightly different fallback string and decimal precision for the empty/zero
+// case — `options` lets each call site keep its exact existing behavior.
+export function formatBytesLog(bytes, { fallback = '0 B', decimals = 2 } = {}) {
+  if (!bytes) return fallback;
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(decimals)) + ' ' + sizes[i];
+}
