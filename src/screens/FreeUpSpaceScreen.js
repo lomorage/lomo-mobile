@@ -133,7 +133,7 @@ export default function FreeUpSpaceScreen({ navigation }) {
         }
     };
 
-const VideoCard = React.memo(({ item, isSelected, playVideo, toggleSelection, formatSize }) => {
+const VideoCard = React.memo(function VideoCard({ item, isSelected, playVideo, toggleSelection, formatSize }) {
     const [useRemoteFallback, setUseRemoteFallback] = React.useState(false);
 
     const remoteFallbackUri = item.hash

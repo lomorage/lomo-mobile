@@ -924,7 +924,7 @@ export default function SettingsScreen({ navigation }) {
                 >
                     <View style={styles.settingTextContainer}>
                         <Text style={styles.settingLabel}>Show Sign-In Code</Text>
-                        <Text style={styles.settingDescription}>Re-generate a family member's QR code any time, so they can scan it to sign in again.</Text>
+                        <Text style={styles.settingDescription}>Re-generate a family member&apos;s QR code any time, so they can scan it to sign in again.</Text>
                     </View>
                 </TouchableOpacity>
 

@@ -26,7 +26,7 @@ export default function PairingQRModal({ visible, payload, title = 'Sign-in code
                     <View style={styles.warning}>
                         <ShieldAlert size={16} color="#B45309" />
                         <Text style={styles.warningText}>
-                            This code contains their password. Only let them scan it directly — don't screenshot or forward it.
+                            This code contains their password. Only let them scan it directly — don&apos;t screenshot or forward it.
                         </Text>
                     </View>
 

@@ -41,7 +41,7 @@ export default function ShowSignInCodeScreen({ navigation }) {
                     </TouchableOpacity>
                     <Text style={styles.title}>Show Sign-In Code</Text>
                     <Text style={styles.subtitle}>
-                        Re-generate a family member's QR code any time — nothing is saved on this screen, it's built fresh from what you type in below.
+                        Re-generate a family member&apos;s QR code any time — nothing is saved on this screen, it&apos;s built fresh from what you type in below.
                     </Text>
                 </View>
 

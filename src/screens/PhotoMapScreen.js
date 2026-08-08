@@ -55,7 +55,7 @@ function AssetVideoPlayer({ uri, style, shouldPlay, nativeControls = false }) {
 // Separate component so each marker manages its own tracksViewChanges lifecycle.
 // tracksViewChanges=true while image is loading, then false after onLoad fires,
 // so Android re-captures the marker bitmap exactly once after the image appears.
-const PhotoMarker = React.memo(({ coordinate, thumbUrl, fallbackUrl, onPress }) => {
+const PhotoMarker = React.memo(function PhotoMarker({ coordinate, thumbUrl, fallbackUrl, onPress }) {
   const [tracksViewChanges, setTracksViewChanges] = useState(true);
   const [useRemoteFallback, setUseRemoteFallback] = useState(false);
 
@@ -108,7 +108,7 @@ const PhotoMarker = React.memo(({ coordinate, thumbUrl, fallbackUrl, onPress }) 
   );
 });
 
-const ClusterMarker = React.memo(({ coordinate, pointCount, onPress }) => {
+const ClusterMarker = React.memo(function ClusterMarker({ coordinate, pointCount, onPress }) {
   const [tracksViewChanges, setTracksViewChanges] = useState(true);
 
   useEffect(() => {

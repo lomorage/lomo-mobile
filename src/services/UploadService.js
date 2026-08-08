@@ -108,6 +108,7 @@ class UploadService {
             const isHttps = serverUrl.toLowerCase().startsWith('https://');
             const sessionType = Platform.OS === 'ios' && !isHttps
                 ? (FileSystem.FileSystemSessionType?.FOREGROUND ?? 1)
+                // eslint-disable-next-line import/namespace -- FileSystemUploadSessionType is an older expo-file-system export name kept as a fallback for SDK version differences
                 : (FileSystem.FileSystemSessionType?.BACKGROUND ?? FileSystem.FileSystemUploadSessionType?.BACKGROUND ?? 0);
 
             const task = FileSystem.createUploadTask(
@@ -317,6 +318,7 @@ class UploadService {
             // We must fallback to FOREGROUND session on iOS for plain HTTP.
             const sessionType = Platform.OS === 'ios' && !isHttps
                 ? (FileSystem.FileSystemSessionType?.FOREGROUND ?? 1)
+                // eslint-disable-next-line import/namespace -- FileSystemUploadSessionType is an older expo-file-system export name kept as a fallback for SDK version differences
                 : (FileSystem.FileSystemSessionType?.BACKGROUND ?? FileSystem.FileSystemUploadSessionType?.BACKGROUND ?? 0);
 
             this.cancelledTasks.delete(asset.id);

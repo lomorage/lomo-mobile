@@ -1248,7 +1248,7 @@ const formatSpeed = (bytesPerSec) => {
         }
     }, [loading, mergeAndSetAssets]);
 
-    const StatusIcon = memo(({ item, currentAssetId, activeAssetIds = [] }) => {
+    const StatusIcon = memo(function StatusIcon({ item, currentAssetId, activeAssetIds = [] }) {
         if (item.id === currentAssetId || activeAssetIds.includes(item.id)) {
             return <ActivityIndicator size="small" color="#007AFF" style={styles.statusIcon} />;
         }
@@ -1263,7 +1263,7 @@ const formatSpeed = (bytesPerSec) => {
         }
     });
 
-    const RenderAsset = memo(({ asset, globalIndex, navigation, debugMode, currentAssetId, activeAssetIds, activeLoadRef, source, serverEpoch }) => {
+    const RenderAsset = memo(function RenderAsset({ asset, globalIndex, navigation, debugMode, currentAssetId, activeAssetIds, activeLoadRef, source, serverEpoch }) {
         const loadStartTime = useRef(0);
         // Only used as fallback if local video thumbnail decoding fails (e.g. WeChat codec)
         const [useRemoteFallback, setUseRemoteFallback] = useState(false);
@@ -1432,7 +1432,7 @@ const formatSpeed = (bytesPerSec) => {
         return true;
     });
 
-    const TimelineRow = memo(({ item, navigation, debugMode, currentAssetId, activeAssetIds, activeLoadCountRef, source, serverEpoch }) => (
+    const TimelineRow = memo(function TimelineRow({ item, navigation, debugMode, currentAssetId, activeAssetIds, activeLoadCountRef, source, serverEpoch }) { return (
         <View style={styles.row}>
             {item.items.map((asset, index) => (
                 <RenderAsset
@@ -1452,7 +1452,7 @@ const formatSpeed = (bytesPerSec) => {
                 <View key={`empty-${i}`} style={styles.itemContainer} />
             ))}
         </View>
-    ), (prevProps, nextProps) => {
+    ); }, (prevProps, nextProps) => {
         if (prevProps.debugMode !== nextProps.debugMode) return false;
         if (prevProps.source !== nextProps.source) return false;
         if (prevProps.serverEpoch !== nextProps.serverEpoch) return false;
@@ -1663,7 +1663,7 @@ const formatSpeed = (bytesPerSec) => {
     return (
         <View style={styles.container}>
             {debugMode && debugLogs.length > 0 && (
-                <View style={styles.debugOverlay} pointerEvents="none">
+                <View style={styles.debugLogOverlay} pointerEvents="none">
                     <ScrollView showsVerticalScrollIndicator={false}>
                         {debugLogs.map((log, i) => (
                             <Text key={i} style={styles.debugLogText}>{log}</Text>
@@ -1873,7 +1873,7 @@ const formatSpeed = (bytesPerSec) => {
                         <>
                             <Text style={styles.permissionTitle}>Photo access is off</Text>
                             <Text style={styles.permissionText}>
-                                Lomorage can't back up your photos without access to your library. Turn it on in Settings, then come back here.
+                                Lomorage can&apos;t back up your photos without access to your library. Turn it on in Settings, then come back here.
                             </Text>
                             <TouchableOpacity style={styles.button} onPress={() => Linking.openSettings()}>
                                 <Text style={styles.buttonText}>Open Settings</Text>
@@ -1888,8 +1888,8 @@ const formatSpeed = (bytesPerSec) => {
                     <View style={styles.offlineBanner}>
                         <WifiOff size={16} color="#5B7290" />
                         <View style={{ flex: 1, marginLeft: 10 }}>
-                            <Text style={styles.offlineTitle}>Can't reach your server</Text>
-                            <Text style={styles.offlineSubtext}>Your local photos are safe on this phone — we'll keep syncing automatically once it's back.</Text>
+                            <Text style={styles.offlineTitle}>Can&apos;t reach your server</Text>
+                            <Text style={styles.offlineSubtext}>Your local photos are safe on this phone — we&apos;ll keep syncing automatically once it&apos;s back.</Text>
                         </View>
                         <TouchableOpacity onPress={() => loadAndSync()} style={styles.offlineRetryButton}>
                             <Text style={styles.offlineRetryText}>Retry</Text>
@@ -2103,7 +2103,7 @@ const styles = StyleSheet.create({
         flex: 1,
         backgroundColor: '#fff',
     },
-    debugOverlay: {
+    debugLogOverlay: {
         position: 'absolute',
         top: 100,
         left: 10,

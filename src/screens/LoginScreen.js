@@ -191,7 +191,7 @@ export default function LoginScreen({ navigation }) {
                                 onPress={() => navigation.navigate('Register')}
                             >
                                 <Text style={styles.registerText}>
-                                    Don't have an account? <Text style={styles.registerTextBold}>Create one</Text>
+                                    Don&apos;t have an account? <Text style={styles.registerTextBold}>Create one</Text>
                                 </Text>
                             </TouchableOpacity>
                         </View>
