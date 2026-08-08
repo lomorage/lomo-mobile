@@ -16,6 +16,7 @@
       "buildNumber": "11",
       "supportsTablet": true,
       "bundleIdentifier": "com.wtao.lomo",
+      "appleTeamId": "3GRDMJ5JMM",
       "infoPlist": {
         "UIBackgroundModes": [
           "fetch"
@@ -90,7 +91,8 @@
       "expo-background-task",
       "expo-sqlite",
       "./plugins/withWorkManagerForeground",
-      "./plugins/withVideoCacheGradle"
+      "./plugins/withVideoCacheGradle",
+      "./plugins/withIosXcode26BuildFixes"
     ],
     "web": {
       "favicon": "./assets/favicon.png"

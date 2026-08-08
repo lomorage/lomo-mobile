@@ -14,6 +14,7 @@ CLEAN=false
 RESET_COREDEVICE=false
 LIST_DEVICES=false
 TARGET_DEVICE=""
+CONFIGURATION="Release"
 
 # Help message
 show_help() {
@@ -22,12 +23,17 @@ show_help() {
     echo "Options:"
     echo "  -c, --clean         Perform a clean build (removes ios/ folder, regenerates files, and runs pod install)"
     echo "  -d, --device        Specify a device name or UDID (e.g. \"iPhone 17\" or \"00008020-...\")"
+    echo "  --debug             Install a Debug build (connects to Metro) instead of the default Release build"
     echo "  -l, --list          List available connected physical Apple devices and simulators"
     echo "  -r, --reset         Reset CoreDevice/devicectl background services if physical device is busy"
     echo "  -h, --help          Show this help message"
     echo ""
+    echo "By default this installs a Release build (matches what TestFlight/App Store ship)."
+    echo "Pass --debug for a development build with Metro/Fast Refresh/the dev menu."
+    echo ""
     echo "Examples:"
     echo "  ./run-ios-device.sh"
+    echo "  ./run-ios-device.sh --debug"
     echo "  ./run-ios-device.sh --clean"
     echo "  ./run-ios-device.sh --device \"iPhone 17\""
     echo "  ./run-ios-device.sh -c -d \"00008020-000B59800246002E\""
@@ -210,6 +216,7 @@ while [[ "$#" -gt 0 ]]; do
     case $1 in
         -c|--clean) CLEAN=true ;;
         -d|--device) TARGET_DEVICE="$2"; shift ;;
+        --debug) CONFIGURATION="Debug" ;;
         -l|--list) LIST_DEVICES=true ;;
         -r|--reset) RESET_COREDEVICE=true ;;
         -h|--help) show_help; exit 0 ;;
@@ -258,8 +265,8 @@ if [ -z "$TARGET_DEVICE" ]; then
     TARGET_DEVICE=$(pick_device "$DEFAULT_DEVICE")
 fi
 
-echo "📱 Launching Expo..."
-RUN_CMD="npx expo run:ios --no-bundler"
+echo "📱 Launching Expo ($CONFIGURATION build)..."
+RUN_CMD="npx expo run:ios --no-bundler --configuration \"$CONFIGURATION\""
 
 if [ -n "$TARGET_DEVICE" ]; then
     echo "📍 Target device identified: $TARGET_DEVICE"
@@ -273,10 +280,17 @@ echo "Running: $RUN_CMD"
 echo "=============================================="
 eval $RUN_CMD
 
-echo ""
-echo "=============================================="
-echo "🌐 Starting Development Server..."
-echo "=============================================="
-npx expo start
+if [ "$CONFIGURATION" = "Debug" ]; then
+    echo ""
+    echo "=============================================="
+    echo "🌐 Starting Development Server..."
+    echo "=============================================="
+    npx expo start
+else
+    echo ""
+    echo "=============================================="
+    echo "✅ Release build installed. It runs standalone (no Metro/dev server needed)."
+    echo "=============================================="
+fi
 
 
