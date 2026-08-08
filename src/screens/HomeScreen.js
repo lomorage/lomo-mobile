@@ -14,6 +14,8 @@ import AIService from '../services/AIService';
 import { useSettings } from '../context/SettingsContext';
 import GalleryStore from '../store/GalleryStore';
 import MetricsTracker from '../utils/MetricsTracker';
+import { formatBytes, formatSpeed } from '../utils/formatters';
+import { parseTimeTokenExtra, isLivePhoto } from './homeScreenHelpers';
 import * as SecureStore from 'expo-secure-store';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
 import { pinyin } from 'pinyin-pro';
@@ -63,81 +65,6 @@ const TIME_TAGS = [
 ];
 
 const COMBINED_TAGS = [...TIME_TAGS, ...SMART_TAGS.map(t => ({...t, type: 'semantic'}))];
-
-const parseTimeTokenExtra = (value) => {
-    const val = value.trim().toLowerCase();
-    const now = new Date();
-    
-    const startOfDay = (d) => {
-        const nd = new Date(d);
-        nd.setHours(0, 0, 0, 0);
-        return nd.getTime();
-    };
-    const endOfDay = (d) => {
-        const nd = new Date(d);
-        nd.setHours(23, 59, 59, 999);
-        return nd.getTime();
-    };
-
-    if (/^\d{4}$/.test(val)) {
-        const year = parseInt(val, 10);
-        const startTime = new Date(year, 0, 1, 0, 0, 0, 0).getTime();
-        const endTime = new Date(year, 11, 31, 23, 59, 59, 999).getTime();
-        return { startTime, endTime };
-    }
-
-    if (val === 'yesterday') {
-        const yesterday = new Date(now);
-        yesterday.setDate(now.getDate() - 1);
-        return { startTime: startOfDay(yesterday), endTime: endOfDay(yesterday) };
-    }
-
-    if (val === 'last week') {
-        const lastWeekStart = new Date(now);
-        lastWeekStart.setDate(now.getDate() - 7 - now.getDay());
-        const lastWeekEnd = new Date(lastWeekStart);
-        lastWeekEnd.setDate(lastWeekStart.getDate() + 6);
-        return { startTime: startOfDay(lastWeekStart), endTime: endOfDay(lastWeekEnd) };
-    }
-
-    if (val === 'last month') {
-        const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-        const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0);
-        return { startTime: startOfDay(lastMonthStart), endTime: endOfDay(lastMonthEnd) };
-    }
-
-    if (val === 'last year') {
-        const startTime = new Date(now.getFullYear() - 1, 0, 1, 0, 0, 0, 0).getTime();
-        const endTime = new Date(now.getFullYear() - 1, 11, 31, 23, 59, 59, 999).getTime();
-        return { startTime, endTime };
-    }
-
-    if (val === 'this year') {
-        const startTime = new Date(now.getFullYear(), 0, 1, 0, 0, 0, 0).getTime();
-        return { startTime, endTime: endOfDay(now) };
-    }
-
-    return null;
-};
-
-const isLivePhoto = (asset) => {
-    // 1. Local or synced asset with mediaSubtypes metadata
-    if (asset.mediaSubtypes && (asset.mediaSubtypes.includes('livePhoto') || asset.mediaSubtypes.includes('live'))) {
-        return true;
-    }
-    // 2. Synced local or remote asset check using filename
-    if (asset.filename && asset.filename.toLowerCase().endsWith('.zip')) {
-        return true;
-    }
-    // 3. Synced local or remote asset check using cached hash in remoteTree
-    if (asset.hash) {
-        const remoteNode = SyncService.remoteTree?.getNodeByHash(asset.hash);
-        if (remoteNode && remoteNode.tag && remoteNode.tag.toLowerCase().endsWith('.zip')) {
-            return true;
-        }
-    }
-    return false;
-};
 
 const LivePhotoIcon = ({ color = '#fff', size = 14 }) => {
     const innerSize = size * 0.45;
@@ -545,20 +472,6 @@ export default function HomeScreen({ navigation, route }) {
         const segments = path.split('/').map(segment => encodeURIComponent(segment));
         return 'file://' + segments.join('/');
     }, []);
-
-const formatBytes = (bytes) => {
-    if (!bytes || bytes <= 0) return '';
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-};
-
-const formatSpeed = (bytesPerSec) => {
-    if (!bytesPerSec || bytesPerSec <= 0) return '';
-    if (bytesPerSec < 1024) return `${bytesPerSec.toFixed(0)} B/s`;
-    if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
-    return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`;
-};
 
     const mergeAndSetAssets = useCallback((currentLocalAssets, finalize = false) => {
         const isVideoExtension = (filename) => {
@@ -1366,7 +1279,7 @@ const formatSpeed = (bytesPerSec) => {
                     <View style={styles.image} />
                 )}
                 <StatusIcon item={asset} currentAssetId={currentAssetId} activeAssetIds={activeAssetIds} />
-                {isLivePhoto(asset) ? (
+                {isLivePhoto(asset, SyncService.remoteTree) ? (
                     <View style={styles.livePhotoBadge}>
                         <LivePhotoIcon size={12} color="#fff" />
                     </View>
