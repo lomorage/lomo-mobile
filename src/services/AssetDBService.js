@@ -3,6 +3,7 @@ import TaskSchedulerService from './TaskSchedulerService';
 import * as FileSystem from 'expo-file-system/legacy';
 import MetricsTracker from '../utils/MetricsTracker';
 import { pinyin } from 'pinyin-pro';
+import { isVideoExtension } from '../utils/mediaType';
 
 class AssetDBService {
   constructor() {
@@ -535,12 +536,6 @@ class AssetDBService {
   // Sync remote assets discovered via SyncService
   async syncRemoteAssets(assets) {
     if (!this.db || !assets) return;
-
-    const isVideoExtension = (filename) => {
-      if (!filename) return false;
-      const ext = filename.split('.').pop().toLowerCase();
-      return ['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext);
-    };
 
     return await MetricsTracker.measure('AssetDBService_syncRemoteAssets', async () => {
       try {

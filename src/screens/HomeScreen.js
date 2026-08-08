@@ -15,6 +15,7 @@ import { useSettings } from '../context/SettingsContext';
 import GalleryStore from '../store/GalleryStore';
 import MetricsTracker from '../utils/MetricsTracker';
 import { formatBytes, formatSpeed } from '../utils/formatters';
+import { isVideoExtension } from '../utils/mediaType';
 import { parseTimeTokenExtra, isLivePhoto } from './homeScreenHelpers';
 import * as SecureStore from 'expo-secure-store';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
@@ -474,12 +475,6 @@ export default function HomeScreen({ navigation, route }) {
     }, []);
 
     const mergeAndSetAssets = useCallback((currentLocalAssets, finalize = false) => {
-        const isVideoExtension = (filename) => {
-            if (!filename) return false;
-            const ext = filename.split('.').pop().toLowerCase();
-            return ['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext);
-        };
-
         const serverUrl = AuthService.getServerUrl();
         const token = AuthService.getToken();
 
@@ -1031,12 +1026,6 @@ export default function HomeScreen({ navigation, route }) {
             
             const serverUrl = AuthService.getServerUrl();
             const token = AuthService.getToken();
-            const isVidExt = (filename) => {
-                if (!filename) return false;
-                const ext = filename.split('.').pop().toLowerCase();
-                return ['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext);
-            };
-            
             // Only surface already-synced memories here: a local (isLocal=1) row may not
             // have its hash computed yet, which used to build a broken "/preview/null" URL
             // and render as a blank tile.
@@ -1048,7 +1037,7 @@ export default function HomeScreen({ navigation, route }) {
                     uri: `${serverUrl}/preview/${asset.hash}?width=512&height=-1&token=${token}`,
                     status: 'remote',
                     creationTime: asset.createTime || 0,
-                    mediaType: asset.mediaType || (isVidExt(asset.filename) ? 'video' : 'photo'),
+                    mediaType: asset.mediaType || (isVideoExtension(asset.filename) ? 'video' : 'photo'),
                     filename: asset.filename || ''
                 }));
             setOnThisDayAssets(mappedOnThisDay);

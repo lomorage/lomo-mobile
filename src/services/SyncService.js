@@ -8,6 +8,7 @@ import MetricsTracker from '../utils/MetricsTracker';
 import * as SecureStore from 'expo-secure-store';
 import { AppState } from 'react-native';
 import TaskSchedulerService from './TaskSchedulerService';
+import { isVideoExtension } from '../utils/mediaType';
 
 /**
  * Parses a date string from the backend and ensures it's treated as UTC.
@@ -694,12 +695,6 @@ class SyncService {
           console.log(`[SyncService] Found ${nullRows.length} legacy remote assets with NULL filenames in SQLite. Healing...`);
           const updates = [];
 
-          const isVideoExtension = (filename) => {
-            if (!filename) return false;
-            const ext = filename.split('.').pop().toLowerCase();
-            return ['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext);
-          };
-
           for (const row of nullRows) {
             const node = this.remoteTree.getNodeByHash(row.hash);
             if (node) {
@@ -729,12 +724,6 @@ class SyncService {
         if (zeroTimeRows && zeroTimeRows.length > 0) {
           console.log(`[SyncService] Found ${zeroTimeRows.length} remote assets with 0 timestamps. Healing from remote tree...`);
           const updates = [];
-
-          const isVideoExtension = (filename) => {
-            if (!filename) return false;
-            const ext = filename.split('.').pop().toLowerCase();
-            return ['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext);
-          };
 
           for (const row of zeroTimeRows) {
             const node = this.remoteTree.getNodeByHash(row.hash);
@@ -805,11 +794,6 @@ class SyncService {
     if (this._sortedRemoteAssetsCache) return this._sortedRemoteAssetsCache;
 
     const remoteAssets = Array.from(this.remoteTree?.assetsMap?.values() || []);
-    const isVideoExtension = (filename) => {
-      if (!filename) return false;
-      const ext = filename.split('.').pop().toLowerCase();
-      return ['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext);
-    };
 
     this._sortedRemoteAssetsCache = remoteAssets.map(remote => ({
       id: remote.hash,
