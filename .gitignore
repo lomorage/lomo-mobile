@@ -39,6 +39,11 @@ yarn-error.*
 *.log
 jest_output*.txt
 *.txt.bak
+logcat*.txt
+bugreport*
+anr_*
+diff*.txt
+ocr_test_result.json
 
 # typescript
 *.tsbuildinfo
