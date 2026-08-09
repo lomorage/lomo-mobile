@@ -58,7 +58,7 @@ function LazyLocalAsset({ asset, style, onMetadata, ...rest }) {
     }, [asset.id]);
 
     const remoteFallbackUri = (asset.mediaType === 'video' && asset.hash)
-        ? `${AuthService.getServerUrl()}/preview/${asset.hash}?width=${asset.mediaType === 'video' ? 480 : 320}&height=-1&token=${AuthService.getToken()}`
+        ? MediaService.getPreviewUrl(asset.hash, asset.mediaType)
         : null;
 
     const displayUri = (useRemoteFallback && remoteFallbackUri) ? remoteFallbackUri : uri;

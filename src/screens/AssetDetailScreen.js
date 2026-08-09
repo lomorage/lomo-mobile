@@ -919,9 +919,7 @@ export default function AssetDetailScreen({ route, navigation }) {
                     const updatedAsset = { ...currentAsset, status: newStatus };
                     if (newStatus === 'remote' && currentAsset.hash) {
                          // Switch URI to the backend because the local file is now physically destroyed
-                         const baseUrl = AuthService.getServerUrl();
-                         const token = AuthService.getToken();
-                         updatedAsset.uri = `${baseUrl}/preview/${currentAsset.hash}?width=${currentAsset.mediaType === 'video' ? 480 : 320}&height=-1&token=${token}`;
+                         updatedAsset.uri = MediaService.getPreviewUrl(currentAsset.hash, currentAsset.mediaType);
                     }
 
                     const newAssets = [...assets];
@@ -1074,7 +1072,7 @@ export default function AssetDetailScreen({ route, navigation }) {
         }
 
         let thumbUri = (item.status === 'remote' && item.hash)
-            ? `${baseUrl}/preview/${item.hash}?width=${item.mediaType === 'video' ? 480 : 320}&height=-1&token=${token}`
+            ? MediaService.getPreviewUrl(item.hash, item.mediaType)
             : null;
 
         let staticImageUri = uri;
@@ -1083,7 +1081,7 @@ export default function AssetDetailScreen({ route, navigation }) {
                 staticImageUri = thumbUri;
             } else {
                 // Fetch high-quality preview for full screen viewing to avoid high memory/bandwidth usage and OOM crashes
-                staticImageUri = `${baseUrl}/preview/${item.hash}?width=640&height=-1&token=${token}`;
+                staticImageUri = MediaService.getPreviewUrl(item.hash, item.mediaType, true);
             }
         }
         // Offline Cache overriding logic:

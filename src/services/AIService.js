@@ -1615,7 +1615,7 @@ class AIService {
               const tempUri = `${FileSystem.cacheDirectory}${asset.hash}.jpg`;
               try {
                 // 1. Download preview image to local temporary file
-                const previewUrl = `${url}/preview/${asset.hash}?width=320&height=-1&token=${token}`;
+                const previewUrl = MediaService.getPreviewUrl(asset.hash, 'photo');
                 
                 console.log(`[AIService] Downloading preview for remote asset ${asset.hash}...`);
                 const downloadRes = await FileSystem.downloadAsync(previewUrl, tempUri);
@@ -2740,7 +2740,7 @@ class AIService {
       } else if (row && row.hash) {
         // Download preview for remote asset
         try {
-          const previewUrl = `${AuthService.getServerUrl()}/preview/${row.hash}?width=320&height=-1&token=${AuthService.getToken()}`;
+          const previewUrl = MediaService.getPreviewUrl(row.hash, 'photo');
           const tempUri = `${FileSystem.cacheDirectory}similar_temp_${row.hash}.jpg`;
           const downloadRes = await FileSystem.downloadAsync(previewUrl, tempUri);
           if (downloadRes.status === 200) {
@@ -2903,8 +2903,6 @@ class AIService {
       // 5. Build result clusters - use data already in SQLite, skip expensive network/filesystem calls.
       // Sort heuristic: prefer local assets (isLocal=1) over remote, then newer createTime first.
       // This avoids hundreds of MediaService.getAssetInfo / axios.head calls that were causing the long wait.
-      const url = AuthService.getServerUrl();
-      const token = AuthService.getToken();
       const enrichedClusters = clusters.map(cluster => {
         const sorted = [...cluster].sort((a, b) => {
           // Local beats remote
@@ -2931,7 +2929,7 @@ class AIService {
           } else if (asset.localCachePath && asset.mediaType !== 'video') {
             displayUri = asset.localCachePath;
           } else {
-            displayUri = `${url}/preview/${asset.hash}?width=320&height=-1&token=${token}`;
+            displayUri = MediaService.getPreviewUrl(asset.hash, 'photo');
           }
           return {
             id: asset.id,

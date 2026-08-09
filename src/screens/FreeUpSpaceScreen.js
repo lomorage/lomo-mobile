@@ -6,7 +6,6 @@ import { useVideoPlayer, VideoView } from 'expo-video';
 import { ChevronLeft, Trash2, CheckCircle2, Circle, X } from 'lucide-react-native';
 import AssetDBService from '../services/AssetDBService';
 import MediaService from '../services/MediaService';
-import AuthService from '../services/AuthService';
 import GalleryStore from '../store/GalleryStore';
 import { formatBytesLog } from '../utils/formatters';
 
@@ -132,7 +131,7 @@ const VideoCard = React.memo(function VideoCard({ item, isSelected, playVideo, t
     const [useRemoteFallback, setUseRemoteFallback] = React.useState(false);
 
     const remoteFallbackUri = item.hash
-        ? `${AuthService.getServerUrl()}/preview/${item.hash}?width=480&height=-1&token=${AuthService.getToken()}`
+        ? MediaService.getPreviewUrl(item.hash, 'video')
         : null;
 
     const displayUri = (useRemoteFallback && remoteFallbackUri) ? remoteFallbackUri : item.uri;

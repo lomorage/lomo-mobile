@@ -7,7 +7,6 @@ import { Cloud, CheckCircle, Smartphone, PlayCircle, PauseCircle, Settings as Se
 import MediaService from '../services/MediaService';
 import SyncService from '../services/SyncService';
 import OfflineCacheService from '../services/OfflineCacheService';
-import AuthService from '../services/AuthService';
 import AssetDBService from '../services/AssetDBService';
 import AutoBackupManager from '../services/AutoBackupManager';
 import AIService from '../services/AIService';
@@ -404,7 +403,7 @@ export default function HomeScreen({ navigation, route }) {
                         status: res.isLocal ? 'synced' : 'remote',
                         uri: res.isLocal 
                             ? (Platform.OS === 'android' ? `content://media/external/images/media/${res.id}` : `ph://${res.id}`)
-                            : `${AuthService.getServerUrl()}/preview/${res.hash}?width=${res.mediaType === 'video' ? 480 : 320}&height=-1&token=${AuthService.getToken()}`
+                            : MediaService.getPreviewUrl(res.hash, res.mediaType)
                     };
                 });
 
@@ -475,9 +474,6 @@ export default function HomeScreen({ navigation, route }) {
     }, []);
 
     const mergeAndSetAssets = useCallback((currentLocalAssets, finalize = false) => {
-        const serverUrl = AuthService.getServerUrl();
-        const token = AuthService.getToken();
-
         const initialAssets = currentLocalAssets.map(a => {
             const cached = SyncService.localHashCache[a.id];
             const hash = a.hash || cached?.hash;
@@ -576,7 +572,7 @@ export default function HomeScreen({ navigation, route }) {
                 return {
                     id: asset.id,
                     hash: asset.hash,
-                    uri: `${serverUrl}/preview/${asset.hash}?width=${asset.mediaType === 'video' ? 480 : 320}&height=-1&token=${token}`,
+                    uri: MediaService.getPreviewUrl(asset.hash, asset.mediaType),
                     status: 'remote',
                     creationTime: asset.creationTime || 0,
                     mediaType: asset.mediaType || (isVideoExtension(filename) ? 'video' : 'photo'),
@@ -1023,9 +1019,7 @@ export default function HomeScreen({ navigation, route }) {
             ]);
             localAssetsRef.current = cumulativeLocalAssets;
             remoteAssetsListRef.current = sqliteRemoteAssets;
-            
-            const serverUrl = AuthService.getServerUrl();
-            const token = AuthService.getToken();
+
             // Only surface already-synced memories here: a local (isLocal=1) row may not
             // have its hash computed yet, which used to build a broken "/preview/null" URL
             // and render as a blank tile.
@@ -1034,7 +1028,7 @@ export default function HomeScreen({ navigation, route }) {
                 .map(asset => ({
                     id: asset.id,
                     hash: asset.hash,
-                    uri: `${serverUrl}/preview/${asset.hash}?width=512&height=-1&token=${token}`,
+                    uri: MediaService.getPreviewUrl(asset.hash, asset.mediaType),
                     status: 'remote',
                     creationTime: asset.createTime || 0,
                     mediaType: asset.mediaType || (isVideoExtension(asset.filename) ? 'video' : 'photo'),
@@ -1186,7 +1180,7 @@ export default function HomeScreen({ navigation, route }) {
         let thumbnailUri = safeUri(asset.uri, asset.mediaType);
         // For synced videos: build remote preview URL to use only on onError
         const remoteFallbackUri = (asset.status === 'synced' && asset.mediaType === 'video' && asset.hash)
-            ? `${AuthService.getServerUrl()}/preview/${asset.hash}?width=${asset.mediaType === 'video' ? 480 : 320}&height=-1&token=${AuthService.getToken()}`
+            ? MediaService.getPreviewUrl(asset.hash, asset.mediaType)
             : null;
 
         if (asset.status === 'remote') {
@@ -1194,7 +1188,7 @@ export default function HomeScreen({ navigation, route }) {
                 thumbnailUri = asset.localCachePath;
             } else if (asset.hash) {
                 // ALWAYS use /preview/ for remote assets to prevent Glide OOM on large files/videos
-                thumbnailUri = `${AuthService.getServerUrl()}/preview/${asset.hash}?width=${asset.mediaType === 'video' ? 480 : 320}&height=-1&token=${AuthService.getToken()}`;
+                thumbnailUri = MediaService.getPreviewUrl(asset.hash, asset.mediaType);
             } else {
                 // No hash or local cache yet — don't hand Glide an empty/invalid source,
                 // just show the placeholder tile until this asset has enough data.

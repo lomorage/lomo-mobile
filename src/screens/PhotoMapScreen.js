@@ -10,6 +10,7 @@ import { ChevronLeft, X, PlayCircle } from 'lucide-react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import AssetDBService from '../services/AssetDBService';
 import AuthService from '../services/AuthService';
+import MediaService from '../services/MediaService';
 
 const { width, height } = Dimensions.get('window');
 const ASPECT_RATIO = width / height;
@@ -171,8 +172,7 @@ export default function PhotoMapScreen() {
   }, []);
 
   const getThumbnailUrl = useCallback((hash) => {
-    if (!hash) return null;
-    return `${AuthService.getServerUrl()}/preview/${hash}?width=320&height=-1&token=${AuthService.getToken()}`;
+    return MediaService.getPreviewUrl(hash, 'photo');
   }, []);
 
   const getFullImageUrl = useCallback((hash) => {

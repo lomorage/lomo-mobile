@@ -8,7 +8,7 @@ import RemoteAlbumService from '../services/RemoteAlbumService';
 import NetworkQueue from '../services/NetworkQueue';
 import AssetDBService from '../services/AssetDBService';
 import GalleryStore from '../store/GalleryStore';
-import AuthService from '../services/AuthService';
+import MediaService from '../services/MediaService';
 
 const { width } = Dimensions.get('window');
 const SPACING = 2;
@@ -81,9 +81,6 @@ export default function AlbumDetailScreen() {
                 const dbAssets = await AssetDBService.getAssetsByHashes(hashes);
                 
                 // 3. Format them for display. We MUST display all hashes, even if not in DB.
-                const serverUrl = AuthService.getServerUrl();
-                const token = AuthService.getToken();
-                
                 // Convert dbAssets to Map for O(1) lookup
                 const dbAssetsMap = new Map();
                 for (let i = 0; i < dbAssets.length; i++) {
@@ -95,7 +92,7 @@ export default function AlbumDetailScreen() {
                     return {
                         id: localAsset ? localAsset.id : hash, // Use hash as ID to prevent FlatList key collisions
                         hash: hash,
-                        uri: `${serverUrl}/preview/${hash}?width=${(localAsset ? localAsset.mediaType : 'image') === 'video' ? 480 : 320}&height=-1&token=${token}`,
+                        uri: MediaService.getPreviewUrl(hash, localAsset ? localAsset.mediaType : 'image'),
                         status: 'remote',
                         creationTime: localAsset ? localAsset.creationTime : Date.now(),
                         mediaType: localAsset ? localAsset.mediaType : 'image', // Fallback to image if not in DB
