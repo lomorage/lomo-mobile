@@ -23,6 +23,7 @@ import { extractTimeRange } from './ai/searchQueryParser';
 import { processBlocksToMetadata } from './ai/ocrUtils';
 import { buildFaceBoundingBox, isFaceTooSmall, attachEyeLandmarks } from './ai/faceGeometry';
 import { translateToEnglish } from './ai/translateQuery';
+import { rankFaceAlbumMatches } from './ai/faceAlbumMatching';
 
 export const BACKGROUND_AI_SYNC_TASK = 'LOMO_AI_SYNC_TASK';
 class AIService {
@@ -774,17 +775,9 @@ class AIService {
           if (faceResultObj.embedding) {
             const vec = base64ToFloat32Array(faceResultObj.embedding);
             embedding = vec;
-            // Compare against all face albums
-            for (const album of this.faceAlbumCache) {
-              if (album.coverEmbedding) {
-                const sim = this.cosineSimilarity(vec, album.coverEmbedding);
-                allMatches.push({ id: album.id, title: album.title, similarity: sim });
-              }
-            }
-            allMatches.sort((a, b) => b.similarity - a.similarity);
-            if (allMatches.length > 0 && allMatches[0].similarity > 0.30) {
-              bestMatch = allMatches[0];
-            }
+            const ranked = rankFaceAlbumMatches(vec, this.faceAlbumCache);
+            bestMatch = ranked.bestMatch;
+            allMatches = ranked.allMatches;
           }
         }
       } catch (e) {
@@ -1031,21 +1024,11 @@ class AIService {
                     if (faceResultObj && faceResultObj !== "failed" && faceResultObj.embedding) {
                       const newFaceVector = base64ToFloat32Array(faceResultObj.embedding);
                       
-                      let bestMatchId = null;
-                      let highestSimilarity = -1;
-                      
-                      for (const album of this.faceAlbumCache) {
-                        if (album.coverEmbedding) {
-                          const similarity = this.cosineSimilarity(newFaceVector, album.coverEmbedding);
-                          if (similarity > 0.30 && similarity > highestSimilarity) {
-                            highestSimilarity = similarity;
-                            bestMatchId = album.id;
-                          }
-                        }
-                      }
-                      
+                      const { bestMatch } = rankFaceAlbumMatches(newFaceVector, this.faceAlbumCache);
+                      const bestMatchId = bestMatch ? bestMatch.id : null;
+
                       if (bestMatchId) {
-                        console.log(`[AIService] Match found for local face in ${asset.id} (album: ${bestMatchId}, sim: ${highestSimilarity.toFixed(2)})`);
+                        console.log(`[AIService] Match found for local face in ${asset.id} (album: ${bestMatchId}, sim: ${bestMatch.similarity.toFixed(2)})`);
                         if (this.faceDryRun) {
                           console.log(`[AIService][DRY RUN] Would add ${asset.hash} to album ${bestMatchId}`);
                         } else {
@@ -1673,21 +1656,11 @@ class AIService {
                         if (faceResultObj && faceResultObj !== "failed" && faceResultObj.embedding) {
                           const newFaceVector = base64ToFloat32Array(faceResultObj.embedding);
                           
-                          let bestMatchId = null;
-                          let highestSimilarity = -1;
-                          
-                          for (const album of this.faceAlbumCache) {
-                            if (album.coverEmbedding) {
-                              const similarity = this.cosineSimilarity(newFaceVector, album.coverEmbedding);
-                              if (similarity > 0.30 && similarity > highestSimilarity) {
-                                highestSimilarity = similarity;
-                                bestMatchId = album.id;
-                              }
-                            }
-                          }
-                          
+                          const { bestMatch } = rankFaceAlbumMatches(newFaceVector, this.faceAlbumCache);
+                          const bestMatchId = bestMatch ? bestMatch.id : null;
+
                           if (bestMatchId) {
-                            console.log(`[AIService] Match found for remote face in ${asset.hash} (album: ${bestMatchId}, sim: ${highestSimilarity.toFixed(2)})`);
+                            console.log(`[AIService] Match found for remote face in ${asset.hash} (album: ${bestMatchId}, sim: ${bestMatch.similarity.toFixed(2)})`);
                             if (this.faceDryRun) {
                               console.log(`[AIService][DRY RUN] Would add ${asset.hash} to album ${bestMatchId}`);
                             } else {
