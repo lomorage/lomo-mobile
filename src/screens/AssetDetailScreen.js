@@ -11,6 +11,8 @@ import { TouchableOpacity as RNGHTouchableOpacity, GestureDetector, Gesture } fr
 import AuthService from '../services/AuthService';
 import MediaService from '../services/MediaService';
 import SyncService from '../services/SyncService';
+import { isLivePhoto } from '../utils/livePhoto';
+import { getCacheKey } from './assetDetailScreenHelpers';
 import { useSettings } from '../context/SettingsContext';
 import RemoteAlbumService from '../services/RemoteAlbumService';
 import AIService from '../services/AIService';
@@ -26,29 +28,6 @@ import * as ImageManipulator from 'expo-image-manipulator';
 
 
 const { width, height } = Dimensions.get('window');
-
-const isLivePhoto = (asset) => {
-    // 1. Local or synced asset with mediaSubtypes metadata
-    if (asset.mediaSubtypes && (asset.mediaSubtypes.includes('livePhoto') || asset.mediaSubtypes.includes('live'))) {
-        return true;
-    }
-    // 2. Synced local or remote asset check using cached hash in remoteTree
-    if (asset.hash) {
-        const remoteNode = SyncService.remoteTree?.getNodeByHash(asset.hash);
-        if (remoteNode && remoteNode.tag && remoteNode.tag.toLowerCase().endsWith('.zip')) {
-            return true;
-        }
-    }
-    return false;
-};
-
-const getCacheKey = (item) => {
-    if (item.status === 'remote') {
-        return item.hash;
-    }
-    // For local and synced assets, sanitize item.id (which is the localIdentifier)
-    return item.id ? item.id.replace(/[^a-zA-Z0-9]/g, '') : '';
-};
 
 const LivePhotoIcon = ({ color = '#fff', size = 14 }) => {
     const innerSize = size * 0.45;
@@ -509,7 +488,7 @@ export default function AssetDetailScreen({ route, navigation }) {
         let active = true;
         const prepareVideo = async () => {
             const item = assets[currentIndex];
-            if (!item || !isLivePhoto(item)) return;
+            if (!item || !isLivePhoto(item, SyncService.remoteTree)) return;
             
             const cacheKey = getCacheKey(item);
             if (extractedVideoUris[cacheKey]) return; // Already prepared in memory!
@@ -1051,7 +1030,7 @@ export default function AssetDetailScreen({ route, navigation }) {
 
         // Unmount video players when not visible to guarantee playback stops.
         const shouldMountVideo = item.mediaType === 'video' && isVisible;
-        const isLive = isLivePhoto(item);
+        const isLive = isLivePhoto(item, SyncService.remoteTree);
         const cacheKey = getCacheKey(item);
         const liveVideoUri = extractedVideoUris[cacheKey];
         const shouldPlayLive = isLive && isLivePlaying && isVisible && liveVideoUri;
