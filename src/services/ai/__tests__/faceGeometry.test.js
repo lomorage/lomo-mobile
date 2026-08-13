@@ -1,4 +1,4 @@
-import { MIN_FACE_SIZE, buildFaceBoundingBox, isFaceTooSmall, attachEyeLandmarks } from '../faceGeometry';
+import { MIN_FACE_SIZE, MIN_FACE_WIDTH_RATIO, buildFaceBoundingBox, isFaceTooSmall, attachEyeLandmarks } from '../faceGeometry';
 
 describe('buildFaceBoundingBox', () => {
   test('flattens MLKit origin/size frame into x/y/width/height', () => {
@@ -16,6 +16,40 @@ describe('isFaceTooSmall', () => {
   test('is true when either dimension is below MIN_FACE_SIZE', () => {
     expect(isFaceTooSmall({ width: MIN_FACE_SIZE - 1, height: 200 })).toBe(true);
     expect(isFaceTooSmall({ width: 200, height: MIN_FACE_SIZE - 1 })).toBe(true);
+  });
+
+  test('without imageWidth, only the absolute pixel floor applies (no ratio check)', () => {
+    // A 100px face clears MIN_FACE_SIZE, so it's fine even though it would be
+    // a tiny fraction of e.g. a 4000px photo -- we just don't know that here.
+    expect(isFaceTooSmall({ width: 100, height: 100 })).toBe(false);
+  });
+
+  test('is true when the face clears the pixel floor but is a tiny fraction of a high-res photo', () => {
+    // 100px face in a 4032px-wide photo (~2.5%) -- a background bystander, not a subject.
+    expect(isFaceTooSmall({ width: 100, height: 100 }, 4032)).toBe(true);
+  });
+
+  test('is false when the face clears both the pixel floor and the width ratio', () => {
+    // 200px face in a 4032px-wide photo (~5%) -- large enough to count as a subject.
+    expect(isFaceTooSmall({ width: 200, height: 200 }, 4032)).toBe(false);
+  });
+
+  test('ratio check is a no-op on a low-res image where the pixel floor already dominates', () => {
+    // 90px face in a 640px preview is ~14%, well above MIN_FACE_WIDTH_RATIO,
+    // so behavior matches the pixel-only check on small source images.
+    expect(isFaceTooSmall({ width: 90, height: 90 }, 640)).toBe(false);
+  });
+
+  test('boundary: exactly MIN_FACE_WIDTH_RATIO of the image width is not too small', () => {
+    // Large enough image that the ratio check, not the absolute pixel floor, is what's being tested.
+    const imageWidth = 4000;
+    const faceWidth = imageWidth * MIN_FACE_WIDTH_RATIO;
+    expect(isFaceTooSmall({ width: faceWidth, height: faceWidth }, imageWidth)).toBe(false);
+  });
+
+  test('treats a falsy imageWidth (0/undefined) as "unknown", skipping the ratio check', () => {
+    expect(isFaceTooSmall({ width: 100, height: 100 }, 0)).toBe(false);
+    expect(isFaceTooSmall({ width: 100, height: 100 }, undefined)).toBe(false);
   });
 });
 

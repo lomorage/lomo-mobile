@@ -1013,7 +1013,7 @@ class AIService {
                   for (const face of faces) {
                     const boundingBox = buildFaceBoundingBox(face);
 
-                    if (isFaceTooSmall(boundingBox)) {
+                    if (isFaceTooSmall(boundingBox, imgWidth)) {
                       continue;
                     }
 
@@ -1603,9 +1603,15 @@ class AIService {
 
               const tempUri = `${FileSystem.cacheDirectory}${asset.hash}.jpg`;
               try {
-                // 1. Download preview image to local temporary file
-                const previewUrl = MediaService.getPreviewUrl(asset.hash, 'photo');
-                
+                // 1. Download preview image to local temporary file.
+                // Use the large (640px) tier rather than the default 320px grid
+                // thumbnail: face detection/embedding on the tiny preview produces
+                // blurry, low-quality crops and made background bystanders as
+                // hard to tell apart from genuine subjects as they were easy to
+                // false-positive on. 640 is still one of the server's pre-generated
+                // sizes (see MediaService.getPreviewUrl), so this costs nothing extra.
+                const previewUrl = MediaService.getPreviewUrl(asset.hash, 'photo', true);
+
                 console.log(`[AIService] Downloading preview for remote asset ${asset.hash}...`);
                 const downloadRes = await FileSystem.downloadAsync(previewUrl, tempUri);
                 await new Promise(resolve => setTimeout(resolve, 100)); // Yield to prevent starving video playback
@@ -1638,16 +1644,26 @@ class AIService {
                   try {
                     const faceResponse = await this.faceDetector.detectFaces(downloadRes.uri);
                     const faces = faceResponse?.faces || [];
-                    
+
                     if (faces.length > 0) {
                       if (!this.faceAlbumCache) {
                         await this._refreshFaceAlbumCache();
                       }
 
+                      let previewWidth = 0;
+                      try {
+                        const previewSize = await new Promise((resolve, reject) =>
+                          Image.getSize(downloadRes.uri, (w, h) => resolve({ w, h }), reject)
+                        );
+                        previewWidth = previewSize.w;
+                      } catch (sizeErr) {
+                        console.warn(`[AIService] Failed to read preview dimensions for ${asset.hash}:`, sizeErr.message);
+                      }
+
                       for (const face of faces) {
                         const boundingBox = buildFaceBoundingBox(face);
 
-                        if (isFaceTooSmall(boundingBox)) {
+                        if (isFaceTooSmall(boundingBox, previewWidth)) {
                           continue;
                         }
 
