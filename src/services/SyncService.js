@@ -865,6 +865,17 @@ class SyncService {
         const fetchedResults = [];
         const batchSize = 3;
         for (let i = 0; i < changedMonths.length; i += batchSize) {
+          // Already-known remote assets render from the local DB cache immediately
+          // (see HomeScreen), so this tree diff (which only affects detecting
+          // newly-added/removed assets) can afford to step aside for actively
+          // loading thumbnails rather than adding another burst of connections to
+          // the same constrained NAS at the worst possible moment. Capped so a
+          // stuck load-tracker count can't stall tree updates indefinitely.
+          const thumbnailWaitDeadline = Date.now() + 8000;
+          while (ThumbnailLoadTracker.isActive() && AppState.currentState === 'active' && Date.now() < thumbnailWaitDeadline) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+
           const batch = changedMonths.slice(i, i + batchSize);
           const fetchPromises = batch.map(async ({ year, month, node }) => {
             try {
