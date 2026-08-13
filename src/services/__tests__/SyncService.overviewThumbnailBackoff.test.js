@@ -56,6 +56,7 @@ describe('SyncService.fetchRemoteOverview backs off for active thumbnail loads',
     jest.useFakeTimers();
     SyncService.localTree = new (SyncService.localTree.constructor)();
     SyncService.remoteTree = new (SyncService.remoteTree.constructor)();
+    SyncService._remoteTreeLoadedFromDisk = false;
     AppState.currentState = 'active';
   });
 

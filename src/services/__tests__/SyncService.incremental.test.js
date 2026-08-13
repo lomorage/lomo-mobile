@@ -7,7 +7,7 @@ jest.mock('../MediaService', () => ({
   getAssetInfo: jest.fn(() => Promise.resolve(null)),
 }));
 
-jest.mock('expo-file-system', () => ({
+jest.mock('expo-file-system/legacy', () => ({
   documentDirectory: 'file:///mock/doc/dir/',
   getInfoAsync: jest.fn().mockResolvedValue({ exists: false }),
   makeDirectoryAsync: jest.fn().mockResolvedValue(),
@@ -51,6 +51,7 @@ describe('SyncService Incremental Remote Sync', () => {
     SyncService.remoteTree = new (SyncService.remoteTree.constructor)();
     SyncService.localHashCache = {};
     SyncService.isSyncing = false;
+    SyncService._remoteTreeLoadedFromDisk = false;
     jest.clearAllMocks();
   });
 
@@ -184,6 +185,32 @@ describe('SyncService Incremental Remote Sync', () => {
 
     // Verify that we fell back to the cached Jan data (h1) because of the fetch failure
     expect(result.getNodeByHash('h1')).toBeDefined();
+  });
+
+  test('fetchRemoteOverview reads the on-disk tree cache once per session, not on every call', async () => {
+    // Regression test: the constructor always gives remoteTree a real (empty)
+    // AssetMerkleRoot object, so a naive `if (!this.remoteTree)` guard is
+    // never true and the on-disk cache never gets read -- every launch
+    // treated the tree as empty and force-resynced every month, even when
+    // nothing had actually changed server-side.
+    //
+    // getInfoAsync is also used on the save path (ensureCacheDir/saveRemoteTree),
+    // so isolate the load-specific call by its argument: only loadRemoteTree
+    // asks about the exact remote_tree_v2.json file path.
+    const FileSystem = require('expo-file-system/legacy');
+    axios.get.mockResolvedValue({ data: { Hash: 'root_hash', Years: [] } });
+    const loadCallCount = () => FileSystem.getInfoAsync.mock.calls.filter(
+      call => typeof call[0] === 'string' && call[0].endsWith('remote_tree_v2.json')
+    ).length;
+
+    expect(loadCallCount()).toBe(0);
+
+    await SyncService.fetchRemoteOverview();
+    expect(loadCallCount()).toBe(1);
+
+    await SyncService.fetchRemoteOverview();
+    // Still 1 -- the second call must not re-attempt the disk read.
+    expect(loadCallCount()).toBe(1);
   });
 
   test('_migrateAndHealRemoteAssets triggers bulk migration from JSON if SQLite remote count is 0', async () => {

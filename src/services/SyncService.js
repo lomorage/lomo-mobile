@@ -322,6 +322,13 @@ class SyncService {
     this.remoteTree = new AssetMerkleRoot();
     this.localHashCache = {};
     this.isSyncing = false;
+    // Tracks whether we've attempted to hydrate remoteTree from the on-disk
+    // cache yet this session. Separate from checking `this.remoteTree` itself,
+    // since the constructor already gives it a real (empty) AssetMerkleRoot --
+    // `!this.remoteTree` was never true, so the disk cache was never read and
+    // every launch treated the tree as empty, forcing a full resync of every
+    // month even when nothing had changed.
+    this._remoteTreeLoadedFromDisk = false;
   }
 
   async clearCache() {
@@ -372,6 +379,10 @@ class SyncService {
         console.log('[SyncService] Remote tree cache cleared');
       }
       this.remoteTree = new AssetMerkleRoot();
+      // We just explicitly emptied it -- nothing to hydrate from disk anymore
+      // this session, so don't let the next fetchRemoteOverview try to load
+      // the file we just deleted.
+      this._remoteTreeLoadedFromDisk = true;
     } catch (e) {
       console.error('[SyncService] Failed to clear remote tree cache', e);
     }
@@ -801,9 +812,10 @@ class SyncService {
     this._sortedRemoteAssetsCache = null; // Invalidate cache before updating tree
     return await MetricsTracker.measure('SyncService_fetchRemoteOverview', async () => {
       // Lazy-load remote tree cache from disk if it hasn't been loaded into memory yet
-      if (!this.remoteTree) {
+      if (!this._remoteTreeLoadedFromDisk) {
         console.log('[SyncService] Lazy-loading remote tree cache...');
         await this.loadRemoteTree();
+        this._remoteTreeLoadedFromDisk = true;
       }
 
       const url = AuthService.getServerUrl();
