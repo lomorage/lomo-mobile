@@ -206,6 +206,50 @@ describe('updateAlbumInfo / deleteAlbum guard clauses', () => {
   });
 });
 
+describe('deleteAlbums', () => {
+  test('returns false without making a request when albumIds is missing/empty', async () => {
+    await expect(RemoteAlbumService.deleteAlbums(null)).resolves.toBe(false);
+    await expect(RemoteAlbumService.deleteAlbums([])).resolves.toBe(false);
+    expect(axios.delete).not.toHaveBeenCalled();
+  });
+
+  test('sends a DELETE /album with a JSON array of numeric ids and returns true on 200', async () => {
+    axios.delete.mockResolvedValue({ status: 200 });
+    await expect(RemoteAlbumService.deleteAlbums(['1', '2', 3])).resolves.toBe(true);
+    expect(axios.delete).toHaveBeenCalledWith('http://localhost:8000/album', expect.objectContaining({
+      data: JSON.stringify([1, 2, 3]),
+    }));
+  });
+
+  test('returns false on error', async () => {
+    axios.delete.mockRejectedValue(new Error('boom'));
+    await expect(RemoteAlbumService.deleteAlbums(['1', '2'])).resolves.toBe(false);
+  });
+});
+
+describe('mergeAlbums', () => {
+  test('returns false without making a request when fewer than 2 albumIds are given', async () => {
+    await expect(RemoteAlbumService.mergeAlbums(null, 'Alice')).resolves.toBe(false);
+    await expect(RemoteAlbumService.mergeAlbums(['1'], 'Alice')).resolves.toBe(false);
+    expect(axios.post).not.toHaveBeenCalled();
+  });
+
+  test('posts Title and numeric AlbumIDs to /album/merge and returns true on 200', async () => {
+    axios.post.mockResolvedValue({ status: 200 });
+    await expect(RemoteAlbumService.mergeAlbums(['1', '2'], 'Alice')).resolves.toBe(true);
+    expect(axios.post).toHaveBeenCalledWith(
+      'http://localhost:8000/album/merge',
+      { Title: 'Alice', AlbumIDs: [1, 2] },
+      expect.any(Object)
+    );
+  });
+
+  test('returns false on error', async () => {
+    axios.post.mockRejectedValue(new Error('boom'));
+    await expect(RemoteAlbumService.mergeAlbums(['1', '2'], 'Alice')).resolves.toBe(false);
+  });
+});
+
 describe('tree helpers before any hierarchy has been fetched', () => {
   test('renameAlbumInTree / deleteAlbumFromTree return false without a rootCollection', () => {
     expect(RemoteAlbumService.renameAlbumInTree('a1', 'New', '/New')).toBe(false);

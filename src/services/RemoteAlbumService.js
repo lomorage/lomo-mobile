@@ -294,6 +294,60 @@ class RemoteAlbumService {
       return false;
     }
   }
+
+  /**
+   * Deletes multiple albums from the server in a single request.
+   * @param {Array<string|number>} albumIds
+   * @returns {Promise<boolean>}
+   */
+  async deleteAlbums(albumIds) {
+    const serverUrl = AuthService.getServerUrl();
+    const token = AuthService.getToken();
+    if (!serverUrl || !token || !albumIds || albumIds.length === 0) return false;
+
+    try {
+      const response = await axios.delete(`${serverUrl}/album`, {
+        data: JSON.stringify(albumIds.map(id => parseInt(id, 10))),
+        headers: { Authorization: `token=${token}`, 'Content-Type': 'application/json' },
+        timeout: 15000,
+        skipAutoProbe: true
+      });
+      return response.status === 200;
+    } catch (error) {
+      console.error('[RemoteAlbumService] Error batch deleting albums:', error.message);
+      return false;
+    }
+  }
+
+  /**
+   * Merges multiple albums into one. The server picks whichever of the given
+   * albums has the most assets as the surviving target, moves the rest of the
+   * assets into it (de-duping any already shared between them), deletes the
+   * other albums, and renames the survivor to `title`.
+   * @param {Array<string|number>} albumIds - Must contain at least 2 IDs.
+   * @param {string} title - Name for the resulting merged album.
+   * @returns {Promise<boolean>}
+   */
+  async mergeAlbums(albumIds, title) {
+    const serverUrl = AuthService.getServerUrl();
+    const token = AuthService.getToken();
+    if (!serverUrl || !token || !albumIds || albumIds.length < 2) return false;
+
+    try {
+      const response = await axios.post(`${serverUrl}/album/merge`, {
+        Title: title,
+        AlbumIDs: albumIds.map(id => parseInt(id, 10))
+      }, {
+        headers: { Authorization: `token=${token}`, 'Content-Type': 'application/json' },
+        timeout: 20000,
+        skipAutoProbe: true
+      });
+      return response.status === 200;
+    } catch (error) {
+      console.error('[RemoteAlbumService] Error merging albums:', error.message);
+      return false;
+    }
+  }
 }
 
 export default new RemoteAlbumService();
