@@ -80,6 +80,7 @@ const axios = require('axios');
 const FileSystem = require('expo-file-system/legacy');
 const AuthService = require('./../AuthService');
 const ExpoLomoHasher = require('../../../modules/expo-lomo-hasher');
+const TaskSchedulerService = require('./../TaskSchedulerService');
 
 import AIService from '../AIService';
 
@@ -166,5 +167,49 @@ describe('AIService._refreshFaceAlbumCache', () => {
     await AIService._refreshFaceAlbumCache();
 
     expect(AIService.faceAlbumCache).toEqual([]);
+  });
+
+  test('yields to the JS thread/UI once per album that has a cover image, so a large library does not block for one long stretch', async () => {
+    axios.get.mockResolvedValue({
+      data: {
+        Albums: [
+          { ID: 'a1', Title: '/Faces/alice', CoverImage: 'data1' },
+          { ID: 'a2', Title: '/Faces/bob', CoverImage: 'data2' },
+          { ID: 'a3', Title: '/Faces/carol', CoverImage: 'data3' },
+        ],
+      },
+    });
+    ExpoLomoHasher.encodeFaceEmbeddingAsync.mockResolvedValue({ embedding: null });
+
+    await AIService._refreshFaceAlbumCache();
+
+    expect(TaskSchedulerService.waitUntilIdle).toHaveBeenCalledTimes(3);
+    expect(AIService.faceAlbumCache).toHaveLength(3);
+  });
+
+  test('does not yield for albums with no cover image (nothing expensive happened, no need to pause)', async () => {
+    axios.get.mockResolvedValue({
+      data: {
+        Albums: [
+          { ID: 'a1', Title: '/Faces/alice' },
+          { ID: 'a2', Title: '/Faces/bob' },
+        ],
+      },
+    });
+
+    await AIService._refreshFaceAlbumCache();
+
+    expect(TaskSchedulerService.waitUntilIdle).not.toHaveBeenCalled();
+  });
+
+  test('still yields after a cover-image album even if embedding generation failed for it', async () => {
+    axios.get.mockResolvedValue({
+      data: { Albums: [{ ID: 'a1', Title: '/Faces/alice', CoverImage: 'data1' }] },
+    });
+    ExpoLomoHasher.encodeFaceEmbeddingAsync.mockRejectedValue(new Error('native module exploded'));
+
+    await AIService._refreshFaceAlbumCache();
+
+    expect(TaskSchedulerService.waitUntilIdle).toHaveBeenCalledTimes(1);
   });
 });

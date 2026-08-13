@@ -617,8 +617,14 @@ class AIService {
           } finally {
             await FileSystem.deleteAsync(tempFileUri, { idempotent: true });
           }
+
+          // Each cover image costs native file I/O + on-device face detection (100ms+),
+          // and a real library can have hundreds of face albums — yield back to the JS
+          // thread/UI between iterations instead of blocking through the whole scan.
+          await new Promise(resolve => setTimeout(resolve, 5));
+          await TaskSchedulerService.waitUntilIdle();
         }
-        
+
         this.faceAlbumCache.push({
           id: album.ID,
           title: album.Title,
