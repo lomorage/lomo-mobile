@@ -66,10 +66,16 @@ export class LomoCollection {
     }
 
     addAlbum(album) {
-        if (this.albums.has(album.name)) {
-            return this.albums.get(album.name);
+        // Keyed by the album's stable server id, not its display name: two
+        // different albums (e.g. a freshly merged one and an unrelated one)
+        // can easily end up with the same display name, and keying by name
+        // used to silently drop the second one -- it just never appeared
+        // anywhere in the UI even though it existed fine on the server.
+        const key = album.info.id;
+        if (this.albums.has(key)) {
+            return this.albums.get(key);
         }
-        this.albums.set(album.name, album);
+        this.albums.set(key, album);
         album.parent = this;
         return album;
     }
@@ -100,12 +106,13 @@ export class LomoCollection {
     }
 
     renameAlbum(albumId, newName, newFullPath) {
-        for (const [key, album] of this.albums.entries()) {
+        // No re-keying needed now that albums are keyed by id, not name --
+        // which also means renaming one album to another's existing name no
+        // longer silently overwrites it in the map.
+        for (const album of this.albums.values()) {
             if (String(album.info.id) === String(albumId)) {
-                this.albums.delete(key);
                 album.name = newName;
                 if (newFullPath) album.info.name = newFullPath;
-                this.albums.set(newName, album);
                 return true;
             }
         }

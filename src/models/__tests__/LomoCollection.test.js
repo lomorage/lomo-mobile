@@ -4,8 +4,8 @@ describe('LomoCollection.buildCollections', () => {
   test('a top-level name (no slashes) becomes a direct album, no folders', () => {
     const root = LomoCollection.buildCollections([{ id: '1', name: 'Vacation' }]);
     expect(root.folders.size).toBe(0);
-    expect(root.albums.has('Vacation')).toBe(true);
-    expect(root.albums.get('Vacation').info.id).toBe('1');
+    expect(root.albums.has('1')).toBe(true);
+    expect(root.albums.get('1').name).toBe('Vacation');
   });
 
   test('a slash-separated name builds nested folders with the album at the leaf', () => {
@@ -13,15 +13,15 @@ describe('LomoCollection.buildCollections', () => {
     expect(root.albums.size).toBe(0);
     const faces = root.folders.get('Faces');
     expect(faces).toBeDefined();
-    expect(faces.albums.has('alice')).toBe(true);
-    expect(faces.albums.get('alice').info.id).toBe('1');
+    expect(faces.albums.has('1')).toBe(true);
+    expect(faces.albums.get('1').name).toBe('alice');
   });
 
   test('deeper nesting builds multiple folder levels', () => {
     const root = LomoCollection.buildCollections([{ id: '1', name: '/Trips/2024/Hawaii' }]);
     const trips = root.folders.get('Trips');
     const year = trips.folders.get('2024');
-    expect(year.albums.has('Hawaii')).toBe(true);
+    expect(year.albums.has('1')).toBe(true);
   });
 
   test('a leading slash does not create an empty-string folder', () => {
@@ -39,11 +39,27 @@ describe('LomoCollection.buildCollections', () => {
     expect(faces.albums.size).toBe(2);
   });
 
-  test('missing or empty name falls back to "Unnamed Album" at the root', () => {
+  test('two distinct albums that happen to share a display name both survive (keyed by id, not name)', () => {
+    // Regression test: a merged album can easily end up with the same display
+    // name as an unrelated existing album (e.g. merging into "Jeromy" when a
+    // "Jeromy" album already exists). Albums used to be keyed by name, so the
+    // second one silently vanished from the tree even though it existed fine
+    // on the server -- it just never showed up anywhere in the UI.
+    const root = LomoCollection.buildCollections([
+      { id: '1', name: '/Faces/Jeromy' },
+      { id: '2', name: '/Faces/Jeromy' },
+    ]);
+    const faces = root.folders.get('Faces');
+    expect(faces.albums.size).toBe(2);
+    expect(faces.albums.get('1').name).toBe('Jeromy');
+    expect(faces.albums.get('2').name).toBe('Jeromy');
+  });
+
+  test('missing or empty name falls back to "Unnamed Album", and multiple such albums no longer collide', () => {
     const root = LomoCollection.buildCollections([{ id: '1' }, { id: '2', name: '   ' }]);
-    // Both map to the same 'Unnamed Album' key, so the second overwrites... no, addAlbum
-    // dedupes by name and keeps the first — verifies that behavior explicitly.
-    expect(root.albums.get('Unnamed Album').info.id).toBe('1');
+    expect(root.albums.size).toBe(2);
+    expect(root.albums.get('1').name).toBe('Unnamed Album');
+    expect(root.albums.get('2').name).toBe('Unnamed Album');
   });
 
   test('folders get their fullPath set relative to their parent', () => {
@@ -92,16 +108,16 @@ describe('LomoCollection.renameAlbum', () => {
     const root = LomoCollection.buildCollections([{ id: '1', name: 'Old Name' }]);
     const renamed = root.renameAlbum('1', 'New Name', '/New Name');
     expect(renamed).toBe(true);
-    expect(root.albums.has('Old Name')).toBe(false);
-    expect(root.albums.get('New Name').info.id).toBe('1');
-    expect(root.albums.get('New Name').info.name).toBe('/New Name');
+    const album = root.albums.get('1');
+    expect(album.name).toBe('New Name');
+    expect(album.info.name).toBe('/New Name');
   });
 
   test('recurses into subfolders to find the album', () => {
     const root = LomoCollection.buildCollections([{ id: '1', name: '/Faces/alice' }]);
     const renamed = root.renameAlbum('1', 'alice-renamed');
     expect(renamed).toBe(true);
-    expect(root.folders.get('Faces').albums.has('alice-renamed')).toBe(true);
+    expect(root.folders.get('Faces').albums.get('1').name).toBe('alice-renamed');
   });
 
   test('returns false when the album id is not found anywhere', () => {
@@ -112,6 +128,18 @@ describe('LomoCollection.renameAlbum', () => {
   test('matches the id loosely (string vs number)', () => {
     const root = LomoCollection.buildCollections([{ id: 1, name: 'Album' }]);
     expect(root.renameAlbum('1', 'Renamed')).toBe(true);
+  });
+
+  test('renaming an album to match an existing album\'s name no longer overwrites it', () => {
+    const root = LomoCollection.buildCollections([
+      { id: '1', name: '/Faces/alice' },
+      { id: '2', name: '/Faces/bob' },
+    ]);
+    root.renameAlbum('1', 'bob');
+    const faces = root.folders.get('Faces');
+    expect(faces.albums.size).toBe(2);
+    expect(faces.albums.get('1').name).toBe('bob');
+    expect(faces.albums.get('2').name).toBe('bob');
   });
 });
 
@@ -140,8 +168,9 @@ describe('LomoCollection.deleteAlbum', () => {
     ]);
     root.deleteAlbum('1');
     const faces = root.folders.get('Faces');
-    expect(faces.albums.has('alice')).toBe(false);
-    expect(faces.albums.has('bob')).toBe(true);
+    expect(faces.albums.has('1')).toBe(false);
+    expect(faces.albums.has('2')).toBe(true);
+    expect(faces.albums.get('2').name).toBe('bob');
   });
 });
 
