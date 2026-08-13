@@ -1,6 +1,6 @@
 import React from 'react';
 import renderer, { act } from 'react-test-renderer';
-import { Alert, TouchableOpacity, Text } from 'react-native';
+import { Alert, TouchableOpacity, Text, View } from 'react-native';
 import { LomoCollection, LomoAlbum } from '../../models/LomoCollection';
 
 jest.mock('expo-image', () => {
@@ -70,6 +70,17 @@ async function flush() {
 function findFaceCards(root) {
   // Face cards are the outer TouchableOpacity wrapping each person's card (has onLongPress).
   return root.findAll(node => node.type === TouchableOpacity && node.props.onLongPress);
+}
+
+function findFaceCoverContainerStyle(card) {
+  // The cover container is the View directly inside the card whose style carries
+  // borderWidth/borderColor (the ring that toggles with selection).
+  const container = card.findAll(node => {
+    if (node.type !== View) return false;
+    const style = node.props.style;
+    return Array.isArray(style) && style.some(s => s && typeof s === 'object' && 'borderWidth' in s);
+  })[0];
+  return Object.assign({}, ...container.props.style.filter(Boolean));
 }
 
 describe('FolderDetailScreen - face album batch selection', () => {
@@ -280,5 +291,42 @@ describe('FolderDetailScreen - face album batch selection', () => {
     expect(newCallSources.every(uri => uri.includes('bbbb'))).toBe(true);
     expect(newCallSources.some(uri => uri.includes('aaaa'))).toBe(false);
     expect(newCallSources.some(uri => uri.includes('cccc'))).toBe(false);
+  });
+
+  test('the selection ring never changes the cover container box size (select then deselect keeps borderWidth constant)', async () => {
+    // Regression test for a real device repro: selecting a card then
+    // deselecting it left that card's cover permanently blank. Root cause was
+    // the container's borderWidth toggling 0 <-> 3 with selection, which
+    // changes the box the native Image layer renders into and was making it
+    // treat the cover as needing a fresh decode at a new target size.
+    RemoteAlbumService.getRootCollection.mockReturnValue(buildFacesCollection([
+      { id: '1', name: 'alice', count: 5, coverImage: 'aaaa' },
+    ]));
+
+    let component;
+    await act(async () => { component = renderer.create(<FolderDetailScreen />); });
+    await flush();
+
+    let cards = findFaceCards(component.root);
+    const styleBeforeSelection = findFaceCoverContainerStyle(cards[0]);
+    expect(styleBeforeSelection.borderWidth).toBe(3);
+
+    act(() => { cards[0].props.onLongPress(); }); // select
+    await flush();
+    cards = findFaceCards(component.root);
+    const styleWhenSelected = findFaceCoverContainerStyle(cards[0]);
+    expect(styleWhenSelected.borderWidth).toBe(3);
+    expect(styleWhenSelected.borderColor).toBe('#007AFF');
+    expect(styleWhenSelected.width).toBe(styleBeforeSelection.width);
+    expect(styleWhenSelected.height).toBe(styleBeforeSelection.height);
+
+    act(() => { cards[0].props.onPress(); }); // deselect
+    await flush();
+    cards = findFaceCards(component.root);
+    const styleAfterDeselect = findFaceCoverContainerStyle(cards[0]);
+    expect(styleAfterDeselect.borderWidth).toBe(3);
+    expect(styleAfterDeselect.borderColor).toBe('transparent');
+    expect(styleAfterDeselect.width).toBe(styleWhenSelected.width);
+    expect(styleAfterDeselect.height).toBe(styleWhenSelected.height);
   });
 });

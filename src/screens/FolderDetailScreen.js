@@ -31,7 +31,13 @@ const FaceCard = React.memo(function FaceCard({ album, isSelected, selectionMode
             onLongPress={() => onLongPress(album)}
             delayLongPress={500}
         >
-            <View style={[styles.faceCoverContainer, { width: itemWidth, height: itemWidth, borderRadius: itemWidth / 2 }, isSelected && styles.faceCoverSelected]}>
+            {/* borderWidth is always 3 (never 0) and only borderColor toggles --
+                changing the container's box size when selection toggles was
+                forcing the native image layer to treat the cover as needing a
+                fresh decode at a new target size, which is what was leaving
+                cards blank after select-then-deselect. Keeping the box size
+                constant avoids that entirely. */}
+            <View style={[styles.faceCoverContainer, { width: itemWidth, height: itemWidth, borderRadius: itemWidth / 2, borderWidth: 3, borderColor: isSelected ? '#007AFF' : 'transparent' }]}>
                 {coverSource ? (
                     <Image
                         source={coverSource}
@@ -488,10 +494,6 @@ const styles = StyleSheet.create({
         fontSize: 17,
         color: '#007AFF',
         paddingHorizontal: 10,
-    },
-    faceCoverSelected: {
-        borderWidth: 3,
-        borderColor: '#007AFF',
     },
     selectionBadge: {
         position: 'absolute',
