@@ -1,7 +1,6 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Dimensions, DeviceEventEmitter, Alert, Modal, TextInput, KeyboardAvoidingView, Platform, ActivityIndicator } from 'react-native';
 import { Image } from 'expo-image';
-import Animated, { LinearTransition } from 'react-native-reanimated';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { FlashList } from '@shopify/flash-list';
 import { Folder, Users, Image as ImageIcon, CheckCircle, Circle, Trash2, Combine } from 'lucide-react-native';
@@ -26,14 +25,14 @@ const FaceCard = React.memo(function FaceCard({ album, isSelected, selectionMode
     }, [album.info.coverImage]);
 
     return (
-        // Only `layout` here, not `entering`/`exiting`: FlashList virtualizes by
-        // actually mounting/unmounting cards as they scroll in and out of view,
-        // so entering/exiting fired on every scroll (not just real deletes),
-        // producing a fade ghosting effect while scrolling fast. `layout` only
-        // animates a card that's already mounted sliding to a new position,
-        // which is what actually happens on delete/merge (survivors reflow
-        // into the gap) without touching normal scroll-driven mount/unmount.
-        <Animated.View layout={LinearTransition} style={[styles.faceCard, { width: itemWidth }]}>
+        // Plain View, not Animated.View: react-native-reanimated's `layout`
+        // transition doesn't distinguish "position changed because a sibling
+        // was deleted" from "position changed because the list scrolled" --
+        // it animated/interpolated scroll-driven position updates too, which
+        // lagged behind the finger during a fast drag and looked like
+        // ghosting. Not worth it for the delete/merge polish it was meant to
+        // add; a plain, un-animated reflow on delete/merge is fine.
+        <View style={[styles.faceCard, { width: itemWidth }]}>
             <TouchableOpacity
                 onPress={() => onPress(album)}
                 onLongPress={() => onLongPress(album)}
@@ -74,7 +73,7 @@ const FaceCard = React.memo(function FaceCard({ album, isSelected, selectionMode
                 </View>
                 <Text style={styles.faceTitle} numberOfLines={1}>{album.name}</Text>
             </TouchableOpacity>
-        </Animated.View>
+        </View>
     );
 });
 
