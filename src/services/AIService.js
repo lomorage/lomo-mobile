@@ -23,7 +23,7 @@ import { extractTimeRange } from './ai/searchQueryParser';
 import { processBlocksToMetadata } from './ai/ocrUtils';
 import { buildFaceBoundingBox, isFaceTooSmall, attachEyeLandmarks } from './ai/faceGeometry';
 import { translateToEnglish } from './ai/translateQuery';
-import { rankFaceAlbumMatches } from './ai/faceAlbumMatching';
+import { rankFaceAlbumMatches, DEFAULT_FACE_MATCH_THRESHOLD } from './ai/faceAlbumMatching';
 
 export const BACKGROUND_AI_SYNC_TASK = 'LOMO_AI_SYNC_TASK';
 class AIService {
@@ -566,6 +566,47 @@ class AIService {
     return cosineSimilarity(vecA, vecB);
   }
 
+  // Crops and embeds a face-album cover image (already a tight face crop, so
+  // the whole image is the bounding box). We need a way to pass the base64
+  // cover image to ExpoLomoHasher, which expects a file URI, so we write it
+  // to a temp file first. `tempFileSuffix` just needs to be unique per caller
+  // so concurrent calls don't clobber each other's temp file.
+  async _computeCoverEmbedding(coverImageBase64, tempFileSuffix) {
+    const tempFileUri = FileSystem.cacheDirectory + `temp_face_cover_${tempFileSuffix}.png`;
+    try {
+      await FileSystem.writeAsStringAsync(tempFileUri, coverImageBase64, { encoding: FileSystem.EncodingType.Base64 });
+      const size = await new Promise((resolve, reject) => Image.getSize(tempFileUri, (w, h) => resolve({ w, h }), reject));
+
+      let coverBBox = { x: 0, y: 0, width: size.w, height: size.h };
+
+      // Attempt to detect landmarks in the cover image to align it properly for ArcFace
+      try {
+        const coverFacesRes = await this.faceDetector.detectFaces(tempFileUri);
+        const coverFaces = coverFacesRes?.faces || [];
+        if (coverFaces.length > 0) {
+          attachEyeLandmarks(coverBBox, coverFaces[0]);
+        }
+      } catch (err) {
+        console.warn(`[AIService] Failed to detect landmarks on cover image (${tempFileSuffix})`);
+      }
+
+      const faceResultObj = await ExpoLomoHasher.encodeFaceEmbeddingAsync(
+        tempFileUri,
+        coverBBox,
+        'w600k_r50.onnx'
+      );
+      if (faceResultObj && faceResultObj !== "failed" && faceResultObj.embedding) {
+        return base64ToFloat32Array(faceResultObj.embedding);
+      }
+      return null;
+    } catch (e) {
+      console.warn(`[AIService] Failed to generate embedding for cover (${tempFileSuffix}):`, e.message);
+      return null;
+    } finally {
+      await FileSystem.deleteAsync(tempFileUri, { idempotent: true });
+    }
+  }
+
   async _refreshFaceAlbumCache() {
     try {
       const url = AuthService.getServerUrl();
@@ -583,40 +624,7 @@ class AIService {
       for (const album of faceAlbums) {
         let coverEmbedding = null;
         if (album.CoverImage) {
-          // Crop and calculate embedding. We need a way to pass the base64 cover image to ExpoLomoHasher.
-          // Since ExpoLomoHasher currently expects a file URI, we can write the base64 to a temp file.
-          const tempFileUri = FileSystem.cacheDirectory + `temp_face_cover_${album.ID}.png`;
-          try {
-            await FileSystem.writeAsStringAsync(tempFileUri, album.CoverImage, { encoding: FileSystem.EncodingType.Base64 });
-            // For cover image, we assume it's already tightly cropped, so bounding box is the whole image.
-            const size = await new Promise((resolve, reject) => Image.getSize(tempFileUri, (w, h) => resolve({w,h}), reject));
-            
-            let coverBBox = { x: 0, y: 0, width: size.w, height: size.h };
-            
-            // Attempt to detect landmarks in the cover image to align it properly for ArcFace
-            try {
-              const coverFacesRes = await this.faceDetector.detectFaces(tempFileUri);
-              const coverFaces = coverFacesRes?.faces || [];
-              if (coverFaces.length > 0) {
-                attachEyeLandmarks(coverBBox, coverFaces[0]);
-              }
-            } catch (err) {
-              console.warn(`[AIService] Failed to detect landmarks on cover image for album ${album.ID}`);
-            }
-
-            const faceResultObj = await ExpoLomoHasher.encodeFaceEmbeddingAsync(
-              tempFileUri,
-              coverBBox,
-              'w600k_r50.onnx'
-            );
-            if (faceResultObj && faceResultObj !== "failed" && faceResultObj.embedding) {
-              coverEmbedding = base64ToFloat32Array(faceResultObj.embedding);
-            }
-          } catch (e) {
-            console.warn(`[AIService] Failed to generate embedding for Face Album ${album.ID}:`, e.message);
-          } finally {
-            await FileSystem.deleteAsync(tempFileUri, { idempotent: true });
-          }
+          coverEmbedding = await this._computeCoverEmbedding(album.CoverImage, album.ID);
 
           // Each cover image costs native file I/O + on-device face detection (100ms+),
           // and a real library can have hundreds of face albums — yield back to the JS
@@ -636,6 +644,67 @@ class AIService {
       console.warn('[AIService] Failed to refresh Face Album cache:', e.message);
       this.faceAlbumCache = [];
     }
+  }
+
+  /**
+   * Given a photo and a face album's current cover image, detects every face
+   * in the photo and returns the crop of whichever one best matches the
+   * album's existing identity (by embedding similarity against the current
+   * cover) -- lets a user pick "one of the photos already in this person's
+   * album" as a replacement cover without having to know/tap which face in a
+   * multi-person photo is actually them.
+   * @param {string} imageUri - file://, content://, or a downloaded remote preview path
+   * @param {string} currentCoverImageBase64 - the album's existing CoverImage, used as the reference identity
+   * @returns {Promise<{croppedImageBase64: string, similarity: number} | {error: string, similarity?: number}>}
+   */
+  async extractBestMatchingFaceCrop(imageUri, currentCoverImageBase64) {
+    if (!currentCoverImageBase64) {
+      return { error: 'no_reference_cover' };
+    }
+
+    const referenceEmbedding = await this._computeCoverEmbedding(currentCoverImageBase64, `ref_${Date.now()}`);
+    if (!referenceEmbedding) {
+      return { error: 'reference_embedding_failed' };
+    }
+
+    let faces = [];
+    try {
+      const faceResponse = await this.faceDetector.detectFaces(imageUri);
+      faces = faceResponse?.faces || [];
+    } catch (e) {
+      console.warn('[AIService] Face detection failed while picking a new cover:', e.message);
+      return { error: 'detection_failed' };
+    }
+    if (faces.length === 0) {
+      return { error: 'no_faces_found' };
+    }
+
+    let best = null;
+    for (const face of faces) {
+      const boundingBox = buildFaceBoundingBox(face);
+      if (isFaceTooSmall(boundingBox)) continue;
+      attachEyeLandmarks(boundingBox, face);
+      try {
+        const faceResultObj = await ExpoLomoHasher.encodeFaceEmbeddingAsync(imageUri, boundingBox, 'w600k_r50.onnx');
+        if (faceResultObj && faceResultObj !== 'failed' && faceResultObj.embedding && faceResultObj.croppedImage) {
+          const vec = base64ToFloat32Array(faceResultObj.embedding);
+          const similarity = cosineSimilarity(vec, referenceEmbedding);
+          if (!best || similarity > best.similarity) {
+            best = { croppedImageBase64: faceResultObj.croppedImage, similarity };
+          }
+        }
+      } catch (e) {
+        console.warn('[AIService] Failed to embed a candidate face for cover extraction:', e.message);
+      }
+    }
+
+    if (!best) {
+      return { error: 'no_valid_faces' };
+    }
+    if (best.similarity < DEFAULT_FACE_MATCH_THRESHOLD) {
+      return { error: 'low_confidence', similarity: best.similarity };
+    }
+    return best;
   }
 
   async fixBrokenFaceData() {

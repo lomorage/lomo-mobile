@@ -1,14 +1,16 @@
 import React, { useEffect, useState, useLayoutEffect } from 'react';
 import { View, Text, StyleSheet, Dimensions, ActivityIndicator, TouchableOpacity, Alert, Modal, TextInput, KeyboardAvoidingView, Platform, DeviceEventEmitter } from 'react-native';
 import { Image } from 'expo-image';
+import * as FileSystem from 'expo-file-system/legacy';
 import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/native';
 import { FlashList } from '@shopify/flash-list';
-import { PlayCircle, Heart, CheckCircle2, Circle, MoreVertical, Trash2 } from 'lucide-react-native';
+import { PlayCircle, Heart, CheckCircle2, Circle, MoreVertical, Trash2, UserCircle2 } from 'lucide-react-native';
 import RemoteAlbumService from '../services/RemoteAlbumService';
 import NetworkQueue from '../services/NetworkQueue';
 import AssetDBService from '../services/AssetDBService';
 import GalleryStore from '../store/GalleryStore';
 import MediaService from '../services/MediaService';
+import AIService from '../services/AIService';
 
 const { width } = Dimensions.get('window');
 const SPACING = 2;
@@ -21,6 +23,7 @@ export default function AlbumDetailScreen() {
     const [selectMode, setSelectMode] = useState(false);
     const [selectedHashes, setSelectedHashes] = useState(new Set());
     const [promptState, setPromptState] = useState({ visible: false, text: '' });
+    const [settingCover, setSettingCover] = useState(false);
     const navigation = useNavigation();
     const route = useRoute();
     const { albumId, albumName: initialAlbumName, fullPath: initialFullPath } = route.params;
@@ -28,6 +31,7 @@ export default function AlbumDetailScreen() {
     const [fullPath, setFullPath] = useState(initialFullPath || initialAlbumName);
 
     const isSystemAlbum = !albumId || albumName.startsWith('/') || albumName === 'Favorites';
+    const isFaceAlbum = fullPath && fullPath.startsWith('/Faces/');
 
     // useLayoutEffect(() => {
     //     navigation.setOptions({
@@ -153,6 +157,62 @@ export default function AlbumDetailScreen() {
                 }}
             ]
         );
+    };
+
+    const handleSetAsCover = async () => {
+        if (selectedHashes.size !== 1) return;
+        const hash = Array.from(selectedHashes)[0];
+        const selectedAsset = assets.find(a => a.hash === hash);
+        if (!selectedAsset) return;
+
+        const currentCover = RemoteAlbumService._findAlbumInTree(albumId);
+        const currentCoverImage = currentCover && currentCover.info.coverImage;
+        if (!currentCoverImage) {
+            Alert.alert('Cannot Set Cover', 'This album has no existing cover to match faces against yet.');
+            return;
+        }
+
+        setSettingCover(true);
+        const tempUri = `${FileSystem.cacheDirectory}set_cover_${hash}.jpg`;
+        try {
+            // Use the large (640px) tier for accurate face detection -- the grid
+            // thumbnail (320px) is too small/blurry to embed reliably, and 640
+            // is still one of the server's pre-generated sizes so this doesn't
+            // trigger an expensive on-demand resize.
+            const previewUrl = MediaService.getPreviewUrl(hash, selectedAsset.mediaType, true);
+            const downloadRes = await FileSystem.downloadAsync(previewUrl, tempUri);
+            if (downloadRes.status !== 200) {
+                throw new Error(`Failed to download photo, HTTP status ${downloadRes.status}`);
+            }
+
+            const result = await AIService.extractBestMatchingFaceCrop(downloadRes.uri, currentCoverImage);
+            if (result.error) {
+                const messages = {
+                    no_faces_found: 'No face was detected in this photo.',
+                    low_confidence: `The face in this photo doesn't look like a confident match for this person (similarity ${(result.similarity ?? 0).toFixed(2)}). Try a different photo.`,
+                    detection_failed: 'Face detection failed on this photo. Try a different one.',
+                    reference_embedding_failed: "Couldn't read this album's current cover to compare against.",
+                    no_valid_faces: 'No usable face was found in this photo.',
+                };
+                Alert.alert('Cannot Set Cover', messages[result.error] || 'Something went wrong picking a face from this photo.');
+                return;
+            }
+
+            const ok = await RemoteAlbumService.updateAlbumCover(albumId, result.croppedImageBase64);
+            if (ok) {
+                DeviceEventEmitter.emit('albumRenamed', { albumId }); // reuses the same "refresh album lists" listeners
+                setSelectedHashes(new Set());
+                setSelectMode(false);
+            } else {
+                Alert.alert('Cannot Set Cover', 'Could not save the new cover. Please try again.');
+            }
+        } catch (e) {
+            console.error('[AlbumDetailScreen] Failed to set album cover:', e.message);
+            Alert.alert('Cannot Set Cover', 'Something went wrong. Please try again.');
+        } finally {
+            await FileSystem.deleteAsync(tempUri, { idempotent: true });
+            setSettingCover(false);
+        }
     };
 
     const handleMenuPress = () => {
@@ -312,14 +372,31 @@ export default function AlbumDetailScreen() {
 
             {selectMode && (
                 <View style={styles.bottomToolbar}>
-                    <TouchableOpacity 
-                        style={[styles.toolbarBtn, selectedHashes.size === 0 && { opacity: 0.5 }]} 
+                    {isFaceAlbum && (
+                        <TouchableOpacity
+                            style={[styles.toolbarBtn, selectedHashes.size !== 1 && { opacity: 0.5 }]}
+                            disabled={selectedHashes.size !== 1 || settingCover}
+                            onPress={handleSetAsCover}
+                        >
+                            <UserCircle2 color="#007AFF" size={24} />
+                            <Text style={[styles.toolbarBtnText, { color: '#007AFF' }]}>Set as Cover</Text>
+                        </TouchableOpacity>
+                    )}
+                    <TouchableOpacity
+                        style={[styles.toolbarBtn, selectedHashes.size === 0 && { opacity: 0.5 }]}
                         disabled={selectedHashes.size === 0}
                         onPress={handleBatchRemove}
                     >
                         <Trash2 color="#ef4444" size={24} />
                         <Text style={styles.toolbarBtnText}>Remove from Album</Text>
                     </TouchableOpacity>
+                </View>
+            )}
+
+            {settingCover && (
+                <View style={styles.busyOverlay}>
+                    <ActivityIndicator size="large" color="#fff" />
+                    <Text style={styles.busyOverlayText}>Finding the best face...</Text>
                 </View>
             )}
 
@@ -436,7 +513,7 @@ const styles = StyleSheet.create({
     },
     bottomToolbar: {
         flexDirection: 'row',
-        justifyContent: 'center',
+        justifyContent: 'space-around',
         alignItems: 'center',
         paddingVertical: 15,
         paddingBottom: 30,
@@ -453,6 +530,17 @@ const styles = StyleSheet.create({
         fontSize: 16,
         fontWeight: '500',
         marginLeft: 8,
+    },
+    busyOverlay: {
+        ...StyleSheet.absoluteFillObject,
+        backgroundColor: 'rgba(0,0,0,0.4)',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    busyOverlayText: {
+        color: '#fff',
+        fontSize: 15,
+        marginTop: 12,
     },
     modalOverlay: {
         flex: 1,

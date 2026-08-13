@@ -190,6 +190,20 @@ describe('updateAlbumInfo / deleteAlbum guard clauses', () => {
     await expect(RemoteAlbumService.updateAlbumInfo('album1', 'New Title')).resolves.toBe(false);
   });
 
+  test('updateAlbumInfo preserves the existing CoverImage from the cached tree', async () => {
+    const { LomoCollection, LomoAlbum } = require('../../models/LomoCollection');
+    const root = new LomoCollection('');
+    root.addAlbum(new LomoAlbum('alice', { id: 'album1', name: 'alice', coverImage: 'existing-cover-b64' }));
+    RemoteAlbumService.rootCollection = root;
+
+    axios.put.mockResolvedValue({ status: 200 });
+    await RemoteAlbumService.updateAlbumInfo('album1', 'New Title');
+
+    expect(axios.put).toHaveBeenCalledWith('http://localhost:8000/album', expect.objectContaining({
+      CoverImage: 'existing-cover-b64',
+    }), expect.any(Object));
+  });
+
   test('deleteAlbum returns false when albumId is missing', async () => {
     await expect(RemoteAlbumService.deleteAlbum(null)).resolves.toBe(false);
     expect(axios.delete).not.toHaveBeenCalled();
@@ -203,6 +217,55 @@ describe('updateAlbumInfo / deleteAlbum guard clauses', () => {
   test('deleteAlbum returns false on error', async () => {
     axios.delete.mockRejectedValue(new Error('boom'));
     await expect(RemoteAlbumService.deleteAlbum('album1')).resolves.toBe(false);
+  });
+});
+
+describe('updateAlbumCover', () => {
+  test('returns false without making a request when albumId or coverImageBase64 is missing', async () => {
+    await expect(RemoteAlbumService.updateAlbumCover(null, 'b64data')).resolves.toBe(false);
+    await expect(RemoteAlbumService.updateAlbumCover('album1', '')).resolves.toBe(false);
+    expect(axios.put).not.toHaveBeenCalled();
+  });
+
+  test('sends the new cover with the existing Title preserved from the cached tree', async () => {
+    const { LomoCollection, LomoAlbum } = require('../../models/LomoCollection');
+    const root = new LomoCollection('');
+    root.addAlbum(new LomoAlbum('alice', { id: '1', name: '/Faces/alice', coverImage: 'old-cover-b64' }));
+    RemoteAlbumService.rootCollection = root;
+
+    axios.put.mockResolvedValue({ status: 200 });
+    await expect(RemoteAlbumService.updateAlbumCover('1', 'new-cover-b64')).resolves.toBe(true);
+
+    expect(axios.put).toHaveBeenCalledWith('http://localhost:8000/album', expect.objectContaining({
+      ID: 1,
+      Title: '/Faces/alice',
+      CoverImage: 'new-cover-b64',
+    }), expect.any(Object));
+  });
+
+  test('updates the cached tree entry\'s coverImage on success', async () => {
+    const { LomoCollection, LomoAlbum } = require('../../models/LomoCollection');
+    const root = new LomoCollection('');
+    const album = new LomoAlbum('alice', { id: 'album1', name: '/Faces/alice', coverImage: 'old-cover-b64' });
+    root.addAlbum(album);
+    RemoteAlbumService.rootCollection = root;
+
+    axios.put.mockResolvedValue({ status: 200 });
+    await RemoteAlbumService.updateAlbumCover('album1', 'new-cover-b64');
+
+    expect(album.info.coverImage).toBe('new-cover-b64');
+  });
+
+  test('returns false on error and leaves the cached tree untouched', async () => {
+    const { LomoCollection, LomoAlbum } = require('../../models/LomoCollection');
+    const root = new LomoCollection('');
+    const album = new LomoAlbum('alice', { id: 'album1', name: '/Faces/alice', coverImage: 'old-cover-b64' });
+    root.addAlbum(album);
+    RemoteAlbumService.rootCollection = root;
+
+    axios.put.mockRejectedValue(new Error('boom'));
+    await expect(RemoteAlbumService.updateAlbumCover('album1', 'new-cover-b64')).resolves.toBe(false);
+    expect(album.info.coverImage).toBe('old-cover-b64');
   });
 });
 

@@ -216,9 +216,35 @@ class RemoteAlbumService {
   }
 
   /**
+   * Finds an album anywhere in the currently cached tree by id.
+   * @param {string|number} albumId
+   * @returns {LomoAlbum|null}
+   */
+  _findAlbumInTree(albumId) {
+    if (!this.rootCollection) return null;
+    let found = null;
+    const search = (collection) => {
+        for (const album of collection.albums.values()) {
+            if (String(album.info.id) === String(albumId)) {
+                found = album;
+                return;
+            }
+        }
+        if (!found) {
+            for (const folder of collection.folders.values()) {
+                search(folder);
+                if (found) return;
+            }
+        }
+    };
+    search(this.rootCollection);
+    return found;
+  }
+
+  /**
    * Updates an album's information on the server
-   * @param {string} albumId 
-   * @param {string} title 
+   * @param {string} albumId
+   * @param {string} title
    * @returns {Promise<boolean>}
    */
   async updateAlbumInfo(albumId, title) {
@@ -226,29 +252,9 @@ class RemoteAlbumService {
     const token = AuthService.getToken();
     if (!serverUrl || !token || !albumId) return false;
 
-    // Find existing album to preserve its CoverImage
-    let existingCoverImage = "";
-    if (this.rootCollection) {
-        let found = null;
-        const findAlbum = (collection) => {
-            for (const album of collection.albums.values()) {
-                if (String(album.info.id) === String(albumId)) {
-                    found = album;
-                    return;
-                }
-            }
-            if (!found) {
-                for (const folder of collection.folders.values()) {
-                    findAlbum(folder);
-                    if (found) return;
-                }
-            }
-        };
-        findAlbum(this.rootCollection);
-        if (found && found.info.coverImage) {
-            existingCoverImage = found.info.coverImage;
-        }
-    }
+    // Preserve the existing CoverImage -- this endpoint always overwrites it.
+    const existing = this._findAlbumInTree(albumId);
+    const existingCoverImage = (existing && existing.info.coverImage) || "";
 
     try {
       const response = await axios.put(`${serverUrl}/album`, {
@@ -258,7 +264,7 @@ class RemoteAlbumService {
         Author: "Lomorage User",
         CoverImage: existingCoverImage
       }, {
-        headers: { 
+        headers: {
           Authorization: `token=${token}`,
           'Content-Type': 'application/json'
         },
@@ -268,6 +274,46 @@ class RemoteAlbumService {
       return response.status === 200;
     } catch (error) {
       console.error(`[RemoteAlbumService] Error updating album ${albumId}:`, error.message);
+      return false;
+    }
+  }
+
+  /**
+   * Updates only an album's cover image, preserving its current title.
+   * @param {string} albumId
+   * @param {string} coverImageBase64 - Raw (unprefixed) base64 JPEG data.
+   * @returns {Promise<boolean>}
+   */
+  async updateAlbumCover(albumId, coverImageBase64) {
+    const serverUrl = AuthService.getServerUrl();
+    const token = AuthService.getToken();
+    if (!serverUrl || !token || !albumId || !coverImageBase64) return false;
+
+    // The server requires the full Title in this same PUT, or it'll wipe it.
+    const existing = this._findAlbumInTree(albumId);
+    const existingTitle = (existing && existing.info.name) || "";
+
+    try {
+      const response = await axios.put(`${serverUrl}/album`, {
+        ID: parseInt(albumId, 10),
+        Title: existingTitle,
+        Description: "",
+        Author: "Lomorage User",
+        CoverImage: coverImageBase64
+      }, {
+        headers: {
+          Authorization: `token=${token}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 15000,
+        skipAutoProbe: true
+      });
+      if (response.status === 200 && existing) {
+        existing.info.coverImage = coverImageBase64;
+      }
+      return response.status === 200;
+    } catch (error) {
+      console.error(`[RemoteAlbumService] Error updating cover for album ${albumId}:`, error.message);
       return false;
     }
   }
