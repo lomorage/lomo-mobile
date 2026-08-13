@@ -83,4 +83,45 @@ describe('SyncService.syncRemoteGPS backs off for active thumbnail loads', () =>
       expect.any(Object)
     );
   });
+
+  test('fires a batch in chunks of at most 3 concurrent requests, not all at once', async () => {
+    const pending = Array.from({ length: 7 }, (_, i) => ({ id: i, hash: `hash${i}` }));
+    AssetDBService.getRemoteAssetsWithoutGeo
+      .mockResolvedValueOnce(pending)
+      .mockResolvedValueOnce([]);
+    ThumbnailLoadTracker.isActive.mockReturnValue(false);
+
+    // Track how many axios.get calls are in flight (started but not yet resolved)
+    // at any point in time, so we can assert it never exceeds the chunk size.
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const pendingResolvers = [];
+    axios.get.mockImplementation(() => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      return new Promise(resolve => {
+        pendingResolvers.push(() => {
+          inFlight--;
+          resolve({ data: { Latitude: 1, Longitude: 2 } });
+        });
+      });
+    });
+
+    const runPromise = SyncService.syncRemoteGPS();
+
+    // Drain chunk-by-chunk: let each chunk's requests start, then resolve them,
+    // repeating until all 7 assets have been processed.
+    for (let i = 0; i < 3; i++) {
+      await jest.advanceTimersByTimeAsync(0);
+      const toResolve = pendingResolvers.splice(0, pendingResolvers.length);
+      toResolve.forEach(r => r());
+      await jest.advanceTimersByTimeAsync(3000);
+    }
+
+    await jest.advanceTimersByTimeAsync(5000);
+    await runPromise;
+
+    expect(axios.get).toHaveBeenCalledTimes(7);
+    expect(maxInFlight).toBeLessThanOrEqual(3);
+  });
 });

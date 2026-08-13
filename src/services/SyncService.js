@@ -1042,51 +1042,59 @@ class SyncService {
           console.log(`[SyncService] syncRemoteGPS: retrieved ${pending ? pending.length : 0} pending assets without geo.`);
           if (!pending || pending.length === 0) break;
 
-          // Gallery thumbnails and this GPS backfill both compete for the same
-          // constrained NAS preview-generation capacity. Back off while the user is
-          // actively scrolling/loading thumbnails instead of racing them for it.
-          // Capped so a stuck load-tracker count (e.g. a recycled list item that never
-          // fired onLoad/onError) can't stall this sync forever.
-          const thumbnailWaitDeadline = Date.now() + 20000;
-          while (ThumbnailLoadTracker.isActive() && AppState.currentState === 'active' && Date.now() < thumbnailWaitDeadline) {
-            await new Promise(resolve => setTimeout(resolve, 500));
-          }
-
           const updates = [];
           const noGeoIds = [];
           let isNetworkError = false;
 
-          // Batch requests with simple Promise.all
-          const promises = pending.map(async (asset) => {
-            try {
-              const res = await axios.get(`${url}/asset/metadata/${asset.hash}`, {
-                headers: { Authorization: `token=${token}` },
-                timeout: 10000,
-                skipAutoProbe: true,
-                priority: 4,
-                groupId: 'SyncService'
-              });
-              const data = res.data;
-              if (data && (data.Latitude !== 0 || data.Longitude !== 0)) {
-                updates.push({
-                  id: asset.id,
-                  latitude: data.Latitude,
-                  longitude: data.Longitude
-                });
-              } else {
-                noGeoIds.push(asset.id);
-              }
-            } catch (e) {
-              if (e.response && e.response.status === 404) {
-                noGeoIds.push(asset.id);
-              } else {
-                console.warn(`[SyncService] Failed to fetch GPS for ${asset.hash}:`, e.message);
-                isNetworkError = true;
-              }
+          // Fire in small chunks rather than the whole batch via one Promise.all:
+          // this NAS is explicitly tuned for very low concurrency (lomod runs with
+          // --max-fetch-preview 3), and thumbnail loads go through the native Image
+          // loader, which bypasses NetworkQueue's app-wide cap entirely -- so a big
+          // burst of metadata requests here directly adds to what's fighting
+          // thumbnails for the same starved server. Re-checking before every chunk
+          // (not just once per whole batch) also lets a batch already in progress
+          // back off if the user starts scrolling partway through it.
+          const remoteConcurrencyLimit = 3;
+          for (let i = 0; i < pending.length; i += remoteConcurrencyLimit) {
+            // Capped so a stuck load-tracker count (e.g. a recycled list item that
+            // never fired onLoad/onError) can't stall this sync forever.
+            const thumbnailWaitDeadline = Date.now() + 20000;
+            while (ThumbnailLoadTracker.isActive() && AppState.currentState === 'active' && Date.now() < thumbnailWaitDeadline) {
+              await new Promise(resolve => setTimeout(resolve, 500));
             }
-          });
 
-          await Promise.all(promises);
+            const chunk = pending.slice(i, i + remoteConcurrencyLimit);
+            await Promise.all(chunk.map(async (asset) => {
+              try {
+                const res = await axios.get(`${url}/asset/metadata/${asset.hash}`, {
+                  headers: { Authorization: `token=${token}` },
+                  timeout: 10000,
+                  skipAutoProbe: true,
+                  priority: 4,
+                  groupId: 'SyncService'
+                });
+                const data = res.data;
+                if (data && (data.Latitude !== 0 || data.Longitude !== 0)) {
+                  updates.push({
+                    id: asset.id,
+                    latitude: data.Latitude,
+                    longitude: data.Longitude
+                  });
+                } else {
+                  noGeoIds.push(asset.id);
+                }
+              } catch (e) {
+                if (e.response && e.response.status === 404) {
+                  noGeoIds.push(asset.id);
+                } else {
+                  console.warn(`[SyncService] Failed to fetch GPS for ${asset.hash}:`, e.message);
+                  isNetworkError = true;
+                }
+              }
+            }));
+
+            if (isNetworkError) break;
+          }
 
           if (isNetworkError) {
             console.log('[SyncService] Network error encountered during syncRemoteGPS. Aborting loop.');
