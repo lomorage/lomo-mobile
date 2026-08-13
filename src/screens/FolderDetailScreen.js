@@ -202,6 +202,13 @@ export default function FolderDetailScreen() {
                                     // re-decoding the same string on every re-render.
                                     cachePolicy="memory"
                                     recyclingKey={String(album.info.id)}
+                                    // TEMP diagnostic logging: some covers render blank with no
+                                    // visible error, and it's not yet confirmed whether the load
+                                    // never starts (recycling/mount issue) or starts and silently
+                                    // fails (decode issue). Remove once the cause is confirmed.
+                                    onLoadStart={() => console.log(`[FolderDetailScreen] cover onLoadStart id=${album.info.id} name=${album.name}`)}
+                                    onLoad={() => console.log(`[FolderDetailScreen] cover onLoad OK id=${album.info.id} name=${album.name}`)}
+                                    onError={(e) => console.log(`[FolderDetailScreen] cover onError id=${album.info.id} name=${album.name} error=${JSON.stringify(e?.error || e)}`)}
                                 />
                             ) : (
                                 <View style={[styles.placeholderCover, { backgroundColor: '#F0F5FF' }]}>
