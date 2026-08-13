@@ -7,6 +7,7 @@ import { Folder, Users, Image as ImageIcon, CheckCircle, Circle, Trash2, Combine
 
 const { width } = Dimensions.get('window');
 import RemoteAlbumService from '../services/RemoteAlbumService';
+import { buildImageDataUri } from '../utils/base64Image';
 
 export default function FolderDetailScreen() {
     const route = useRoute();
@@ -176,12 +177,8 @@ export default function FolderDetailScreen() {
             );
         } else {
             const album = item.data;
-            let coverSource = null;
-            if (album.info.coverImage) {
-                const base64Prefix = 'data:image/jpeg;base64,';
-                const uri = album.info.coverImage.startsWith('data:') ? album.info.coverImage : base64Prefix + album.info.coverImage;
-                coverSource = { uri };
-            }
+            const coverUri = buildImageDataUri(album.info.coverImage);
+            const coverSource = coverUri ? { uri: coverUri } : null;
 
             if (isFacesFolder) {
                 const isSelected = selectedIds.has(String(album.info.id));
@@ -198,7 +195,12 @@ export default function FolderDetailScreen() {
                                     source={coverSource}
                                     style={styles.coverImage}
                                     contentFit="cover"
-                                    cachePolicy="memory-disk"
+                                    // Covers are base64 data: URIs embedded directly in the /album
+                                    // response, not fetched over the network -- disk-caching them
+                                    // (memory-disk) has no benefit and was intermittently leaving
+                                    // some covers stuck blank. Memory-only cache is enough to avoid
+                                    // re-decoding the same string on every re-render.
+                                    cachePolicy="memory"
                                     recyclingKey={String(album.info.id)}
                                 />
                             ) : (
@@ -224,7 +226,7 @@ export default function FolderDetailScreen() {
                 <TouchableOpacity style={styles.listRow} onPress={() => handleAlbumPress(album)}>
                     <View style={styles.listCoverContainer}>
                         {coverSource ? (
-                            <Image source={coverSource} style={styles.coverImage} contentFit="cover" cachePolicy="memory-disk" />
+                            <Image source={coverSource} style={styles.coverImage} contentFit="cover" cachePolicy="memory" recyclingKey={String(album.info.id)} />
                         ) : (
                             <View style={[styles.placeholderCover, { backgroundColor: '#F5F5F5' }]}>
                                 <ImageIcon color="#8E8E93" size={28} strokeWidth={1.5} />

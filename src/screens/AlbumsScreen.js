@@ -6,6 +6,7 @@ import { FlashList } from '@shopify/flash-list';
 import { Folder, Users, Image as ImageIcon, Plus, Copy } from 'lucide-react-native';
 import RemoteAlbumService from '../services/RemoteAlbumService';
 import NetworkQueue from '../services/NetworkQueue';
+import { buildImageDataUri } from '../utils/base64Image';
 
 const { width } = Dimensions.get('window');
 const SPACING = 16;
@@ -164,11 +165,7 @@ export default function AlbumsScreen() {
         } else {
             count = data.info && data.info.count ? data.info.count : 0;
             isFaces = data.info && data.info.name && data.info.name.includes('/Faces/');
-            if (data.info && data.info.coverImage) {
-                coverUri = data.info.coverImage.startsWith('data:') 
-                    ? data.info.coverImage 
-                    : 'data:image/jpeg;base64,' + data.info.coverImage;
-            }
+            coverUri = buildImageDataUri(data.info && data.info.coverImage);
         }
 
         let displayName = data.name;
@@ -192,11 +189,15 @@ export default function AlbumsScreen() {
                         </View>
                     ) : (
                         coverUri ? (
-                            <Image 
-                                source={{ uri: coverUri }} 
-                                style={[styles.coverImage, { borderRadius: isFaces ? 30 : 8 }]} 
-                                contentFit="cover" 
-                                cachePolicy="memory-disk" 
+                            <Image
+                                source={{ uri: coverUri }}
+                                style={[styles.coverImage, { borderRadius: isFaces ? 30 : 8 }]}
+                                contentFit="cover"
+                                // Covers are base64 data: URIs embedded directly in the /album
+                                // response, not fetched over the network -- disk-caching them has
+                                // no benefit and was intermittently leaving some covers stuck blank.
+                                cachePolicy="memory"
+                                recyclingKey={String(data.info.id)}
                             />
                         ) : (
                             <View style={[styles.placeholderCover, { backgroundColor: '#F5F5F5', borderRadius: isFaces ? 30 : 8 }]}>
