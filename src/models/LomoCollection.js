@@ -109,10 +109,21 @@ export class LomoCollection {
         // No re-keying needed now that albums are keyed by id, not name --
         // which also means renaming one album to another's existing name no
         // longer silently overwrites it in the map.
-        for (const album of this.albums.values()) {
+        //
+        // Builds a *new* LomoAlbum object rather than mutating the existing
+        // one in place: screens render album cards through React.memo (to
+        // avoid re-rendering/reloading every visible card on unrelated state
+        // changes), which does a reference-equality check on the `album`
+        // prop. Mutating the same object in place left the reference
+        // unchanged, so a rename never triggered a re-render -- the old name
+        // stayed on screen until something else forced that card to remount.
+        for (const [key, album] of this.albums.entries()) {
             if (String(album.info.id) === String(albumId)) {
-                album.name = newName;
-                if (newFullPath) album.info.name = newFullPath;
+                const newInfo = { ...album.info };
+                if (newFullPath) newInfo.name = newFullPath;
+                const renamedAlbum = new LomoAlbum(newName, newInfo);
+                renamedAlbum.parent = this;
+                this.albums.set(key, renamedAlbum);
                 return true;
             }
         }

@@ -141,6 +141,20 @@ describe('LomoCollection.renameAlbum', () => {
     expect(faces.albums.get('1').name).toBe('bob');
     expect(faces.albums.get('2').name).toBe('bob');
   });
+
+  test('produces a new LomoAlbum object reference rather than mutating the old one', () => {
+    // Regression test: screens render album cards through React.memo, which
+    // does reference-equality checks on the `album` prop. Mutating the same
+    // object in place left stale names on screen after a rename until
+    // something unrelated forced that card to remount.
+    const root = LomoCollection.buildCollections([{ id: '1', name: '/Faces/alice' }]);
+    const before = root.folders.get('Faces').albums.get('1');
+    root.renameAlbum('1', 'alice-renamed');
+    const after = root.folders.get('Faces').albums.get('1');
+    expect(after).not.toBe(before);
+    expect(before.name).toBe('alice'); // the old object is left untouched
+    expect(after.name).toBe('alice-renamed');
+  });
 });
 
 describe('LomoCollection.deleteAlbum', () => {
