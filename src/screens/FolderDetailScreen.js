@@ -290,8 +290,8 @@ export default function FolderDetailScreen() {
         <View style={styles.container}>
             <View style={styles.header}>
                 {selectionMode ? (
-                    <TouchableOpacity onPress={cancelSelection} style={styles.iconButton}>
-                        <Text style={styles.headerActionText}>Cancel</Text>
+                    <TouchableOpacity onPress={cancelSelection} style={styles.cancelButton}>
+                        <Text style={styles.headerActionText} numberOfLines={1}>Cancel</Text>
                     </TouchableOpacity>
                 ) : (
                     <TouchableOpacity onPress={() => navigation.canGoBack() && navigation.goBack()} style={styles.iconButton}>
@@ -401,6 +401,11 @@ const styles = StyleSheet.create({
     iconButton: {
         padding: 5,
         width: 44,
+    },
+    cancelButton: {
+        padding: 5,
+        paddingHorizontal: 8,
+        minWidth: 44,
     },
     title: {
         fontSize: 18,
