@@ -194,7 +194,13 @@ export default function FolderDetailScreen() {
                     >
                         <View style={[styles.faceCoverContainer, { width: FACE_ITEM_WIDTH, height: FACE_ITEM_WIDTH, borderRadius: FACE_ITEM_WIDTH / 2 }, isSelected && styles.faceCoverSelected]}>
                             {coverSource ? (
-                                <Image source={coverSource} style={styles.coverImage} contentFit="cover" cachePolicy="memory-disk" />
+                                <Image
+                                    source={coverSource}
+                                    style={styles.coverImage}
+                                    contentFit="cover"
+                                    cachePolicy="memory-disk"
+                                    recyclingKey={String(album.info.id)}
+                                />
                             ) : (
                                 <View style={[styles.placeholderCover, { backgroundColor: '#F0F5FF' }]}>
                                     <Users color="#007AFF" size={32} strokeWidth={1.5} />

@@ -56,7 +56,7 @@ function buildFacesCollection(people) {
   const root = new LomoCollection('');
   const facesFolder = root.addCollection(new LomoCollection('Faces'));
   for (const p of people) {
-    facesFolder.addAlbum(new LomoAlbum(p.name, { id: p.id, name: `/Faces/${p.name}`, coverImage: '', count: p.count }));
+    facesFolder.addAlbum(new LomoAlbum(p.name, { id: p.id, name: `/Faces/${p.name}`, coverImage: p.coverImage || '', count: p.count }));
   }
   return root;
 }
@@ -227,5 +227,21 @@ describe('FolderDetailScreen - face album batch selection', () => {
     expect(headerTexts.join(' ')).not.toContain('Selected');
     expect(RemoteAlbumService.deleteAlbums).not.toHaveBeenCalled();
     expect(RemoteAlbumService.mergeAlbums).not.toHaveBeenCalled();
+  });
+
+  test('each face cover Image has a stable recyclingKey tied to its album id (prevents FlashList from showing a stale cover after delete shrinks the list)', async () => {
+    RemoteAlbumService.getRootCollection.mockReturnValue(buildFacesCollection([
+      { id: '1', name: 'alice', count: 5, coverImage: 'aaaa' },
+      { id: '2', name: 'bob', count: 2, coverImage: 'bbbb' },
+    ]));
+
+    let component;
+    await act(async () => { component = renderer.create(<FolderDetailScreen />); });
+    await flush();
+
+    const { Image: MockedImage } = require('expo-image');
+    const coverImages = component.root.findAll(n => n.type === MockedImage);
+    expect(coverImages.length).toBe(2);
+    expect(coverImages.map(n => n.props.recyclingKey).sort()).toEqual(['1', '2']);
   });
 });
