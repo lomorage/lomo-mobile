@@ -8,6 +8,7 @@ import MetricsTracker from '../utils/MetricsTracker';
 import * as SecureStore from 'expo-secure-store';
 import { AppState } from 'react-native';
 import TaskSchedulerService from './TaskSchedulerService';
+import ThumbnailLoadTracker from './ThumbnailLoadTracker';
 import { isVideoExtension } from '../utils/mediaType';
 import { parseBackendDate } from '../utils/backendDate';
 
@@ -1029,6 +1030,16 @@ class SyncService {
           const pending = await AssetDBService.getRemoteAssetsWithoutGeo(batchSize);
           console.log(`[SyncService] syncRemoteGPS: retrieved ${pending ? pending.length : 0} pending assets without geo.`);
           if (!pending || pending.length === 0) break;
+
+          // Gallery thumbnails and this GPS backfill both compete for the same
+          // constrained NAS preview-generation capacity. Back off while the user is
+          // actively scrolling/loading thumbnails instead of racing them for it.
+          // Capped so a stuck load-tracker count (e.g. a recycled list item that never
+          // fired onLoad/onError) can't stall this sync forever.
+          const thumbnailWaitDeadline = Date.now() + 20000;
+          while (ThumbnailLoadTracker.isActive() && AppState.currentState === 'active' && Date.now() < thumbnailWaitDeadline) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
 
           const updates = [];
           const noGeoIds = [];

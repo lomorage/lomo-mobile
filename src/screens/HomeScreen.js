@@ -12,6 +12,7 @@ import AutoBackupManager from '../services/AutoBackupManager';
 import AIService from '../services/AIService';
 import { useSettings } from '../context/SettingsContext';
 import GalleryStore from '../store/GalleryStore';
+import ThumbnailLoadTracker from '../services/ThumbnailLoadTracker';
 import MetricsTracker from '../utils/MetricsTracker';
 import { formatBytes, formatSpeed } from '../utils/formatters';
 import { isVideoExtension } from '../utils/mediaType';
@@ -1223,18 +1224,20 @@ export default function HomeScreen({ navigation, route }) {
                             if (asset.status === 'remote') {
                                 loadStartTime.current = Date.now();
                                 activeLoadRef.current++;
+                                ThumbnailLoadTracker.increment();
                             }
                         }}
                         onLoad={() => {
                             if (asset.status === 'remote' && loadStartTime.current > 0) {
                                 activeLoadRef.current--;
+                                ThumbnailLoadTracker.decrement();
                                 const diff = Date.now() - loadStartTime.current;
                                 if (debugMode) console.log(`[Metrics] Remote asset ${asset.hash.substring(0, 8)} loaded in ${diff}ms (Concurrent: ${activeLoadRef.current})`);
                                 loadStartTime.current = 0;
                             }
                         }}
                         onError={(e) => {
-                                if (asset.status === 'remote') activeLoadRef.current--;
+                                if (asset.status === 'remote') { activeLoadRef.current--; ThumbnailLoadTracker.decrement(); }
                                 if (remoteFallbackUri && !useRemoteFallback) {
                                     // Local video thumbnail failed (e.g. WeChat codec) — fall back to remote preview
                                     setUseRemoteFallback(true);
