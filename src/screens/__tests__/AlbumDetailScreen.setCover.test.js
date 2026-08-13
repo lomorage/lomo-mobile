@@ -28,7 +28,7 @@ jest.mock('lucide-react-native', () => {
   const React = require('react');
   const { View } = require('react-native');
   const Icon = () => React.createElement(View);
-  return { PlayCircle: Icon, Heart: Icon, CheckCircle2: Icon, Circle: Icon, MoreVertical: Icon, Trash2: Icon, UserCircle2: Icon };
+  return { PlayCircle: Icon, Heart: Icon, CheckCircle2: Icon, Circle: Icon, MoreVertical: Icon, Trash2: Icon };
 });
 
 const mockNavigation = { navigate: jest.fn(), goBack: jest.fn(), canGoBack: jest.fn(() => true) };
@@ -74,28 +74,20 @@ async function flush() {
   });
 }
 
-function findButtonByText(root, text) {
-  return root.findAll(n => n.type === TouchableOpacity).find(btn => {
-    try {
-      return btn.findAll(c => c.type === Text && c.props.children === text).length > 0;
-    } catch (e) {
-      return false;
-    }
-  });
+function findPhotoTile(root) {
+  return root.findAll(n => n.type === TouchableOpacity && n.props.onLongPress)
+    .find(n => n.props.onPress && n.props.onPress.toString().includes('handleAssetPress'));
 }
 
-async function enterSelectModeAndPickFirstPhoto(root) {
-  const selectBtn = findButtonByText(root, 'Select');
-  act(() => { selectBtn.props.onPress(); });
-  await flush();
-
-  const photoTile = root.findAll(n => n.type === TouchableOpacity && n.props.onPress)
-    .find(n => n.props.onPress.toString().includes('handleAssetPress'));
-  act(() => { photoTile.props.onPress(); });
-  await flush();
+// Long-pressing a photo shows a confirm Alert; simulate the user tapping
+// its "Set as Cover" action button rather than driving Alert UI directly.
+function confirmSetCoverAlert() {
+  const call = Alert.alert.mock.calls.find(c => c[0] === 'Set as Cover');
+  const confirmButton = call[2].find(b => b.text === 'Set as Cover');
+  return act(async () => { await confirmButton.onPress(); });
 }
 
-describe('AlbumDetailScreen - Set as Cover', () => {
+describe('AlbumDetailScreen - Set as Cover (long-press)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockRouteParams = { albumId: '1', albumName: 'alice', fullPath: '/Faces/alice' };
@@ -109,7 +101,7 @@ describe('AlbumDetailScreen - Set as Cover', () => {
     if (Alert.alert.mockRestore) Alert.alert.mockRestore();
   });
 
-  test('downloads the large preview, extracts a matching face, and saves it as the new cover', async () => {
+  test('long-pressing a photo in a face album prompts to confirm, then downloads, extracts, and saves the new cover', async () => {
     AIService.extractBestMatchingFaceCrop.mockResolvedValue({ croppedImageBase64: 'new-crop-b64', similarity: 0.9 });
     RemoteAlbumService.updateAlbumCover.mockResolvedValue(true);
 
@@ -117,11 +109,16 @@ describe('AlbumDetailScreen - Set as Cover', () => {
     await act(async () => { component = renderer.create(<AlbumDetailScreen />); });
     await flush();
 
-    await enterSelectModeAndPickFirstPhoto(component.root);
+    const photoTile = findPhotoTile(component.root);
+    expect(photoTile).toBeDefined();
+    act(() => { photoTile.props.onLongPress(); });
 
-    const setCoverBtn = findButtonByText(component.root, 'Set as Cover');
-    expect(setCoverBtn).toBeDefined();
-    await act(async () => { await setCoverBtn.props.onPress(); });
+    expect(Alert.alert).toHaveBeenCalledWith(
+      'Set as Cover',
+      expect.stringContaining('face'),
+      expect.any(Array)
+    );
+    await confirmSetCoverAlert();
     await flush();
 
     // Large (640px) tier requested, not the default grid thumbnail.
@@ -137,6 +134,24 @@ describe('AlbumDetailScreen - Set as Cover', () => {
     );
   });
 
+  test('still works via long-press when the album has no existing cover yet, as long as the photo has one face', async () => {
+    RemoteAlbumService._findAlbumInTree.mockReturnValue({ info: { id: '1', coverImage: null } });
+    AIService.extractBestMatchingFaceCrop.mockResolvedValue({ croppedImageBase64: 'first-cover-b64', similarity: null });
+    RemoteAlbumService.updateAlbumCover.mockResolvedValue(true);
+
+    let component;
+    await act(async () => { component = renderer.create(<AlbumDetailScreen />); });
+    await flush();
+
+    const photoTile = findPhotoTile(component.root);
+    act(() => { photoTile.props.onLongPress(); });
+    await confirmSetCoverAlert();
+    await flush();
+
+    expect(AIService.extractBestMatchingFaceCrop).toHaveBeenCalledWith('file:///mock-cache/set_cover_hash1.jpg', null);
+    expect(RemoteAlbumService.updateAlbumCover).toHaveBeenCalledWith('1', 'first-cover-b64');
+  });
+
   test('shows an explanatory alert and does not save when no confident face match is found', async () => {
     AIService.extractBestMatchingFaceCrop.mockResolvedValue({ error: 'low_confidence', similarity: 0.1 });
 
@@ -144,27 +159,47 @@ describe('AlbumDetailScreen - Set as Cover', () => {
     await act(async () => { component = renderer.create(<AlbumDetailScreen />); });
     await flush();
 
-    await enterSelectModeAndPickFirstPhoto(component.root);
-
-    const setCoverBtn = findButtonByText(component.root, 'Set as Cover');
-    await act(async () => { await setCoverBtn.props.onPress(); });
+    const photoTile = findPhotoTile(component.root);
+    act(() => { photoTile.props.onLongPress(); });
+    await confirmSetCoverAlert();
     await flush();
 
     expect(RemoteAlbumService.updateAlbumCover).not.toHaveBeenCalled();
     expect(Alert.alert).toHaveBeenCalledWith('Cannot Set Cover', expect.stringContaining("doesn't look like a confident match"));
   });
 
-  test('does not offer "Set as Cover" for a non-face album', async () => {
+  test('does not offer "Set as Cover" long-press for a non-face album', async () => {
     mockRouteParams = { albumId: '2', albumName: 'Vacation', fullPath: 'Vacation' };
 
     let component;
     await act(async () => { component = renderer.create(<AlbumDetailScreen />); });
     await flush();
 
-    const selectBtn = findButtonByText(component.root, 'Select');
+    const photoTile = component.root.findAll(n => n.type === TouchableOpacity && n.props.onPress)
+      .find(n => n.props.onPress.toString().includes('handleAssetPress'));
+    act(() => { photoTile.props.onLongPress(); });
+
+    expect(Alert.alert).not.toHaveBeenCalled();
+  });
+
+  test('long-press does nothing while already in Select mode', async () => {
+    let component;
+    await act(async () => { component = renderer.create(<AlbumDetailScreen />); });
+    await flush();
+
+    const selectBtn = component.root.findAll(n => n.type === TouchableOpacity).find(btn => {
+      try {
+        return btn.findAll(c => c.type === Text && c.props.children === 'Select').length > 0;
+      } catch (e) {
+        return false;
+      }
+    });
     act(() => { selectBtn.props.onPress(); });
     await flush();
 
-    expect(findButtonByText(component.root, 'Set as Cover')).toBeUndefined();
+    const photoTile = findPhotoTile(component.root);
+    act(() => { photoTile.props.onLongPress(); });
+
+    expect(Alert.alert).not.toHaveBeenCalled();
   });
 });

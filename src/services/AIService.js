@@ -50,6 +50,16 @@ class AIService {
     this.prewarmPromise = null;
     this.faceAlbumCache = null; // [ { id, title, coverEmbedding, coverImageBase64 } ]
     this.faceDetector = new RNMLKitFaceDetector({ performanceMode: 'accurate', minFaceSize: 0.1, landmarkMode: true });
+    // minFaceSize: 0.1 (face must be >=10% of image width) is deliberately
+    // strict for the automatic clustering pipeline, to keep small background
+    // bystanders out of face albums. That same strictness works against a
+    // user who explicitly long-pressed one specific photo to set as a cover
+    // -- plenty of normal photos don't have the subject filling 10% of the
+    // frame, and "no face detected" on an obviously-has-a-face photo was the
+    // result. This second detector is only used for that explicit, one-photo
+    // flow, where there's no "is this really the subject" ambiguity to guard
+    // against.
+    this.manualPickFaceDetector = new RNMLKitFaceDetector({ performanceMode: 'accurate', minFaceSize: 0.02, landmarkMode: true });
     // Set to true to run face detection WITHOUT writing to DB or server (for debugging)
     this.faceDryRun = true;
   }
@@ -647,54 +657,80 @@ class AIService {
   }
 
   /**
-   * Given a photo and a face album's current cover image, detects every face
-   * in the photo and returns the crop of whichever one best matches the
-   * album's existing identity (by embedding similarity against the current
-   * cover) -- lets a user pick "one of the photos already in this person's
-   * album" as a replacement cover without having to know/tap which face in a
-   * multi-person photo is actually them.
+   * Given a photo a user explicitly long-pressed to use as a face album's
+   * cover, detects every face in it and decides which crop to use:
+   *  - Exactly one face: no ambiguity, use it directly. No comparison
+   *    against anything -- in particular, this does NOT require (or trust)
+   *    the album's current cover, since the whole point of this action is
+   *    often to *fix* a cover that's already showing the wrong person; using
+   *    a possibly-wrong cover as the reference would make a bad cover
+   *    permanently unfixable.
+   *  - Multiple faces: genuinely ambiguous which one is the album's person,
+   *    so fall back to matching each detected face's embedding against the
+   *    album's current cover and picking the closest one.
+   * Uses a separate, more lenient face detector than the automatic
+   * clustering pipeline: minFaceSize there is deliberately strict to keep
+   * small background bystanders out of face albums, but that same
+   * strictness just produces "no face detected" on a normal photo where the
+   * subject doesn't fill 10% of the frame -- a concern that doesn't apply
+   * when the user has already explicitly picked this one photo.
    * @param {string} imageUri - file://, content://, or a downloaded remote preview path
-   * @param {string} currentCoverImageBase64 - the album's existing CoverImage, used as the reference identity
-   * @returns {Promise<{croppedImageBase64: string, similarity: number} | {error: string, similarity?: number}>}
+   * @param {string} currentCoverImageBase64 - the album's existing CoverImage; only consulted if the photo has multiple faces
+   * @returns {Promise<{croppedImageBase64: string, similarity: number|null} | {error: string, similarity?: number}>}
    */
   async extractBestMatchingFaceCrop(imageUri, currentCoverImageBase64) {
-    if (!currentCoverImageBase64) {
-      return { error: 'no_reference_cover' };
-    }
-
-    const referenceEmbedding = await this._computeCoverEmbedding(currentCoverImageBase64, `ref_${Date.now()}`);
-    if (!referenceEmbedding) {
-      return { error: 'reference_embedding_failed' };
-    }
-
-    let faces = [];
+    let rawFaces = [];
     try {
-      const faceResponse = await this.faceDetector.detectFaces(imageUri);
-      faces = faceResponse?.faces || [];
+      const faceResponse = await this.manualPickFaceDetector.detectFaces(imageUri);
+      rawFaces = faceResponse?.faces || [];
     } catch (e) {
       console.warn('[AIService] Face detection failed while picking a new cover:', e.message);
       return { error: 'detection_failed' };
     }
-    if (faces.length === 0) {
+    if (rawFaces.length === 0) {
       return { error: 'no_faces_found' };
     }
 
-    let best = null;
-    for (const face of faces) {
+    const candidates = [];
+    for (const face of rawFaces) {
       const boundingBox = buildFaceBoundingBox(face);
       if (isFaceTooSmall(boundingBox)) continue;
       attachEyeLandmarks(boundingBox, face);
       try {
         const faceResultObj = await ExpoLomoHasher.encodeFaceEmbeddingAsync(imageUri, boundingBox, 'w600k_r50.onnx');
-        if (faceResultObj && faceResultObj !== 'failed' && faceResultObj.embedding && faceResultObj.croppedImage) {
-          const vec = base64ToFloat32Array(faceResultObj.embedding);
-          const similarity = cosineSimilarity(vec, referenceEmbedding);
-          if (!best || similarity > best.similarity) {
-            best = { croppedImageBase64: faceResultObj.croppedImage, similarity };
-          }
+        if (faceResultObj && faceResultObj !== 'failed' && faceResultObj.croppedImage) {
+          candidates.push({
+            croppedImageBase64: faceResultObj.croppedImage,
+            embedding: faceResultObj.embedding ? base64ToFloat32Array(faceResultObj.embedding) : null,
+          });
         }
       } catch (e) {
         console.warn('[AIService] Failed to embed a candidate face for cover extraction:', e.message);
+      }
+    }
+
+    if (candidates.length === 0) {
+      return { error: 'no_valid_faces' };
+    }
+    if (candidates.length === 1) {
+      return { croppedImageBase64: candidates[0].croppedImageBase64, similarity: null };
+    }
+
+    // Multiple faces: only now do we need the current cover, to decide which one.
+    if (!currentCoverImageBase64) {
+      return { error: 'multiple_faces_no_reference' };
+    }
+    const referenceEmbedding = await this._computeCoverEmbedding(currentCoverImageBase64, `ref_${Date.now()}`);
+    if (!referenceEmbedding) {
+      return { error: 'reference_embedding_failed' };
+    }
+
+    let best = null;
+    for (const candidate of candidates) {
+      if (!candidate.embedding) continue;
+      const similarity = cosineSimilarity(candidate.embedding, referenceEmbedding);
+      if (!best || similarity > best.similarity) {
+        best = { croppedImageBase64: candidate.croppedImageBase64, similarity };
       }
     }
 

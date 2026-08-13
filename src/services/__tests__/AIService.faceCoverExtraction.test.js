@@ -54,6 +54,10 @@ jest.mock('@infinitered/react-native-mlkit-text-recognition', () => ({
   recognizeText: jest.fn(),
 }));
 jest.mock('@infinitered/react-native-mlkit-face-detection', () => ({
+  // Each `new RNMLKitFaceDetector(...)` call gets its own independent
+  // detectFaces mock -- AIService constructs two instances (the strict
+  // clustering one as `faceDetector`, and a lenient one as
+  // `manualPickFaceDetector`), so tests can control each separately.
   RNMLKitFaceDetector: jest.fn().mockImplementation(() => ({
     detectFaces: jest.fn().mockResolvedValue({ faces: [] }),
   })),
@@ -95,72 +99,106 @@ describe('AIService.extractBestMatchingFaceCrop', () => {
     jest.clearAllMocks();
   });
 
-  test('returns an error without doing any work when there is no reference cover', async () => {
-    const result = await AIService.extractBestMatchingFaceCrop('file://photo.jpg', null);
-    expect(result).toEqual({ error: 'no_reference_cover' });
-    expect(ExpoLomoHasher.encodeFaceEmbeddingAsync).not.toHaveBeenCalled();
-  });
-
-  test('returns an error when the reference cover itself fails to embed', async () => {
-    ExpoLomoHasher.encodeFaceEmbeddingAsync.mockResolvedValue({ embedding: null });
+  test('returns detection_failed when the lenient (manual-pick) detector throws', async () => {
+    AIService.manualPickFaceDetector.detectFaces.mockRejectedValueOnce(new Error('native crash'));
     const result = await AIService.extractBestMatchingFaceCrop('file://photo.jpg', 'cover-b64');
-    expect(result).toEqual({ error: 'reference_embedding_failed' });
+    expect(result).toEqual({ error: 'detection_failed' });
   });
 
-  test('returns an error when no faces are found in the candidate photo', async () => {
-    ExpoLomoHasher.encodeFaceEmbeddingAsync.mockResolvedValue({ embedding: b64OfVector([1, 0, 0]) });
-    AIService.faceDetector.detectFaces.mockResolvedValueOnce({ faces: [] });
-
+  test('returns no_faces_found when the lenient detector finds nothing', async () => {
+    AIService.manualPickFaceDetector.detectFaces.mockResolvedValueOnce({ faces: [] });
     const result = await AIService.extractBestMatchingFaceCrop('file://photo.jpg', 'cover-b64');
     expect(result).toEqual({ error: 'no_faces_found' });
   });
 
-  test('returns the crop when a single detected face closely matches the reference', async () => {
-    ExpoLomoHasher.encodeFaceEmbeddingAsync
-      .mockResolvedValueOnce({ embedding: b64OfVector([1, 0, 0]) }) // reference cover embedding
-      .mockResolvedValueOnce({ embedding: b64OfVector([1, 0, 0]), croppedImage: 'matched-crop-b64' }); // candidate face
-    AIService.faceDetector.detectFaces
-      .mockResolvedValueOnce({ faces: [] }) // landmark-detection call inside the reference-cover embedding step
-      .mockResolvedValueOnce({ faces: [bigFace()] }); // the actual candidate photo
+  test('uses the lenient manualPickFaceDetector, not the strict clustering one, on the candidate photo', async () => {
+    AIService.manualPickFaceDetector.detectFaces.mockResolvedValueOnce({ faces: [bigFace()] });
+    ExpoLomoHasher.encodeFaceEmbeddingAsync.mockResolvedValueOnce({ embedding: b64OfVector([1, 0, 0]), croppedImage: 'solo-crop-b64' });
 
-    const result = await AIService.extractBestMatchingFaceCrop('file://photo.jpg', 'cover-b64');
-    expect(result.croppedImageBase64).toBe('matched-crop-b64');
-    expect(result.similarity).toBeCloseTo(1, 5);
+    await AIService.extractBestMatchingFaceCrop('file://photo.jpg', 'cover-b64');
+
+    expect(AIService.manualPickFaceDetector.detectFaces).toHaveBeenCalledWith('file://photo.jpg');
+    expect(AIService.faceDetector.detectFaces).not.toHaveBeenCalled();
   });
 
-  test('returns low_confidence when the best candidate face does not resemble the reference', async () => {
-    ExpoLomoHasher.encodeFaceEmbeddingAsync
-      .mockResolvedValueOnce({ embedding: b64OfVector([1, 0, 0]) }) // reference
-      .mockResolvedValueOnce({ embedding: b64OfVector([0, 1, 0]), croppedImage: 'unrelated-crop-b64' }); // orthogonal, unrelated face
-    AIService.faceDetector.detectFaces
-      .mockResolvedValueOnce({ faces: [] }) // reference-cover landmark step
-      .mockResolvedValueOnce({ faces: [bigFace()] }); // candidate photo
+  test('a single detected face is used directly, with no comparison against the current cover', async () => {
+    AIService.manualPickFaceDetector.detectFaces.mockResolvedValueOnce({ faces: [bigFace()] });
+    ExpoLomoHasher.encodeFaceEmbeddingAsync.mockResolvedValueOnce({ embedding: b64OfVector([1, 0, 0]), croppedImage: 'solo-crop-b64' });
 
-    const result = await AIService.extractBestMatchingFaceCrop('file://photo.jpg', 'cover-b64');
-    expect(result.error).toBe('low_confidence');
-    expect(result.similarity).toBeCloseTo(0, 5);
+    // No current cover at all -- must still succeed, since there's no ambiguity to resolve.
+    const result = await AIService.extractBestMatchingFaceCrop('file://photo.jpg', null);
+
+    expect(result).toEqual({ croppedImageBase64: 'solo-crop-b64', similarity: null });
+    // _computeCoverEmbedding (which needs the reference cover) must never run.
+    expect(AIService.faceDetector.detectFaces).not.toHaveBeenCalled();
   });
 
-  test('with multiple faces in the photo, picks the crop of whichever one best matches the reference', async () => {
+  test('a single detected face succeeds even when the current cover would have been a bad reference', async () => {
+    // Regression test: the whole point of picking a new cover is sometimes to
+    // *fix* a cover that's showing the wrong person. Requiring the new photo
+    // to match that wrong cover would make it permanently unfixable.
+    AIService.manualPickFaceDetector.detectFaces.mockResolvedValueOnce({ faces: [bigFace()] });
+    ExpoLomoHasher.encodeFaceEmbeddingAsync.mockResolvedValueOnce({ embedding: b64OfVector([1, 0, 0]), croppedImage: 'the-real-person-crop-b64' });
+
+    const result = await AIService.extractBestMatchingFaceCrop('file://photo.jpg', 'wrong-person-cover-b64');
+
+    expect(result.croppedImageBase64).toBe('the-real-person-crop-b64');
+    expect(ExpoLomoHasher.encodeFaceEmbeddingAsync).toHaveBeenCalledTimes(1); // only the candidate face, never the reference cover
+  });
+
+  test('multiple faces: returns multiple_faces_no_reference when there is no current cover to disambiguate with', async () => {
+    AIService.manualPickFaceDetector.detectFaces.mockResolvedValueOnce({ faces: [bigFace(), bigFace()] });
     ExpoLomoHasher.encodeFaceEmbeddingAsync
-      .mockResolvedValueOnce({ embedding: b64OfVector([1, 0, 0]) }) // reference
+      .mockResolvedValueOnce({ embedding: b64OfVector([1, 0, 0]), croppedImage: 'a-crop-b64' })
+      .mockResolvedValueOnce({ embedding: b64OfVector([0, 1, 0]), croppedImage: 'b-crop-b64' });
+
+    const result = await AIService.extractBestMatchingFaceCrop('file://photo.jpg', null);
+    expect(result).toEqual({ error: 'multiple_faces_no_reference' });
+  });
+
+  test('multiple faces: picks whichever detected face best matches the current cover', async () => {
+    AIService.manualPickFaceDetector.detectFaces.mockResolvedValueOnce({ faces: [bigFace(), bigFace()] });
+    ExpoLomoHasher.encodeFaceEmbeddingAsync
       .mockResolvedValueOnce({ embedding: b64OfVector([0, 1, 0]), croppedImage: 'stranger-crop-b64' }) // face 1: unrelated
-      .mockResolvedValueOnce({ embedding: b64OfVector([1, 0, 0]), croppedImage: 'correct-person-crop-b64' }); // face 2: the actual match
-    AIService.faceDetector.detectFaces
-      .mockResolvedValueOnce({ faces: [] }) // reference-cover landmark step
-      .mockResolvedValueOnce({ faces: [bigFace(), bigFace()] }); // candidate photo
+      .mockResolvedValueOnce({ embedding: b64OfVector([1, 0, 0]), croppedImage: 'correct-person-crop-b64' }) // face 2: the match
+      .mockResolvedValueOnce({ embedding: b64OfVector([1, 0, 0]) }); // reference cover embedding (uses the strict faceDetector)
+    AIService.faceDetector.detectFaces.mockResolvedValueOnce({ faces: [] }); // reference-cover landmark step
 
     const result = await AIService.extractBestMatchingFaceCrop('file://photo.jpg', 'cover-b64');
     expect(result.croppedImageBase64).toBe('correct-person-crop-b64');
+    expect(result.similarity).toBeCloseTo(1, 5);
   });
 
-  test('returns detection_failed when face detection throws for the candidate photo', async () => {
-    ExpoLomoHasher.encodeFaceEmbeddingAsync.mockResolvedValue({ embedding: b64OfVector([1, 0, 0]) });
-    AIService.faceDetector.detectFaces
-      .mockResolvedValueOnce({ faces: [] }) // reference-cover landmark step succeeds
-      .mockRejectedValueOnce(new Error('native crash')); // candidate photo detection fails
+  test('multiple faces: returns low_confidence when the best candidate does not resemble the reference cover', async () => {
+    AIService.manualPickFaceDetector.detectFaces.mockResolvedValueOnce({ faces: [bigFace(), bigFace()] });
+    ExpoLomoHasher.encodeFaceEmbeddingAsync
+      .mockResolvedValueOnce({ embedding: b64OfVector([0, 1, 0]), croppedImage: 'a-crop-b64' })
+      .mockResolvedValueOnce({ embedding: b64OfVector([0, 0, 1]), croppedImage: 'b-crop-b64' })
+      .mockResolvedValueOnce({ embedding: b64OfVector([1, 0, 0]) }); // reference cover, orthogonal to both candidates
+    AIService.faceDetector.detectFaces.mockResolvedValueOnce({ faces: [] });
 
     const result = await AIService.extractBestMatchingFaceCrop('file://photo.jpg', 'cover-b64');
-    expect(result).toEqual({ error: 'detection_failed' });
+    expect(result.error).toBe('low_confidence');
+  });
+
+  test('multiple faces: returns reference_embedding_failed when the current cover itself cannot be embedded', async () => {
+    AIService.manualPickFaceDetector.detectFaces.mockResolvedValueOnce({ faces: [bigFace(), bigFace()] });
+    ExpoLomoHasher.encodeFaceEmbeddingAsync
+      .mockResolvedValueOnce({ embedding: b64OfVector([0, 1, 0]), croppedImage: 'a-crop-b64' })
+      .mockResolvedValueOnce({ embedding: b64OfVector([1, 0, 0]), croppedImage: 'b-crop-b64' })
+      .mockResolvedValueOnce({ embedding: null }); // reference cover fails to embed
+    AIService.faceDetector.detectFaces.mockResolvedValueOnce({ faces: [] });
+
+    const result = await AIService.extractBestMatchingFaceCrop('file://photo.jpg', 'cover-b64');
+    expect(result).toEqual({ error: 'reference_embedding_failed' });
+  });
+
+  test('returns no_valid_faces when every detected face is filtered out as too small', async () => {
+    const tinyFace = { frame: { origin: { x: 0, y: 0 }, size: { x: 10, y: 10 } } };
+    AIService.manualPickFaceDetector.detectFaces.mockResolvedValueOnce({ faces: [tinyFace] });
+
+    const result = await AIService.extractBestMatchingFaceCrop('file://photo.jpg', 'cover-b64');
+    expect(result).toEqual({ error: 'no_valid_faces' });
+    expect(ExpoLomoHasher.encodeFaceEmbeddingAsync).not.toHaveBeenCalled();
   });
 });

@@ -4,7 +4,7 @@ import { Image } from 'expo-image';
 import * as FileSystem from 'expo-file-system/legacy';
 import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/native';
 import { FlashList } from '@shopify/flash-list';
-import { PlayCircle, Heart, CheckCircle2, Circle, MoreVertical, Trash2, UserCircle2 } from 'lucide-react-native';
+import { PlayCircle, Heart, CheckCircle2, Circle, MoreVertical, Trash2 } from 'lucide-react-native';
 import RemoteAlbumService from '../services/RemoteAlbumService';
 import NetworkQueue from '../services/NetworkQueue';
 import AssetDBService from '../services/AssetDBService';
@@ -134,6 +134,18 @@ export default function AlbumDetailScreen() {
         }
     };
 
+    const handleAssetLongPress = (item) => {
+        if (!isFaceAlbum || selectMode || item.mediaType === 'video') return;
+        Alert.alert(
+            'Set as Cover',
+            "Use this photo's face as the album cover?",
+            [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Set as Cover', onPress: () => handleSetAsCover(item) },
+            ]
+        );
+    };
+
     const handleBatchRemove = () => {
         if (selectedHashes.size === 0) return;
         Alert.alert(
@@ -159,18 +171,15 @@ export default function AlbumDetailScreen() {
         );
     };
 
-    const handleSetAsCover = async () => {
-        if (selectedHashes.size !== 1) return;
-        const hash = Array.from(selectedHashes)[0];
-        const selectedAsset = assets.find(a => a.hash === hash);
+    const handleSetAsCover = async (selectedAsset) => {
         if (!selectedAsset) return;
+        const hash = selectedAsset.hash;
 
+        // Only needed to disambiguate when the photo has multiple faces --
+        // a single-face photo is used as-is, even if there's no cover yet
+        // (or the existing cover shows the wrong person).
         const currentCover = RemoteAlbumService._findAlbumInTree(albumId);
         const currentCoverImage = currentCover && currentCover.info.coverImage;
-        if (!currentCoverImage) {
-            Alert.alert('Cannot Set Cover', 'This album has no existing cover to match faces against yet.');
-            return;
-        }
 
         setSettingCover(true);
         const tempUri = `${FileSystem.cacheDirectory}set_cover_${hash}.jpg`;
@@ -193,6 +202,7 @@ export default function AlbumDetailScreen() {
                     detection_failed: 'Face detection failed on this photo. Try a different one.',
                     reference_embedding_failed: "Couldn't read this album's current cover to compare against.",
                     no_valid_faces: 'No usable face was found in this photo.',
+                    multiple_faces_no_reference: 'This photo has multiple faces, and there is no existing cover to tell which one to use. Pick a photo with just one face, or set a cover first.',
                 };
                 Alert.alert('Cannot Set Cover', messages[result.error] || 'Something went wrong picking a face from this photo.');
                 return;
@@ -201,8 +211,6 @@ export default function AlbumDetailScreen() {
             const ok = await RemoteAlbumService.updateAlbumCover(albumId, result.croppedImageBase64);
             if (ok) {
                 DeviceEventEmitter.emit('albumRenamed', { albumId }); // reuses the same "refresh album lists" listeners
-                setSelectedHashes(new Set());
-                setSelectMode(false);
             } else {
                 Alert.alert('Cannot Set Cover', 'Could not save the new cover. Please try again.');
             }
@@ -275,9 +283,10 @@ export default function AlbumDetailScreen() {
     const renderItem = ({ item, index }) => {
         const isVideo = item.mediaType === 'video';
         return (
-            <TouchableOpacity 
-                activeOpacity={0.8} 
+            <TouchableOpacity
+                activeOpacity={0.8}
                 onPress={() => handleAssetPress(item, index)}
+                onLongPress={() => handleAssetLongPress(item)}
                 style={styles.itemContainer}
             >
                 <Image
@@ -372,16 +381,6 @@ export default function AlbumDetailScreen() {
 
             {selectMode && (
                 <View style={styles.bottomToolbar}>
-                    {isFaceAlbum && (
-                        <TouchableOpacity
-                            style={[styles.toolbarBtn, selectedHashes.size !== 1 && { opacity: 0.5 }]}
-                            disabled={selectedHashes.size !== 1 || settingCover}
-                            onPress={handleSetAsCover}
-                        >
-                            <UserCircle2 color="#007AFF" size={24} />
-                            <Text style={[styles.toolbarBtnText, { color: '#007AFF' }]}>Set as Cover</Text>
-                        </TouchableOpacity>
-                    )}
                     <TouchableOpacity
                         style={[styles.toolbarBtn, selectedHashes.size === 0 && { opacity: 0.5 }]}
                         disabled={selectedHashes.size === 0}
