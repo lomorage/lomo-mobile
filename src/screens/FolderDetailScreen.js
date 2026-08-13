@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Dimensions, DeviceEventEmitter, Alert, Modal, TextInput, KeyboardAvoidingView, Platform, ActivityIndicator } from 'react-native';
 import { Image } from 'expo-image';
+import Animated, { FadeIn, FadeOut, LinearTransition } from 'react-native-reanimated';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { FlashList } from '@shopify/flash-list';
 import { Folder, Users, Image as ImageIcon, CheckCircle, Circle, Trash2, Combine } from 'lucide-react-native';
@@ -25,47 +26,52 @@ const FaceCard = React.memo(function FaceCard({ album, isSelected, selectionMode
     }, [album.info.coverImage]);
 
     return (
-        <TouchableOpacity
-            style={[styles.faceCard, { width: itemWidth }]}
-            onPress={() => onPress(album)}
-            onLongPress={() => onLongPress(album)}
-            delayLongPress={500}
-        >
-            {/* borderWidth is always 3 (never 0) and only borderColor toggles --
-                changing the container's box size when selection toggles was
-                forcing the native image layer to treat the cover as needing a
-                fresh decode at a new target size, which is what was leaving
-                cards blank after select-then-deselect. Keeping the box size
-                constant avoids that entirely. */}
-            <View style={[styles.faceCoverContainer, { width: itemWidth, height: itemWidth, borderRadius: itemWidth / 2, borderWidth: 3, borderColor: isSelected ? '#007AFF' : 'transparent' }]}>
-                {coverSource ? (
-                    <Image
-                        source={coverSource}
-                        style={styles.coverImage}
-                        contentFit="cover"
-                        // Covers are base64 data: URIs embedded directly in the /album
-                        // response, not fetched over the network -- disk-caching them
-                        // (memory-disk) has no benefit and was intermittently leaving
-                        // some covers stuck blank. Memory-only cache is enough to avoid
-                        // re-decoding the same string on every re-render.
-                        cachePolicy="memory"
-                        recyclingKey={String(album.info.id)}
-                    />
-                ) : (
-                    <View style={[styles.placeholderCover, { backgroundColor: '#F0F5FF' }]}>
-                        <Users color="#007AFF" size={32} strokeWidth={1.5} />
-                    </View>
-                )}
-                {selectionMode && (
-                    <View style={styles.selectionBadge}>
-                        {isSelected
-                            ? <CheckCircle color="#4DA3FF" size={22} strokeWidth={2.5} />
-                            : <Circle color="#fff" size={22} strokeWidth={2} />}
-                    </View>
-                )}
-            </View>
-            <Text style={styles.faceTitle} numberOfLines={1}>{album.name}</Text>
-        </TouchableOpacity>
+        // Animated.View owns layout/entering/exiting so deleting or merging
+        // people animates: removed cards fade out, survivors slide smoothly
+        // into the gap left behind (FlashList v2 supports this natively --
+        // see https://shopify.github.io/flash-list/docs/guides/layout-animation).
+        <Animated.View layout={LinearTransition} entering={FadeIn} exiting={FadeOut.duration(200)} style={[styles.faceCard, { width: itemWidth }]}>
+            <TouchableOpacity
+                onPress={() => onPress(album)}
+                onLongPress={() => onLongPress(album)}
+                delayLongPress={500}
+            >
+                {/* borderWidth is always 3 (never 0) and only borderColor toggles --
+                    changing the container's box size when selection toggles was
+                    forcing the native image layer to treat the cover as needing a
+                    fresh decode at a new target size, which is what was leaving
+                    cards blank after select-then-deselect. Keeping the box size
+                    constant avoids that entirely. */}
+                <View style={[styles.faceCoverContainer, { width: itemWidth, height: itemWidth, borderRadius: itemWidth / 2, borderWidth: 3, borderColor: isSelected ? '#007AFF' : 'transparent' }]}>
+                    {coverSource ? (
+                        <Image
+                            source={coverSource}
+                            style={styles.coverImage}
+                            contentFit="cover"
+                            // Covers are base64 data: URIs embedded directly in the /album
+                            // response, not fetched over the network -- disk-caching them
+                            // (memory-disk) has no benefit and was intermittently leaving
+                            // some covers stuck blank. Memory-only cache is enough to avoid
+                            // re-decoding the same string on every re-render.
+                            cachePolicy="memory"
+                            recyclingKey={String(album.info.id)}
+                        />
+                    ) : (
+                        <View style={[styles.placeholderCover, { backgroundColor: '#F0F5FF' }]}>
+                            <Users color="#007AFF" size={32} strokeWidth={1.5} />
+                        </View>
+                    )}
+                    {selectionMode && (
+                        <View style={styles.selectionBadge}>
+                            {isSelected
+                                ? <CheckCircle color="#4DA3FF" size={22} strokeWidth={2.5} />
+                                : <Circle color="#fff" size={22} strokeWidth={2} />}
+                        </View>
+                    )}
+                </View>
+                <Text style={styles.faceTitle} numberOfLines={1}>{album.name}</Text>
+            </TouchableOpacity>
+        </Animated.View>
     );
 });
 
