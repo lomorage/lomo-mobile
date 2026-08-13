@@ -233,10 +233,17 @@ export default function FolderDetailScreen() {
         setMergePrompt({ visible: false, text: '' });
         if (!title) return;
 
+        // The server sets the survivor's Title to exactly what we send here --
+        // send the bare leaf name and it overwrites the full path (e.g.
+        // "/Faces/Jeromy" -> "Jeromy"), which knocks the merged album out of
+        // its folder and dumps it at the root of Albums. Keep the folder
+        // prefix so it stays where it started.
+        const fullTitle = folderPath ? `/${folderPath}/${title}` : title;
+
         setBusy(true);
         try {
             const ids = Array.from(selectedIds);
-            const ok = await RemoteAlbumService.mergeAlbums(ids, title);
+            const ok = await RemoteAlbumService.mergeAlbums(ids, fullTitle);
             if (ok) {
                 await RemoteAlbumService.getAlbumsHierarchy({ priority: 1, groupId: 'Albums' });
                 loadFolderItems();

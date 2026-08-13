@@ -211,7 +211,10 @@ describe('FolderDetailScreen - face album batch selection', () => {
     await act(async () => { await submitBtn.props.onPress(); });
     await flush();
 
-    expect(RemoteAlbumService.mergeAlbums).toHaveBeenCalledWith(['1', '2'], 'alice');
+    // Must send the full path, not just the bare leaf name: the server sets
+    // the survivor's Title to exactly what's sent, so a bare name would strip
+    // the /Faces/ prefix and dump the merged album at the root of Albums.
+    expect(RemoteAlbumService.mergeAlbums).toHaveBeenCalledWith(['1', '2'], '/Faces/alice');
     expect(RemoteAlbumService.getAlbumsHierarchy).toHaveBeenCalled();
   });
 
