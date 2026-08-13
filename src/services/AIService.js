@@ -965,6 +965,20 @@ class AIService {
               }
             }
 
+            // Oriented (EXIF-corrected) dimensions, lazily computed at most once per
+            // asset and shared between OCR (C) and face clustering (D) below -- both
+            // need the image's actual displayed width/height, not the raw sensor
+            // values, since MLKit's face detector reports coordinates in oriented
+            // space (this matters most for portrait photos on Android, where the raw
+            // width/height are swapped relative to how the photo is actually shown).
+            let orientedDims = null;
+            const getOrientedDimsOnce = async () => {
+              if (!orientedDims) {
+                orientedDims = await this._getOrientedDimensions(asset.id, localPath, imgWidth, imgHeight);
+              }
+              return orientedDims;
+            };
+
             // C. Calculate OCR if missing
             if (asset.ocrText === null) {
               try {
@@ -972,8 +986,7 @@ class AIService {
                 const text = result && result.text ? result.text.trim() : "none";
                 await AssetDBService.saveAssetOCR(asset.id, text || "none");
                 if (result && result.blocks) {
-                   // Get EXIF-corrected oriented dimensions for accurate normalization
-                   const oriented = await this._getOrientedDimensions(asset.id, localPath, imgWidth, imgHeight);
+                   const oriented = await getOrientedDimsOnce();
                    const ocrWidth = oriented.w || imgWidth;
                    const ocrHeight = oriented.h || imgHeight;
                    console.log(`[AIService] Background OCR oriented dims: ${ocrWidth}x${ocrHeight}`);
@@ -1009,11 +1022,13 @@ class AIService {
 
                   const url = AuthService.getServerUrl();
                   const token = AuthService.getToken();
+                  const orientedForFaces = await getOrientedDimsOnce();
+                  const faceCheckWidth = orientedForFaces.w || imgWidth;
 
                   for (const face of faces) {
                     const boundingBox = buildFaceBoundingBox(face);
 
-                    if (isFaceTooSmall(boundingBox, imgWidth)) {
+                    if (isFaceTooSmall(boundingBox, faceCheckWidth)) {
                       continue;
                     }
 
