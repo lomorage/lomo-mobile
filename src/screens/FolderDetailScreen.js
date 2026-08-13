@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Dimensions, DeviceEventEmitter, Alert, Modal, TextInput, KeyboardAvoidingView, Platform, ActivityIndicator } from 'react-native';
 import { Image } from 'expo-image';
-import Animated, { FadeIn, FadeOut, LinearTransition } from 'react-native-reanimated';
+import Animated, { LinearTransition } from 'react-native-reanimated';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { FlashList } from '@shopify/flash-list';
 import { Folder, Users, Image as ImageIcon, CheckCircle, Circle, Trash2, Combine } from 'lucide-react-native';
@@ -26,11 +26,14 @@ const FaceCard = React.memo(function FaceCard({ album, isSelected, selectionMode
     }, [album.info.coverImage]);
 
     return (
-        // Animated.View owns layout/entering/exiting so deleting or merging
-        // people animates: removed cards fade out, survivors slide smoothly
-        // into the gap left behind (FlashList v2 supports this natively --
-        // see https://shopify.github.io/flash-list/docs/guides/layout-animation).
-        <Animated.View layout={LinearTransition} entering={FadeIn} exiting={FadeOut.duration(200)} style={[styles.faceCard, { width: itemWidth }]}>
+        // Only `layout` here, not `entering`/`exiting`: FlashList virtualizes by
+        // actually mounting/unmounting cards as they scroll in and out of view,
+        // so entering/exiting fired on every scroll (not just real deletes),
+        // producing a fade ghosting effect while scrolling fast. `layout` only
+        // animates a card that's already mounted sliding to a new position,
+        // which is what actually happens on delete/merge (survivors reflow
+        // into the gap) without touching normal scroll-driven mount/unmount.
+        <Animated.View layout={LinearTransition} style={[styles.faceCard, { width: itemWidth }]}>
             <TouchableOpacity
                 onPress={() => onPress(album)}
                 onLongPress={() => onLongPress(album)}
