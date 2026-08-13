@@ -6,7 +6,7 @@ import { LomoCollection, LomoAlbum } from '../../models/LomoCollection';
 jest.mock('expo-image', () => {
   const React = require('react');
   const { View } = require('react-native');
-  return { Image: (props) => React.createElement(View, props) };
+  return { Image: jest.fn((props) => React.createElement(View, props)) };
 });
 
 jest.mock('@shopify/flash-list', () => {
@@ -243,5 +243,42 @@ describe('FolderDetailScreen - face album batch selection', () => {
     const coverImages = component.root.findAll(n => n.type === MockedImage);
     expect(coverImages.length).toBe(2);
     expect(coverImages.map(n => n.props.recyclingKey).sort()).toEqual(['1', '2']);
+  });
+
+  test('selecting an additional card (while already in selection mode) does not re-render or reload the covers of other visible cards', async () => {
+    RemoteAlbumService.getRootCollection.mockReturnValue(buildFacesCollection([
+      { id: '1', name: 'alice', count: 5, coverImage: 'aaaa' },
+      { id: '2', name: 'bob', count: 2, coverImage: 'bbbb' },
+      { id: '3', name: 'carol', count: 1, coverImage: 'cccc' },
+    ]));
+
+    const { Image: MockedImage } = require('expo-image');
+
+    let component;
+    await act(async () => { component = renderer.create(<FolderDetailScreen />); });
+    await flush();
+
+    // Enter selection mode first -- this legitimately re-renders every visible
+    // card once (the selection badge overlay appears on all of them), so it's
+    // excluded from the measurement below.
+    let cards = findFaceCards(component.root);
+    act(() => { cards[0].props.onLongPress(); }); // long-press alice
+    await flush();
+
+    MockedImage.mockClear();
+
+    // Now tap bob to add him to an *already active* selection -- this is the
+    // steady-state interaction the bug was reported against ("连续点击两次" /
+    // "就慢点点也是一样": every tap, fast or slow, re-rendered every visible
+    // card and forced its Image to reload from a brand-new source object).
+    cards = findFaceCards(component.root);
+    act(() => { cards[1].props.onPress(); }); // tap bob
+    await flush();
+
+    const newCallSources = MockedImage.mock.calls.map(call => call[0].source.uri);
+    expect(newCallSources.length).toBeGreaterThan(0);
+    expect(newCallSources.every(uri => uri.includes('bbbb'))).toBe(true);
+    expect(newCallSources.some(uri => uri.includes('aaaa'))).toBe(false);
+    expect(newCallSources.some(uri => uri.includes('cccc'))).toBe(false);
   });
 });

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Dimensions, DeviceEventEmitter, Alert, Modal, TextInput, KeyboardAvoidingView, Platform, ActivityIndicator } from 'react-native';
 import { Image } from 'expo-image';
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -8,6 +8,88 @@ import { Folder, Users, Image as ImageIcon, CheckCircle, Circle, Trash2, Combine
 const { width } = Dimensions.get('window');
 import RemoteAlbumService from '../services/RemoteAlbumService';
 import { buildImageDataUri } from '../utils/base64Image';
+
+// Memoized so that selecting one face card doesn't force every other visible
+// card to re-render. Without this, changing `selectedIds` re-runs the whole
+// FlashList's renderItem, which used to rebuild a brand-new `source={{uri}}`
+// object per card on every keystroke of selection -- expo-image sees a
+// "new" source (different object identity, same content) and restarts the
+// decode for every visible card, and rapid taps were queuing up enough
+// redundant reloads to leave some cards permanently blank (confirmed via
+// device logs: the same cover firing onLoadStart 4x within ~2s from taps
+// alone, with no image content change).
+const FaceCard = React.memo(function FaceCard({ album, isSelected, selectionMode, itemWidth, onPress, onLongPress }) {
+    const coverSource = useMemo(() => {
+        const uri = buildImageDataUri(album.info.coverImage);
+        return uri ? { uri } : null;
+    }, [album.info.coverImage]);
+
+    return (
+        <TouchableOpacity
+            style={[styles.faceCard, { width: itemWidth }]}
+            onPress={() => onPress(album)}
+            onLongPress={() => onLongPress(album)}
+            delayLongPress={500}
+        >
+            <View style={[styles.faceCoverContainer, { width: itemWidth, height: itemWidth, borderRadius: itemWidth / 2 }, isSelected && styles.faceCoverSelected]}>
+                {coverSource ? (
+                    <Image
+                        source={coverSource}
+                        style={styles.coverImage}
+                        contentFit="cover"
+                        // Covers are base64 data: URIs embedded directly in the /album
+                        // response, not fetched over the network -- disk-caching them
+                        // (memory-disk) has no benefit and was intermittently leaving
+                        // some covers stuck blank. Memory-only cache is enough to avoid
+                        // re-decoding the same string on every re-render.
+                        cachePolicy="memory"
+                        recyclingKey={String(album.info.id)}
+                    />
+                ) : (
+                    <View style={[styles.placeholderCover, { backgroundColor: '#F0F5FF' }]}>
+                        <Users color="#007AFF" size={32} strokeWidth={1.5} />
+                    </View>
+                )}
+                {selectionMode && (
+                    <View style={styles.selectionBadge}>
+                        {isSelected
+                            ? <CheckCircle color="#4DA3FF" size={22} strokeWidth={2.5} />
+                            : <Circle color="#fff" size={22} strokeWidth={2} />}
+                    </View>
+                )}
+            </View>
+            <Text style={styles.faceTitle} numberOfLines={1}>{album.name}</Text>
+        </TouchableOpacity>
+    );
+});
+
+// Same rationale as FaceCard: keeps the cover Image's source object identity
+// stable across unrelated re-renders of the parent list.
+const AlbumRow = React.memo(function AlbumRow({ album, onPress }) {
+    const coverSource = useMemo(() => {
+        const uri = buildImageDataUri(album.info.coverImage);
+        return uri ? { uri } : null;
+    }, [album.info.coverImage]);
+    const count = album.info && album.info.count ? album.info.count : 0;
+
+    return (
+        <TouchableOpacity style={styles.listRow} onPress={() => onPress(album)}>
+            <View style={styles.listCoverContainer}>
+                {coverSource ? (
+                    <Image source={coverSource} style={styles.coverImage} contentFit="cover" cachePolicy="memory" recyclingKey={String(album.info.id)} />
+                ) : (
+                    <View style={[styles.placeholderCover, { backgroundColor: '#F5F5F5' }]}>
+                        <ImageIcon color="#8E8E93" size={28} strokeWidth={1.5} />
+                    </View>
+                )}
+            </View>
+            <View style={styles.infoContainer}>
+                <Text style={styles.titleText} numberOfLines={1}>{album.name}</Text>
+                {count > 0 && <Text style={styles.subtitleText}>{count} items</Text>}
+            </View>
+        </TouchableOpacity>
+    );
+});
 
 export default function FolderDetailScreen() {
     const route = useRoute();
@@ -51,21 +133,9 @@ export default function FolderDetailScreen() {
         };
     }, [loadFolderItems]);
 
-    const handleAlbumPress = (album) => {
-        if (selectionMode) {
-            toggleSelected(album.info.id);
-            return;
-        }
-        navigation.push('AlbumDetail', { albumId: album.info.id, albumName: album.name, fullPath: album.info.name });
-    };
-
-    const handleAlbumLongPress = (album) => {
-        if (!isFacesFolder) return;
-        setSelectionMode(true);
-        toggleSelected(album.info.id);
-    };
-
-    const toggleSelected = (albumId) => {
+    // Stable (empty deps -- uses the functional setState form) so it never
+    // forces handleAlbumPress/handleAlbumLongPress to change identity.
+    const toggleSelected = useCallback((albumId) => {
         setSelectedIds(prev => {
             const next = new Set(prev);
             const key = String(albumId);
@@ -73,7 +143,21 @@ export default function FolderDetailScreen() {
             else next.add(key);
             return next;
         });
-    };
+    }, []);
+
+    const handleAlbumPress = useCallback((album) => {
+        if (selectionMode) {
+            toggleSelected(album.info.id);
+            return;
+        }
+        navigation.push('AlbumDetail', { albumId: album.info.id, albumName: album.name, fullPath: album.info.name });
+    }, [selectionMode, navigation, toggleSelected]);
+
+    const handleAlbumLongPress = useCallback((album) => {
+        if (!isFacesFolder) return;
+        setSelectionMode(true);
+        toggleSelected(album.info.id);
+    }, [isFacesFolder, toggleSelected]);
 
     const cancelSelection = () => {
         setSelectionMode(false);
@@ -151,15 +235,15 @@ export default function FolderDetailScreen() {
         }
     };
 
-    const handleFolderPress = (folder) => {
+    const handleFolderPress = useCallback((folder) => {
         navigation.push('FolderDetail', { folderPath: folder.fullPath, folderName: folder.name, fullPath: folder.fullPath });
-    };
+    }, [navigation]);
 
     const renderItem = ({ item }) => {
         if (item.type === 'folder') {
             const folder = item.data;
             const isFaces = folder.name === 'Faces' || folder.fullPath.includes('/Faces');
-            
+
             if (isFacesFolder) return null;
 
             return (
@@ -177,79 +261,24 @@ export default function FolderDetailScreen() {
             );
         } else {
             const album = item.data;
-            const coverUri = buildImageDataUri(album.info.coverImage);
-            const coverSource = coverUri ? { uri: coverUri } : null;
 
             if (isFacesFolder) {
                 const isSelected = selectedIds.has(String(album.info.id));
                 return (
-                    <TouchableOpacity
-                        style={[styles.faceCard, { width: FACE_ITEM_WIDTH }]}
-                        onPress={() => handleAlbumPress(album)}
-                        onLongPress={() => handleAlbumLongPress(album)}
-                        delayLongPress={500}
-                    >
-                        <View style={[styles.faceCoverContainer, { width: FACE_ITEM_WIDTH, height: FACE_ITEM_WIDTH, borderRadius: FACE_ITEM_WIDTH / 2 }, isSelected && styles.faceCoverSelected]}>
-                            {coverSource ? (
-                                <Image
-                                    source={coverSource}
-                                    style={styles.coverImage}
-                                    contentFit="cover"
-                                    // Covers are base64 data: URIs embedded directly in the /album
-                                    // response, not fetched over the network -- disk-caching them
-                                    // (memory-disk) has no benefit and was intermittently leaving
-                                    // some covers stuck blank. Memory-only cache is enough to avoid
-                                    // re-decoding the same string on every re-render.
-                                    cachePolicy="memory"
-                                    recyclingKey={String(album.info.id)}
-                                    // TEMP diagnostic logging: some covers render blank with no
-                                    // visible error, and it's not yet confirmed whether the load
-                                    // never starts (recycling/mount issue) or starts and silently
-                                    // fails (decode issue). Remove once the cause is confirmed.
-                                    onLoadStart={() => console.log(`[FolderDetailScreen] cover onLoadStart id=${album.info.id} name=${album.name}`)}
-                                    onLoad={() => console.log(`[FolderDetailScreen] cover onLoad OK id=${album.info.id} name=${album.name}`)}
-                                    onError={(e) => console.log(`[FolderDetailScreen] cover onError id=${album.info.id} name=${album.name} error=${JSON.stringify(e?.error || e)}`)}
-                                />
-                            ) : (
-                                <View style={[styles.placeholderCover, { backgroundColor: '#F0F5FF' }]}>
-                                    <Users color="#007AFF" size={32} strokeWidth={1.5} />
-                                </View>
-                            )}
-                            {selectionMode && (
-                                <View style={styles.selectionBadge}>
-                                    {isSelected
-                                        ? <CheckCircle color="#4DA3FF" size={22} strokeWidth={2.5} />
-                                        : <Circle color="#fff" size={22} strokeWidth={2} />}
-                                </View>
-                            )}
-                        </View>
-                        <Text style={styles.faceTitle} numberOfLines={1}>{album.name}</Text>
-                    </TouchableOpacity>
+                    <FaceCard
+                        album={album}
+                        isSelected={isSelected}
+                        selectionMode={selectionMode}
+                        itemWidth={FACE_ITEM_WIDTH}
+                        onPress={handleAlbumPress}
+                        onLongPress={handleAlbumLongPress}
+                    />
                 );
             }
 
-            const count = album.info && album.info.count ? album.info.count : 0;
-            return (
-                <TouchableOpacity style={styles.listRow} onPress={() => handleAlbumPress(album)}>
-                    <View style={styles.listCoverContainer}>
-                        {coverSource ? (
-                            <Image source={coverSource} style={styles.coverImage} contentFit="cover" cachePolicy="memory" recyclingKey={String(album.info.id)} />
-                        ) : (
-                            <View style={[styles.placeholderCover, { backgroundColor: '#F5F5F5' }]}>
-                                <ImageIcon color="#8E8E93" size={28} strokeWidth={1.5} />
-                            </View>
-                        )}
-                    </View>
-                    <View style={styles.infoContainer}>
-                        <Text style={styles.titleText} numberOfLines={1}>{album.name}</Text>
-                        {count > 0 && <Text style={styles.subtitleText}>{count} items</Text>}
-                    </View>
-                </TouchableOpacity>
-            );
+            return <AlbumRow album={album} onPress={handleAlbumPress} />;
         }
     };
-
-
 
     return (
         <View style={styles.container}>
