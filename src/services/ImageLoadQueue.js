@@ -11,7 +11,7 @@ const MAX_CONCURRENT = 4;
 class ImageLoadQueue {
     constructor() {
         this.active = 0;
-        this.queue = []; // [{ id, resolve }], most-recently-queued at the end
+        this.queue = []; // [{ id, resolve }], FIFO
     }
 
     // Resolves once a load slot is granted -- immediately if one's free,
@@ -40,22 +40,9 @@ class ImageLoadQueue {
     // Frees a slot held by a request that already got one (its image finished
     // loading, errored, or the caller gave it up after granting), and hands
     // that slot to the next queued request, if any.
-    //
-    // Most-recently-queued first (LIFO), not arrival order. During a scroll,
-    // "most recently asked for" tracks "closest to what's on screen right
-    // now" far better than "asked for first" does -- a fast fling can queue
-    // up dozens of requests for tiles that have already scrolled past by the
-    // time earlier ones would reach the front of a FIFO queue, so a strict
-    // FIFO makes the photos the user is actually looking at right now wait
-    // behind a backlog of ones they've already scrolled away from. (The web
-    // client sidesteps this differently -- it never builds a backlog at all,
-    // keeping only ~2-3 screens worth of thumbnails in the DOM at once. Doing
-    // the same here would mean tightening FlashList's drawDistance; LIFO is
-    // the cheaper fix for the same underlying "stale requests block fresh
-    // ones" problem.)
     release() {
         this.active = Math.max(0, this.active - 1);
-        const next = this.queue.pop();
+        const next = this.queue.shift();
         if (next) {
             this.active++;
             next.resolve();

@@ -37,10 +37,7 @@ describe('ImageLoadQueue', () => {
         expect(flags[4]).toBe(true);
     });
 
-    test('releases hand slots to the most-recently-queued waiter first (LIFO)', async () => {
-        // Most-recently-queued approximates "closest to what's currently on
-        // screen" during a scroll far better than arrival order does -- see
-        // the rationale comment on ImageLoadQueue.release().
+    test('releases hand slots to queued waiters in FIFO order', async () => {
         for (let i = 0; i < 4; i++) ImageLoadQueue.schedule(`filler-${i}`);
         const order = [];
         const p1 = ImageLoadQueue.schedule('first').then(() => order.push('first'));
@@ -53,7 +50,7 @@ describe('ImageLoadQueue', () => {
         await flush();
 
         await Promise.all([p1, p2]);
-        expect(order).toEqual(['second', 'first']);
+        expect(order).toEqual(['first', 'second']);
     });
 
     test('cancel drops a still-queued request so it never resolves and never consumes a slot', async () => {
