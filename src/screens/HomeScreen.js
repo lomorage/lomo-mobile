@@ -18,6 +18,7 @@ import MetricsTracker from '../utils/MetricsTracker';
 import { formatBytes, formatSpeed } from '../utils/formatters';
 import { isVideoExtension } from '../utils/mediaType';
 import { isLivePhoto } from '../utils/livePhoto';
+import { isNotFoundImageError } from '../utils/imageErrors';
 import { parseTimeTokenExtra } from './homeScreenHelpers';
 import * as SecureStore from 'expo-secure-store';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
@@ -1254,8 +1255,11 @@ export default function HomeScreen({ navigation, route }) {
                                 }
                                 // Remote preview fetch failed (e.g. transient server/connection
                                 // blip) — retry a few times with backoff instead of leaving a
-                                // permanently blank tile.
-                                if (asset.status === 'remote' && retryCountRef.current < 3) {
+                                // permanently blank tile. A 404 means the server has genuinely
+                                // never heard of this hash (stale/orphaned reference) rather than
+                                // a transient blip, so retrying would just repeat the same 404
+                                // three more times — give up immediately instead.
+                                if (asset.status === 'remote' && retryCountRef.current < 3 && !isNotFoundImageError(e.error)) {
                                     const attempt = retryCountRef.current + 1;
                                     retryCountRef.current = attempt;
                                     const backoffMs = [1000, 3000, 6000][attempt - 1];
