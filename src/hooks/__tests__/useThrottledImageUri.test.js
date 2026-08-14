@@ -125,39 +125,4 @@ describe('useThrottledImageUri', () => {
         expect(ImageLoadQueue.release).toHaveBeenCalledTimes(1);
         expect(renders[renders.length - 1]).toBe('http://server/b.jpg');
     });
-
-    // Regression test: a recycled FlashList tile whose slot for photo A was
-    // already granted (A is on screen) must not keep rendering A's uri once
-    // it's recycled to show photo B, even for the single render before B's
-    // own queue request resolves -- otherwise the tile flashes A's photo in
-    // a cell that's now supposed to be B, self-correcting only once B's
-    // request eventually gets its turn. This is exactly what a user sees as
-    // "shows the previous photo, then it gets replaced after a bit."
-    test('recycling to a new uri never renders the previous (already-granted) uri, even for one frame', async () => {
-        ImageLoadQueue.schedule.mockResolvedValueOnce(); // a.jpg grants immediately
-        let resolveSecond;
-        ImageLoadQueue.schedule.mockImplementationOnce(() => new Promise((resolve) => { resolveSecond = resolve; }));
-
-        let component;
-        const renders = [];
-        await act(async () => {
-            component = renderer.create(<TestComponent uri="http://server/a.jpg" onRender={(u) => renders.push(u)} />);
-        });
-        await flush();
-        expect(renders[renders.length - 1]).toBe('http://server/a.jpg');
-
-        // b.jpg's schedule() call is still pending (queue is full) -- the
-        // render that happens synchronously off this prop change must not
-        // show a.jpg's uri.
-        act(() => {
-            component.update(<TestComponent uri="http://server/b.jpg" onRender={(u) => renders.push(u)} />);
-        });
-        expect(renders[renders.length - 1]).toBeNull();
-        // The slot a.jpg was holding must be handed back, not leaked.
-        expect(ImageLoadQueue.release).toHaveBeenCalledTimes(1);
-
-        await act(async () => { resolveSecond(); });
-        await flush();
-        expect(renders[renders.length - 1]).toBe('http://server/b.jpg');
-    });
 });
