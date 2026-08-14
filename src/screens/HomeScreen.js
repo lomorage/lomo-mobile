@@ -13,6 +13,7 @@ import AIService from '../services/AIService';
 import { useSettings } from '../context/SettingsContext';
 import GalleryStore from '../store/GalleryStore';
 import ThumbnailLoadTracker from '../services/ThumbnailLoadTracker';
+import { useThrottledImageUri } from '../hooks/useThrottledImageUri';
 import MetricsTracker from '../utils/MetricsTracker';
 import { formatBytes, formatSpeed } from '../utils/formatters';
 import { isVideoExtension } from '../utils/mediaType';
@@ -1207,14 +1208,20 @@ export default function HomeScreen({ navigation, route }) {
             thumbnailUri += `${thumbnailUri.includes('?') ? '&' : '?'}_r=${serverEpoch}.${retryTick}`;
         }
 
+        // Only remote thumbnails hit the NAS over the network -- local ones are
+        // already-decoded device URIs, so only gate the former behind the queue.
+        const isRemoteLoad = asset.status === 'remote' && !!thumbnailUri;
+        const [gatedRemoteUri, onLoadSettled] = useThrottledImageUri(isRemoteLoad ? thumbnailUri : null);
+        const displayUri = isRemoteLoad ? gatedRemoteUri : thumbnailUri;
+
         return (
             <TouchableOpacity
                 style={styles.itemContainer}
                 onPress={() => navigation.navigate('AssetDetail', { initialIndex: globalIndex, source })}
             >
-                {thumbnailUri ? (
+                {displayUri ? (
                     <Image
-                        source={{ uri: thumbnailUri }}
+                        source={{ uri: displayUri }}
                         style={styles.image}
                         contentFit="cover"
                         cachePolicy={GRID_IMAGE_CACHE_POLICY}
@@ -1228,6 +1235,7 @@ export default function HomeScreen({ navigation, route }) {
                             }
                         }}
                         onLoad={() => {
+                            onLoadSettled();
                             if (asset.status === 'remote' && loadStartTime.current > 0) {
                                 activeLoadRef.current--;
                                 ThumbnailLoadTracker.decrement();
@@ -1237,6 +1245,7 @@ export default function HomeScreen({ navigation, route }) {
                             }
                         }}
                         onError={(e) => {
+                                onLoadSettled();
                                 if (asset.status === 'remote') { activeLoadRef.current--; ThumbnailLoadTracker.decrement(); }
                                 if (remoteFallbackUri && !useRemoteFallback) {
                                     // Local video thumbnail failed (e.g. WeChat codec) — fall back to remote preview

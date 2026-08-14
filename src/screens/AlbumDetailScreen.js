@@ -11,11 +11,66 @@ import AssetDBService from '../services/AssetDBService';
 import GalleryStore from '../store/GalleryStore';
 import MediaService from '../services/MediaService';
 import AIService from '../services/AIService';
+import { useThrottledImageUri } from '../hooks/useThrottledImageUri';
 
 const { width } = Dimensions.get('window');
 const SPACING = 2;
 const NUM_COLUMNS = 4;
 const ITEM_SIZE = (width - SPACING * (NUM_COLUMNS + 1)) / NUM_COLUMNS;
+
+// A face/regular album can hold hundreds of photos; without this, FlashList
+// mounting a batch of tiles fires that many concurrent thumbnail requests at
+// once, which is exactly the burst that overwhelms the NAS (see
+// ImageLoadQueue). Local cache hits bypass the queue entirely since they
+// don't touch the network.
+const AssetTile = React.memo(function AssetTile({ item, isVideo, showFavoriteBadge, selectMode, isSelected, onPress, onLongPress }) {
+    const hasLocalCache = item.localCachePath && item.mediaType !== 'video';
+    const [gatedRemoteUri, onLoadSettled] = useThrottledImageUri(hasLocalCache ? null : item.uri);
+    const displayUri = hasLocalCache ? item.localCachePath : gatedRemoteUri;
+
+    return (
+        <TouchableOpacity
+            activeOpacity={0.8}
+            onPress={onPress}
+            onLongPress={onLongPress}
+            style={styles.itemContainer}
+        >
+            {displayUri ? (
+                <Image
+                    source={{ uri: displayUri }}
+                    style={styles.image}
+                    contentFit="cover"
+                    cachePolicy="memory-disk"
+                    transition={0}
+                    recyclingKey={item.id ? String(item.id) : null}
+                    onLoad={onLoadSettled}
+                    onError={onLoadSettled}
+                />
+            ) : (
+                <View style={styles.image} />
+            )}
+            {isVideo && (
+                <View style={styles.videoIndicator}>
+                    <PlayCircle color="#fff" size={20} />
+                </View>
+            )}
+            {showFavoriteBadge && (
+                <View style={styles.favoriteIndicator}>
+                    <Heart color="#ef4444" fill="#ef4444" size={14} />
+                </View>
+            )}
+            {selectMode && (
+                <View style={styles.selectOverlay}>
+                    {isSelected ? (
+                        <CheckCircle2 color="#007AFF" fill="#fff" size={24} />
+                    ) : (
+                        <Circle color="#fff" size={24} />
+                    )}
+                </View>
+            )}
+        </TouchableOpacity>
+    );
+});
 
 export default function AlbumDetailScreen() {
     const [assets, setAssets] = useState([]);
@@ -281,42 +336,16 @@ export default function AlbumDetailScreen() {
     };
 
     const renderItem = ({ item, index }) => {
-        const isVideo = item.mediaType === 'video';
         return (
-            <TouchableOpacity
-                activeOpacity={0.8}
+            <AssetTile
+                item={item}
+                isVideo={item.mediaType === 'video'}
+                showFavoriteBadge={item.isFavorite && albumName !== 'Favorites' && albumName !== '/Favorites'}
+                selectMode={selectMode}
+                isSelected={selectedHashes.has(item.hash)}
                 onPress={() => handleAssetPress(item, index)}
                 onLongPress={() => handleAssetLongPress(item)}
-                style={styles.itemContainer}
-            >
-                <Image
-                    source={(item.localCachePath && item.mediaType !== 'video') ? { uri: item.localCachePath } : { uri: item.uri }}
-                    style={styles.image}
-                    contentFit="cover"
-                    cachePolicy="memory-disk"
-                    transition={0}
-                    recyclingKey={item.id ? String(item.id) : null}
-                />
-                {isVideo && (
-                    <View style={styles.videoIndicator}>
-                        <PlayCircle color="#fff" size={20} />
-                    </View>
-                )}
-                {item.isFavorite && albumName !== 'Favorites' && albumName !== '/Favorites' && (
-                    <View style={styles.favoriteIndicator}>
-                        <Heart color="#ef4444" fill="#ef4444" size={14} />
-                    </View>
-                )}
-                {selectMode && (
-                    <View style={styles.selectOverlay}>
-                        {selectedHashes.has(item.hash) ? (
-                            <CheckCircle2 color="#007AFF" fill="#fff" size={24} />
-                        ) : (
-                            <Circle color="#fff" size={24} />
-                        )}
-                    </View>
-                )}
-            </TouchableOpacity>
+            />
         );
     };
 
