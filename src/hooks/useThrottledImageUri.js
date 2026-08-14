@@ -12,13 +12,20 @@ import ImageLoadQueue from '../services/ImageLoadQueue';
 // request is cancelled instead of wastefully waiting its turn for a photo
 // nobody wants anymore.
 export function useThrottledImageUri(targetUri) {
-    const [readyUri, setReadyUri] = useState(null);
+    // Tracks which uri the granted slot's state belongs to, not just the
+    // resolved uri itself -- when a recycled tile's targetUri changes, the
+    // effect below hasn't run yet on this render, so a bare `readyUri` state
+    // would still hold the *previous* item's uri and briefly render the
+    // wrong photo in this tile before the new request gets its turn. Deriving
+    // readiness by comparing against the current targetUri (below) makes the
+    // stale state resolve to "not ready" immediately, on the very same
+    // render, instead of one or more renders later.
+    const [granted, setGranted] = useState({ uri: null, forTargetUri: null });
     // 'idle' | 'waiting' | 'granted' | 'done'
     const stateRef = useRef('idle');
 
     useEffect(() => {
         if (!targetUri) {
-            setReadyUri(null);
             return undefined;
         }
 
@@ -35,7 +42,7 @@ export function useThrottledImageUri(targetUri) {
                 return;
             }
             stateRef.current = 'granted';
-            setReadyUri(targetUri);
+            setGranted({ uri: targetUri, forTargetUri: targetUri });
         });
 
         return () => {
@@ -48,6 +55,8 @@ export function useThrottledImageUri(targetUri) {
             stateRef.current = 'idle';
         };
     }, [targetUri]);
+
+    const readyUri = granted.forTargetUri === targetUri ? granted.uri : null;
 
     const onLoadSettled = useCallback(() => {
         if (stateRef.current === 'granted') {
