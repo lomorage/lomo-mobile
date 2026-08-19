@@ -533,6 +533,50 @@ class AssetDBService {
     }, `(Assets: ${assets.length})`);
   }
 
+  // Removes isLocal=1 rows whose id is no longer present on the device (photo was
+  // deleted outside the app). `currentDeviceIds` must be the FULL, unfiltered set of
+  // MediaLibrary asset ids -- not one that's already been narrowed by the user's
+  // "excluded albums" setting, since an excluded photo still physically exists and
+  // must not be pruned as if it were deleted. Mirrors syncRemoteAssets' same
+  // diff-and-delete pattern for isLocal=0 rows. Local ids and remote ids (hashes)
+  // live in disjoint id spaces, so this can't cross-delete a hash-keyed remote row.
+  async pruneDeletedLocalAssets(currentDeviceIds) {
+    if (!this.db || !currentDeviceIds || currentDeviceIds.size === 0) return;
+
+    return await MetricsTracker.measure('AssetDBService_pruneDeletedLocalAssets', async () => {
+      try {
+        const existingRows = await this.db.getAllAsync('SELECT id FROM MediaAsset WHERE isLocal = 1');
+        const idsToDelete = existingRows.map(r => r.id).filter(id => !currentDeviceIds.has(id));
+
+        if (idsToDelete.length === 0) return;
+
+        console.log(`[AssetDBService] Pruning ${idsToDelete.length} local assets no longer found on the device...`);
+        const chunkSize = 50;
+        for (let i = 0; i < idsToDelete.length; i += chunkSize) {
+          const chunk = idsToDelete.slice(i, i + chunkSize);
+          await this.db.withExclusiveTransactionAsync(async () => {
+            const statement = await this.db.prepareAsync('DELETE FROM MediaAsset WHERE id = ? AND isLocal = 1');
+            try {
+              for (const id of chunk) {
+                statement.executeSync(id);
+              }
+            } finally {
+              await statement.finalizeAsync();
+            }
+          });
+          if (i + chunkSize < idsToDelete.length) {
+            await new Promise(resolve => setTimeout(resolve, 5));
+            await TaskSchedulerService.waitUntilIdle();
+          }
+        }
+        console.log(`[AssetDBService] Pruned ${idsToDelete.length} stale local assets.`);
+        return idsToDelete;
+      } catch (error) {
+        console.error('[AssetDBService] Failed to prune deleted local assets:', error);
+      }
+    }, `(DeviceIds: ${currentDeviceIds.size})`);
+  }
+
   // Sync remote assets discovered via SyncService
   async syncRemoteAssets(assets) {
     if (!this.db || !assets) return;

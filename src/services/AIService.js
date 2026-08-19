@@ -205,6 +205,93 @@ class AIService {
     return this.status;
   }
 
+  // Pushes one "just found" entry (most recent first, capped) onto the live status,
+  // for the Settings > AI & Search "currently processing" card. Only called for real,
+  // human-meaningful events (text found, a face matched/discovered) -- never fabricated.
+  _pushRecentFind(entry) {
+    const list = [entry, ...(this.status.recentFinds || [])].slice(0, 4);
+    this.status = { ...this.status, recentFinds: list };
+    DeviceEventEmitter.emit('ai_processing_status', this.status);
+  }
+
+  // Read-only breakdown for the Settings > AI & Search screen. Mirrors the exact
+  // "done" conditions processLocalEmbeddings()/syncEmbeddings() already use, so these
+  // numbers never drift from what the background workers actually consider finished.
+  async getDetailedIndexStatus() {
+    const db = AssetDBService.db;
+    if (!db) return null;
+    try {
+      const count = async (whereExtra) => {
+        const row = await db.getFirstAsync(`SELECT COUNT(*) as c FROM MediaAsset WHERE isLocal = 1 AND mediaType = "photo" AND ${whereExtra}`);
+        return row?.c || 0;
+      };
+
+      const total = await count('1=1');
+      // Note: "< 1" (not "= 0") would also match the -1 "permanently failed" sentinel,
+      // which would count already-attempted-and-failed items as still pending forever.
+      const pending = await count(`(
+        (clipEmbeddingVersion IS NULL OR clipEmbeddingVersion = 0)
+        OR (phash IS NULL OR phash = "")
+        OR (ocrText IS NULL)
+        OR (faceRecVersion IS NULL OR faceRecVersion = 0)
+      )`);
+
+      const semantic = await count('clipEmbeddingVersion IS NOT NULL AND clipEmbeddingVersion >= 1');
+      const text = await count('ocrText IS NOT NULL');
+      const faces = await count('faceRecVersion IS NOT NULL AND faceRecVersion >= 1');
+      const duplicates = await count('phash IS NOT NULL AND phash != ""');
+
+      // Sync group: candidate pool = locally analyzed + backed-up items eligible to upload;
+      // "uploaded" = candidates that already have a mirrored isLocal=0 row (same test the
+      // upload loop itself uses to decide what's still pending).
+      const semanticCandidates = await db.getFirstAsync(`
+        SELECT COUNT(*) as c FROM MediaAsset
+        WHERE isLocal = 1 AND uploaded = 1 AND clipEmbedding IS NOT NULL AND clipEmbedding != "" AND clipEmbedding != "failed"
+      `);
+      const semanticPendingUpload = await db.getFirstAsync(`
+        SELECT COUNT(*) as c FROM MediaAsset
+        WHERE isLocal = 1 AND uploaded = 1 AND clipEmbedding IS NOT NULL AND clipEmbedding != "" AND clipEmbedding != "failed"
+          AND hash NOT IN (SELECT hash FROM MediaAsset WHERE isLocal = 0 AND clipEmbedding IS NOT NULL AND clipEmbedding != "")
+      `);
+      const phashCandidates = await db.getFirstAsync(`
+        SELECT COUNT(*) as c FROM MediaAsset
+        WHERE isLocal = 1 AND uploaded = 1 AND phash IS NOT NULL AND phash != "" AND phash != "failed" AND phash != "none"
+      `);
+      const phashPendingUpload = await db.getFirstAsync(`
+        SELECT COUNT(*) as c FROM MediaAsset
+        WHERE isLocal = 1 AND uploaded = 1 AND phash IS NOT NULL AND phash != "" AND phash != "failed" AND phash != "none"
+          AND hash NOT IN (SELECT hash FROM MediaAsset WHERE isLocal = 0 AND phash IS NOT NULL AND phash != "")
+      `);
+
+      const uploadCandidates = (semanticCandidates?.c || 0) + (phashCandidates?.c || 0);
+      const uploadPending = (semanticPendingUpload?.c || 0) + (phashPendingUpload?.c || 0);
+      const uploaded = Math.max(0, uploadCandidates - uploadPending);
+
+      const remoteTotalRow = await db.getFirstAsync(`SELECT COUNT(*) as c FROM MediaAsset WHERE isLocal = 0 AND mediaType = "photo"`);
+      const remoteDoneRow = await db.getFirstAsync(`
+        SELECT COUNT(*) as c FROM MediaAsset
+        WHERE isLocal = 0 AND mediaType = "photo" AND clipEmbedding IS NOT NULL AND clipEmbedding != "" AND clipEmbedding != "failed"
+      `);
+      const remoteTotal = remoteTotalRow?.c || 0;
+      const remoteDone = remoteDoneRow?.c || 0;
+
+      return {
+        onDevice: {
+          total,
+          analyzed: Math.max(0, total - pending),
+          semantic, text, faces, duplicates
+        },
+        sync: {
+          uploaded, uploadCandidates,
+          remoteDone, remoteTotal
+        }
+      };
+    } catch (e) {
+      console.warn('[AIService] getDetailedIndexStatus failed:', e.message);
+      return null;
+    }
+  }
+
   // Check if device is connected to Wi-Fi and charging based on settings constraints
   async isIdleForAI() {
     try {
@@ -227,6 +314,28 @@ class AIService {
     } catch (e) {
       console.warn('[AIService] Failed to check Wi-Fi/Charging status, assuming not idle:', e);
       return false;
+    }
+  }
+
+  // Human-readable reason indexing isn't running right now, for the Settings breakdown.
+  // Returns null when nothing is blocking it (it may still just be between batches).
+  async getIdleBlockReason() {
+    try {
+      const savedAiWifiOnly = await SecureStore.getItemAsync('lomorage_ai_wifi_only');
+      const aiWifiOnly = savedAiWifiOnly !== 'false';
+      const savedAiChargingOnly = await SecureStore.getItemAsync('lomorage_ai_charging_only');
+      const aiChargingOnly = savedAiChargingOnly !== 'false';
+
+      const netState = await Network.getNetworkStateAsync();
+      const isWifi = netState.type === Network.NetworkStateType.WIFI;
+      const battState = await Battery.getBatteryStateAsync();
+      const isCharging = battState === Battery.BatteryState.CHARGING || battState === Battery.BatteryState.FULL;
+
+      if (aiWifiOnly && !isWifi) return 'Connect to Wi-Fi to continue indexing.';
+      if (aiChargingOnly && !isCharging) return 'Plug in your phone to continue indexing.';
+      return null;
+    } catch (e) {
+      return null;
     }
   }
 
@@ -781,6 +890,38 @@ class AIService {
     }
   }
 
+  // One-time repair for a bug where uploading a local photo's embedding/phash to the
+  // server also reset that SAME local row's clipEmbeddingVersion back to 0 (saveAssetEmbedding
+  // was matching "id = ? OR hash = ?" with a hash, which unintentionally also hit the local
+  // row sharing that hash -- see scopeIsLocal on saveAssetEmbedding/saveAssetPHash). The
+  // embedding bytes themselves were never touched by that path, only the version flag, so
+  // this just restores the flag wherever a real embedding is already sitting there -- no
+  // recomputation, no network calls.
+  async repairClipVersionResetBug() {
+    const fixed = await SecureStore.getItemAsync('lomorage_clip_version_bug_fixed_v1');
+    if (fixed === 'true') return;
+
+    console.log('[AIService] Running one-time repair for the CLIP version-reset bug...');
+    try {
+      if (AssetDBService.db) {
+        const result = await AssetDBService.db.runAsync(`
+          UPDATE MediaAsset SET clipEmbeddingVersion = 1
+          WHERE isLocal = 1
+            AND clipEmbeddingVersion = 0
+            AND clipEmbedding IS NOT NULL
+            AND clipEmbedding != ''
+            AND clipEmbedding != 'failed'
+            AND clipEmbedding != 'none'
+        `);
+        console.log(`[AIService] Repaired ${result?.changes || 0} local rows that had an intact embedding but a reset version flag.`);
+      }
+      await SecureStore.setItemAsync('lomorage_clip_version_bug_fixed_v1', 'true');
+      console.log('[AIService] CLIP version-reset repair completed!');
+    } catch (e) {
+      console.warn('[AIService] Failed to run CLIP version-reset repair:', e.message);
+    }
+  }
+
   /**
    * [CLEANUP] Deletes ALL /Faces/ albums from the server. 
    * Call this to wipe a polluted server before re-running face detection.
@@ -918,6 +1059,8 @@ class AIService {
 
     // Run one-time fix for broken face data
     await this.fixBrokenFaceData();
+    // Run one-time repair for the CLIP version-reset bug (see repairClipVersionResetBug)
+    await this.repairClipVersionResetBug();
 
     const savedAiEnabled = await SecureStore.getItemAsync('lomorage_ai_enabled');
     const aiEnabled = savedAiEnabled !== 'false';
@@ -942,7 +1085,12 @@ class AIService {
     }
 
     this.isProcessing = true;
-    this.status = { isProcessing: true, current: 0, total: 0, message: 'Analyzing local library...' };
+    this.status = {
+      isProcessing: true, current: 0, total: 0, message: 'Analyzing local library...',
+      currentAssetId: null, currentAssetUri: null, currentStepLabel: null,
+      rate: 0, etaSeconds: null, recentFinds: []
+    };
+    this._recentProcessTimestamps = [];
     DeviceEventEmitter.emit('ai_processing_status', this.status);
     console.log('[AIService] Starting local embeddings & phash processing...');
 
@@ -963,12 +1111,13 @@ class AIService {
         FROM MediaAsset 
         WHERE isLocal = 1 
           AND mediaType = "photo" 
-          AND ((clipEmbeddingVersion IS NULL OR clipEmbeddingVersion < 1) OR (phash IS NULL OR phash = "") OR (ocrText IS NULL) OR (faceRecVersion IS NULL OR faceRecVersion < 1))
+          AND ((clipEmbeddingVersion IS NULL OR clipEmbeddingVersion = 0) OR (phash IS NULL OR phash = "") OR (ocrText IS NULL) OR (faceRecVersion IS NULL OR faceRecVersion = 0))
       `);
       const total = totalRow?.count || 0;
       let processed = 0;
 
       this.status = {
+        ...this.status,
         isProcessing: true,
         current: 0,
         total,
@@ -994,7 +1143,7 @@ class AIService {
           FROM MediaAsset 
           WHERE isLocal = 1 
             AND mediaType = "photo" 
-            AND ((clipEmbeddingVersion IS NULL OR clipEmbeddingVersion < 1) OR (phash IS NULL OR phash = "") OR (ocrText IS NULL) OR (faceRecVersion IS NULL OR faceRecVersion < 1))
+            AND ((clipEmbeddingVersion IS NULL OR clipEmbeddingVersion = 0) OR (phash IS NULL OR phash = "") OR (ocrText IS NULL) OR (faceRecVersion IS NULL OR faceRecVersion = 0))
           LIMIT ?
         `, [limit]);
 
@@ -1011,6 +1160,7 @@ class AIService {
           try {
             processed++;
             this.status = {
+              ...this.status,
               isProcessing: true,
               current: Math.min(processed, total),
               total,
@@ -1024,7 +1174,19 @@ class AIService {
             let imgHeight = 0;
             try {
               const info = await MediaService.getAssetInfo(asset.id);
-              if (Platform.OS === 'ios' && (!info || !info.localUri)) {
+              if (!info) {
+                // MediaLibrary has no record of this id at all -- almost always means the
+                // photo was deleted from the device after we indexed it locally, but our
+                // SQLite row is still around. There's nothing "local" about it anymore, so
+                // remove the stale row outright (this only deletes the isLocal=1 row for
+                // this exact id -- if the photo was already backed up, its isLocal=0 mirror
+                // row, matched separately by hash, is untouched and keeps representing it).
+                console.log(`[AIService] Asset ${asset.id}: no info from MediaLibrary (deleted from device). Removing stale local row.`);
+                await AssetDBService.deleteAsset(asset.id);
+                DeviceEventEmitter.emit('assetDeleted', asset.id);
+                continue;
+              }
+              if (Platform.OS === 'ios' && !info.localUri) {
                 console.log(`[AIService] Asset ${asset.id} is offloaded to iCloud. Skipping local AI analysis.`);
                 // Mark as skipped/none to prevent infinite pending batch query loop
                 await this.saveAssetEmbedding(asset.id, 'none', 1);
@@ -1033,9 +1195,9 @@ class AIService {
                 await db.runAsync('UPDATE MediaAsset SET faceRecVersion = 1 WHERE id = ?', [asset.id]);
                 continue;
               }
-              localPath = info?.localUri || info?.uri;
-              imgWidth = info?.width || 0;
-              imgHeight = info?.height || 0;
+              localPath = info.localUri || info.uri;
+              imgWidth = info.width || 0;
+              imgHeight = info.height || 0;
             } catch (e) {
               console.warn(`[AIService] Failed to get asset info for ${asset.id}:`, e.message);
             }
@@ -1048,17 +1210,34 @@ class AIService {
               throw new Error(`Could not resolve local path for asset ${asset.id}`);
             }
 
+            this.status = {
+              ...this.status,
+              currentAssetId: asset.id,
+              currentAssetUri: localPath,
+              currentStepLabel: '🖼 Analyzing photo…'
+            };
+            DeviceEventEmitter.emit('ai_processing_status', this.status);
+
             // A. Calculate clipEmbedding if missing
             if (!asset.clipEmbeddingVersion || asset.clipEmbeddingVersion < 1) {
-              const base64 = await this.getImageEmbedding(localPath);
-              await this.saveAssetEmbedding(asset.id, base64, 1);
-              console.log(`[AIService] Saved embedding locally for asset ${asset.id}.`);
-              didCalculateEmbeddingForAsset = true;
-              didCalculateEmbeddingInBatch = true;
+              try {
+                const base64 = await this.getImageEmbedding(localPath);
+                await this.saveAssetEmbedding(asset.id, base64, 1);
+                console.log(`[AIService] Saved embedding locally for asset ${asset.id}.`);
+                didCalculateEmbeddingForAsset = true;
+                didCalculateEmbeddingInBatch = true;
+              } catch (ae) {
+                // Scoped to this step only -- a failed embedding shouldn't stop phash/OCR/faces
+                // from being attempted below, and shouldn't mark them as failed either.
+                console.warn(`[AIService] Failed to calculate embedding for local asset ${asset.id}:`, ae.message);
+                await this.saveAssetEmbedding(asset.id, 'failed', -1);
+              }
             }
 
             // B. Calculate phash if missing
             if (!asset.phash || asset.phash === "") {
+              this.status = { ...this.status, currentStepLabel: '🧬 Checking for duplicates…' };
+              DeviceEventEmitter.emit('ai_processing_status', this.status);
               try {
                 const phash = await ExpoLomoHasher.generatePHashAsync(localPath);
                 if (phash && phash !== "0") {
@@ -1086,6 +1265,8 @@ class AIService {
 
             // C. Calculate OCR if missing
             if (asset.ocrText === null) {
+              this.status = { ...this.status, currentStepLabel: '🔤 Reading text…' };
+              DeviceEventEmitter.emit('ai_processing_status', this.status);
               try {
                 const result = await recognizeText(localPath);
                 const text = result && result.text ? result.text.trim() : "none";
@@ -1106,6 +1287,7 @@ class AIService {
                 }
                 if (text && text !== "none") {
                   console.log(`[AIService] Saved OCR text locally for asset ${asset.id}.`);
+                  this._pushRecentFind({ id: asset.id, uri: localPath, badge: '🔤', detail: 'Found text in a photo' });
                 }
               } catch (oe) {
                 console.warn(`[AIService] Failed to extract OCR for local asset ${asset.id}:`, oe.message);
@@ -1115,11 +1297,15 @@ class AIService {
 
             // D. Face Clustering
             if (!asset.faceRecVersion || asset.faceRecVersion < 1) {
+              this.status = { ...this.status, currentStepLabel: '🙂 Detecting faces…' };
+              DeviceEventEmitter.emit('ai_processing_status', this.status);
               try {
                 const faceResponse = await this.faceDetector.detectFaces(localPath);
                 const faces = faceResponse?.faces || [];
                 console.log(`[AIService] Detected ${faces.length} faces in ${asset.id}`);
-                
+                let matchedExisting = false;
+                let validFaceCount = 0;
+
                 if (faces.length > 0) {
                   if (!this.faceAlbumCache) {
                     await this._refreshFaceAlbumCache();
@@ -1148,12 +1334,14 @@ class AIService {
                     await new Promise(resolve => setTimeout(resolve, 100));
 
                     if (faceResultObj && faceResultObj !== "failed" && faceResultObj.embedding) {
+                      validFaceCount++;
                       const newFaceVector = base64ToFloat32Array(faceResultObj.embedding);
-                      
+
                       const { bestMatch } = rankFaceAlbumMatches(newFaceVector, this.faceAlbumCache);
                       const bestMatchId = bestMatch ? bestMatch.id : null;
 
                       if (bestMatchId) {
+                        matchedExisting = true;
                         console.log(`[AIService] Match found for local face in ${asset.id} (album: ${bestMatchId}, sim: ${bestMatch.similarity.toFixed(2)})`);
                         if (this.faceDryRun) {
                           console.log(`[AIService][DRY RUN] Would add ${asset.hash} to album ${bestMatchId}`);
@@ -1211,7 +1399,14 @@ class AIService {
                     }
                   }
                 }
-                
+
+                if (validFaceCount > 0) {
+                  this._pushRecentFind({
+                    id: asset.id, uri: localPath, badge: '🙂',
+                    detail: matchedExisting ? 'Grouped with an existing face' : 'Found a new face'
+                  });
+                }
+
                 await AssetDBService.db.runAsync(
                   'UPDATE MediaAsset SET faceRecVersion = ? WHERE id = ?',
                   [1, asset.id]
@@ -1227,6 +1422,9 @@ class AIService {
             }
 
           } catch (err) {
+            // Steps A-D each catch their own errors now, so this only fires for things
+            // outside them -- chiefly "could not resolve local path". In that case none
+            // of A-D got a chance to run, so marking all three as failed is correct here.
             console.warn(`[AIService] Failed to process asset ${asset.id}:`, err.message);
             if (!asset.clipEmbeddingVersion || asset.clipEmbeddingVersion < 1) {
               await this.saveAssetEmbedding(asset.id, 'failed', -1);
@@ -1237,6 +1435,22 @@ class AIService {
             if (asset.ocrText === null) {
               await AssetDBService.saveAssetOCR(asset.id, 'failed');
             }
+          }
+
+          this._recentProcessTimestamps.push(Date.now());
+          if (this._recentProcessTimestamps.length > 20) this._recentProcessTimestamps.shift();
+          if (this._recentProcessTimestamps.length >= 2) {
+            const first = this._recentProcessTimestamps[0];
+            const last = this._recentProcessTimestamps[this._recentProcessTimestamps.length - 1];
+            const elapsedSec = (last - first) / 1000;
+            const rate = elapsedSec > 0 ? (this._recentProcessTimestamps.length - 1) / elapsedSec : 0;
+            const remaining = Math.max(0, total - processed);
+            this.status = {
+              ...this.status,
+              rate: Math.round(rate * 10) / 10,
+              etaSeconds: rate > 0 ? Math.round(remaining / rate) : null
+            };
+            DeviceEventEmitter.emit('ai_processing_status', this.status);
           }
 
           // Unconditionally throttle background task processing after each asset.
@@ -1281,19 +1495,27 @@ class AIService {
     }
   }
 
-  // Helper to update embedding in SQLite and cache in memory
-  async saveAssetEmbedding(idOrHash, embeddingBase64, version = 1) {
+  // Helper to update embedding in SQLite and cache in memory.
+  // `scopeIsLocal`, when given (0 or 1), constrains the match to that isLocal value.
+  // This matters because a local (isLocal=1) row and its remote mirror (isLocal=0) row
+  // share the same `hash` -- passing a hash through the unscoped "id = ? OR hash = ?"
+  // match would silently ALSO hit the local row's own already-computed embedding.
+  // Callers that only have a local numeric id are unaffected (ids don't collide with
+  // hash strings), so they can omit this and keep the existing unscoped behavior.
+  async saveAssetEmbedding(idOrHash, embeddingBase64, version = 1, scopeIsLocal = null) {
     const db = AssetDBService.db;
     if (!db) return;
+    const scopeSql = scopeIsLocal === null ? '' : ' AND isLocal = ?';
+    const scopeParams = scopeIsLocal === null ? [] : [scopeIsLocal];
     await db.runAsync(
-      'UPDATE MediaAsset SET clipEmbedding = ?, clipEmbeddingVersion = ? WHERE id = ? OR hash = ?',
-      [embeddingBase64, version, idOrHash, idOrHash]
+      `UPDATE MediaAsset SET clipEmbedding = ?, clipEmbeddingVersion = ? WHERE (id = ? OR hash = ?)${scopeSql}`,
+      [embeddingBase64, version, idOrHash, idOrHash, ...scopeParams]
     );
-    
+
     // Sync with in-memory cache
     if (embeddingBase64 && embeddingBase64 !== 'failed' && embeddingBase64 !== 'none') {
       try {
-        const row = await db.getFirstAsync('SELECT id FROM MediaAsset WHERE id = ? OR hash = ?', [idOrHash, idOrHash]);
+        const row = await db.getFirstAsync(`SELECT id FROM MediaAsset WHERE (id = ? OR hash = ?)${scopeSql}`, [idOrHash, idOrHash, ...scopeParams]);
         if (row && row.id) {
           this._setVector(row.id, base64ToFloat32Array(embeddingBase64));
         }
@@ -1302,7 +1524,7 @@ class AIService {
       }
     } else {
       try {
-        const row = await db.getFirstAsync('SELECT id FROM MediaAsset WHERE id = ? OR hash = ?', [idOrHash, idOrHash]);
+        const row = await db.getFirstAsync(`SELECT id FROM MediaAsset WHERE (id = ? OR hash = ?)${scopeSql}`, [idOrHash, idOrHash, ...scopeParams]);
         if (row && row.id) {
           this._deleteVector(row.id);
         }
@@ -1310,13 +1532,15 @@ class AIService {
     }
   }
 
-  // Helper to update phash in SQLite
-  async saveAssetPHash(idOrHash, phash) {
+  // Helper to update phash in SQLite. See saveAssetEmbedding for why scopeIsLocal exists.
+  async saveAssetPHash(idOrHash, phash, scopeIsLocal = null) {
     const db = AssetDBService.db;
     if (!db) return;
+    const scopeSql = scopeIsLocal === null ? '' : ' AND isLocal = ?';
+    const scopeParams = scopeIsLocal === null ? [] : [scopeIsLocal];
     await db.runAsync(
-      'UPDATE MediaAsset SET phash = ? WHERE id = ? OR hash = ?',
-      [phash, idOrHash, idOrHash]
+      `UPDATE MediaAsset SET phash = ? WHERE (id = ? OR hash = ?)${scopeSql}`,
+      [phash, idOrHash, idOrHash, ...scopeParams]
     );
   }
 
@@ -1350,16 +1574,25 @@ class AIService {
       const db = AssetDBService.db;
       if (!db) return;
 
+      // Every network step below used to run unconditionally, while processLocalEmbeddings()
+      // and Parts C/D already respected Wi-Fi/charging-only settings — meaning "Wi-Fi only"
+      // silently didn't apply to uploads/downloads. Compute the same idle check once and gate
+      // all of it, so the settings mean what they say everywhere.
+      const isIdle = force ? true : await this.isIdleForAI();
+
       // Part A: Upload local embeddings to server
+      if (!isIdle) {
+        console.log('[AIService] Skip embeddings upload: device is not on Wi-Fi/charging per settings.');
+      } else {
       let hasMoreUploads = true;
       const totalUploadsRow = await db.getFirstAsync(`
-        SELECT COUNT(*) as count 
-        FROM MediaAsset 
-        WHERE isLocal = 1 
-          AND uploaded = 1 
-          AND clipEmbedding IS NOT NULL 
-          AND clipEmbedding != "" 
-          AND clipEmbedding != "failed" 
+        SELECT COUNT(*) as count
+        FROM MediaAsset
+        WHERE isLocal = 1
+          AND uploaded = 1
+          AND clipEmbedding IS NOT NULL
+          AND clipEmbedding != ""
+          AND clipEmbedding != "failed"
           AND hash NOT IN (
             SELECT hash FROM MediaAsset WHERE isLocal = 0 AND clipEmbedding IS NOT NULL AND clipEmbedding != ""
           )
@@ -1430,15 +1663,19 @@ class AIService {
               'INSERT OR IGNORE INTO MediaAsset (id, hash, isLocal) VALUES (?, ?, 0)',
               [asset.hash, asset.hash]
             );
-            await this.saveAssetEmbedding(asset.hash, asset.clipEmbedding, 0);
+            await this.saveAssetEmbedding(asset.hash, asset.clipEmbedding, 0, 0);
           } catch (e) {
             console.warn(`[AIService] Failed to upload embedding for ${asset.hash}:`, e.message);
           }
         }
         await new Promise(resolve => setTimeout(resolve, 300));
       }
+      } // end Part A isIdle gate
 
       // Part A2: Upload locally calculated pHashes to server
+      if (!isIdle) {
+        console.log('[AIService] Skip pHash upload: device is not on Wi-Fi/charging per settings.');
+      } else {
       const totalPHashUploadsRow = await db.getFirstAsync(`
         SELECT COUNT(*) as count 
         FROM MediaAsset 
@@ -1521,7 +1758,7 @@ class AIService {
               'INSERT OR IGNORE INTO MediaAsset (id, hash, isLocal) VALUES (?, ?, 0)',
               [asset.hash, asset.hash]
             );
-            await this.saveAssetPHash(asset.hash, asset.phash);
+            await this.saveAssetPHash(asset.hash, asset.phash, 0);
           } catch (e) {
             console.warn(`[AIService] Failed to upload phash for ${asset.hash}:`, e.message);
             this._tryReconnectOnNetworkError(e);
@@ -1529,12 +1766,15 @@ class AIService {
         }
         await new Promise(resolve => setTimeout(resolve, 300));
       }
+      } // end Part A2 isIdle gate
 
       // Part B: Download remote embeddings and phash from server
       const savedRemoteAI = await SecureStore.getItemAsync('lomorage_remote_ai_processing');
       const remoteAIEnabled = savedRemoteAI !== 'false';
       if (!remoteAIEnabled && !force) {
         console.log('[AIService] Skip remote embedding download: remote AI indexing disabled.');
+      } else if (!isIdle) {
+        console.log('[AIService] Skip remote embedding download: device is not on Wi-Fi/charging per settings.');
       } else {
         const totalDownloadRow = await db.getFirstAsync(`
           SELECT COUNT(*) as count 
@@ -1752,9 +1992,9 @@ class AIService {
                   }
 
                   // 3. Save locally in SQLite
-                  await this.saveAssetEmbedding(asset.hash, base64, 1);
+                  await this.saveAssetEmbedding(asset.hash, base64, 1, 0);
                   if (phash && phash !== "0") {
-                    await this.saveAssetPHash(asset.hash, phash);
+                    await this.saveAssetPHash(asset.hash, phash, 0);
                   }
                   console.log(`[AIService] Saved embedding and phash locally for remote asset ${asset.hash}`);
                 }
@@ -1918,7 +2158,7 @@ class AIService {
                 console.warn(`[AIService] Scheme B failed for remote asset ${asset.hash}:`, err.message);
                 try { await FileSystem.deleteAsync(tempUri, { idempotent: true }); } catch (e) {}
                 if (asset.clipEmbedding === "none") {
-                  await this.saveAssetEmbedding(asset.hash, 'failed', -1);
+                  await this.saveAssetEmbedding(asset.hash, 'failed', -1, 0);
                 }
               }
             }
@@ -3247,13 +3487,23 @@ TaskManager.defineTask(BACKGROUND_AI_SYNC_TASK, async () => {
             return BackgroundTask.BackgroundTaskResult.Success;
         }
 
-        const savedRemoteAI = await SecureStore.getItemAsync('lomorage_remote_ai_processing');
-        if (savedRemoteAI === 'false') {
-            console.log('[Background AI Sync Task] Remote AI processing disabled. Skipping background AI fetch.');
-            return BackgroundTask.BackgroundTaskResult.Success;
+        // This background window previously only ever ran syncEmbeddings() (upload/download
+        // metadata) — the user's own new local photos never got analyzed unless the app was
+        // open in the foreground. Analyze local photos first, same order as the foreground flow.
+        const savedAiEnabled = await SecureStore.getItemAsync('lomorage_ai_enabled');
+        if (savedAiEnabled === 'false') {
+            console.log('[Background AI Sync Task] Local AI features disabled. Skipping local analysis.');
+        } else {
+            await AIServiceInstance.processLocalEmbeddings(30, true);
         }
 
-        await AIServiceInstance.syncEmbeddings(true);
+        const savedRemoteAI = await SecureStore.getItemAsync('lomorage_remote_ai_processing');
+        if (savedRemoteAI === 'false') {
+            console.log('[Background AI Sync Task] Remote AI processing disabled. Skipping remote sync.');
+        } else {
+            await AIServiceInstance.syncEmbeddings(true);
+        }
+
         console.log('[Background AI Sync Task] Background AI fetch completed successfully.');
         return BackgroundTask.BackgroundTaskResult.NewData;
     } catch (error) {

@@ -174,7 +174,12 @@ class MediaService {
    * Replaces the previous hardcoded getAssets(5000) which silently dropped photos beyond 5000.
    * Calls onPage(assets, pageNum) for each page so callers can process incrementally.
    */
-  async getAllAssets(onPage = null, pageSize = 500, excludedAlbumIds = []) {
+  // `rawIdsOut`, if given a Set, is populated with EVERY asset id seen on the device --
+  // before the excludedAlbumIds filter below removes any. Callers that need to tell
+  // "genuinely deleted from the device" apart from "just excluded from Lomorage" (e.g.
+  // pruning stale SQLite rows) need that unfiltered set; piggybacking on this existing
+  // pagination pass avoids a second full device scan just to get it.
+  async getAllAssets(onPage = null, pageSize = 500, excludedAlbumIds = [], rawIdsOut = null) {
     let allAssets = [];
     let after = null;
     let hasNextPage = true;
@@ -187,6 +192,10 @@ class MediaService {
       pageNum++;
       const result = await this.getAssets(pageSize, after);
       let assets = result.assets || [];
+
+      if (rawIdsOut) {
+        for (const a of assets) rawIdsOut.add(a.id);
+      }
 
       // Filter out assets that belong to excluded albums
       if (excludedSet.size > 0) {

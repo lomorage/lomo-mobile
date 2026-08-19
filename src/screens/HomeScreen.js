@@ -160,11 +160,83 @@ const SwipeableBanner = ({ info, onPress, onDismiss, styles }) => {
     );
 };
 
+// Shown once, ever, the first time local AI indexing is on — explains why it's
+// fastest with the app open, then gets out of the way for good.
+const AiIndexingTipBanner = ({ onDismiss, styles }) => (
+    <View style={styles.smartBannerContainer}>
+        <View style={styles.smartBanner}>
+            <View style={styles.smartBannerContent}>
+                <Text style={styles.smartBannerTitle}>🧠 Making your photos searchable</Text>
+                <Text style={styles.smartBannerText}>This runs on your phone, so it&apos;s fastest while Lomorage is open. Feel free to keep browsing — just don&apos;t fully close the app.</Text>
+            </View>
+            <TouchableOpacity style={styles.smartBannerButton} onPress={onDismiss}>
+                <Text style={styles.smartBannerButtonText}>Got it</Text>
+            </TouchableOpacity>
+        </View>
+    </View>
+);
+
+// On This Day cards build their preview URI once, from whatever server was active at
+// loadAndSync() time. Unlike the main grid's RenderAsset, they had no way to recover if
+// that turned out to be a slow/stale connection or a one-off failure -- mirrors
+// RenderAsset's two retry paths: serverEpoch (server URL changed) and a backoff retry
+// on any other load error (skipping 404s, which mean the server genuinely doesn't have
+// this hash, so retrying would just repeat the same failure).
+const OnThisDayTile = memo(function OnThisDayTile({ asset, index, navigation, serverEpoch, safeUri, styles }) {
+    const retryCountRef = useRef(0);
+    const retryTimeoutRef = useRef(null);
+    const [retryTick, setRetryTick] = useState(0);
+    useEffect(() => {
+        retryCountRef.current = 0;
+        setRetryTick(0);
+        if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
+    }, [asset.id]);
+    useEffect(() => () => {
+        if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
+    }, []);
+
+    const date = new Date(asset.creationTime);
+    const yearsAgo = new Date().getFullYear() - date.getFullYear();
+
+    let thumbnailUri = safeUri(asset.uri, asset.mediaType);
+    if (thumbnailUri && (retryTick > 0 || serverEpoch > 0)) {
+        thumbnailUri += `${thumbnailUri.includes('?') ? '&' : '?'}_r=${serverEpoch}.${retryTick}`;
+    }
+
+    return (
+        <TouchableOpacity
+            style={styles.onThisDayCard}
+            onPress={() => navigation.navigate('AssetDetail', { initialIndex: index, source: 'onThisDay' })}
+        >
+            <Image
+                source={{ uri: thumbnailUri }}
+                style={styles.onThisDayImage}
+                onError={(e) => {
+                    if (retryCountRef.current < 3 && !isNotFoundImageError(e.error)) {
+                        const attempt = retryCountRef.current + 1;
+                        retryCountRef.current = attempt;
+                        const backoffMs = [1000, 3000, 6000][attempt - 1];
+                        retryTimeoutRef.current = setTimeout(() => {
+                            setRetryTick(t => t + 1);
+                        }, backoffMs);
+                    }
+                }}
+            />
+            <View style={styles.onThisDayOverlay}>
+                <Text style={styles.onThisDayText}>{yearsAgo} {yearsAgo === 1 ? 'year' : 'years'} ago</Text>
+            </View>
+        </TouchableOpacity>
+    );
+});
+
 export default function HomeScreen({ navigation, route }) {
     const [assets, setAssets] = useState([]);
     const [onThisDayAssets, setOnThisDayAssets] = useState([]);
     const [syncing, setSyncing] = useState(false);
     const [syncProgress, setSyncProgress] = useState(null);
+    // Shown only if checking the library takes long enough that a bare spinner would look stuck.
+    const [showScanHint, setShowScanHint] = useState(false);
+    const scanHintTimer = useRef(null);
     const [backupState, setBackupState] = useState({ isBackingUp: false, pendingCount: 0, totalCount: 0, currentAssetId: null });
     const [backupProgress, setBackupProgress] = useState(0);
     const [activeUploads, setActiveUploads] = useState({});
@@ -190,8 +262,23 @@ export default function HomeScreen({ navigation, route }) {
     // remote thumbnails (which read getServerUrl() once at render time) know to retry.
     const [serverEpoch, setServerEpoch] = useState(0);
     
-    const { debugMode, excludedAlbums } = useSettings();
+    const { debugMode, excludedAlbums, aiEnabled } = useSettings();
+    const [showAiTip, setShowAiTip] = useState(false);
     const [debugLogs, setDebugLogs] = useState([]);
+
+    useEffect(() => {
+        if (!aiEnabled) return;
+        SecureStore.getItemAsync('lomorage_ai_tip_dismissed').then(dismissed => {
+            if (dismissed !== 'true') setShowAiTip(true);
+        }).catch(() => {});
+    }, [aiEnabled]);
+
+    const dismissAiTip = useCallback(async () => {
+        setShowAiTip(false);
+        try {
+            await SecureStore.setItemAsync('lomorage_ai_tip_dismissed', 'true');
+        } catch (e) {}
+    }, []);
 
     useEffect(() => {
         if (!debugMode) return;
@@ -962,7 +1049,8 @@ export default function HomeScreen({ navigation, route }) {
         return () => { 
             if (flushTimerRef.current) clearInterval(flushTimerRef.current);
             if (aiPillTimer.current) clearTimeout(aiPillTimer.current);
-            isMounted.current = false; 
+            if (scanHintTimer.current) clearTimeout(scanHintTimer.current);
+            isMounted.current = false;
             subscription.remove();
             memoryWarning.remove();
             subDelete.remove();
@@ -1015,8 +1103,12 @@ export default function HomeScreen({ navigation, route }) {
 
             // Load local assets and remote assets concurrently.
             // Reading local metadata is very fast, and querying SQLite for remote assets is extremely fast (<50ms).
+            // rawDeviceLocalIds collects EVERY id seen during pagination, before the
+            // excludedAlbums filter narrows cumulativeLocalAssets -- needed below to tell
+            // "deleted from the device" apart from "just excluded from Lomorage".
+            const rawDeviceLocalIds = new Set();
             const [cumulativeLocalAssets, sqliteRemoteAssets, sqliteOnThisDayAssets] = await Promise.all([
-                MediaService.getAllAssets(null, 500, excludedAlbums),
+                MediaService.getAllAssets(null, 500, excludedAlbums, rawDeviceLocalIds),
                 AssetDBService.getRemoteAssets(),
                 AssetDBService.getOnThisDayAssets()
             ]);
@@ -1045,6 +1137,15 @@ export default function HomeScreen({ navigation, route }) {
                 SyncService.syncLocalGPS().catch(err => {
                     console.error('[HomeScreen] Failed to sync local GPS:', err);
                 });
+                // Clean up local rows for photos deleted from the device outside the app.
+                // Uses the unfiltered device id set, so excluded (not deleted) photos are untouched.
+                AssetDBService.pruneDeletedLocalAssets(rawDeviceLocalIds).then((prunedIds) => {
+                    if (prunedIds && prunedIds.length > 0) {
+                        prunedIds.forEach(id => DeviceEventEmitter.emit('assetDeleted', id));
+                    }
+                }).catch(err => {
+                    console.error('[HomeScreen] Failed to prune deleted local assets:', err);
+                });
             }).catch(err => {
                 console.error('[HomeScreen] Failed to insert local assets into DB:', err);
             });
@@ -1056,7 +1157,12 @@ export default function HomeScreen({ navigation, route }) {
             mergeAndSetAssets(cumulativeLocalAssets, false);
             setLoading(false);
             setSyncing(true);
-            setSyncProgress({ message: 'Refreshing...' });
+            setSyncProgress({ message: 'Checking your library…' });
+            setShowScanHint(false);
+            if (scanHintTimer.current) clearTimeout(scanHintTimer.current);
+            scanHintTimer.current = setTimeout(() => {
+                if (isMounted.current) setShowScanHint(true);
+            }, 10000);
 
             // Fire off incremental remote tree update in background.
             // This only fetches CHANGED months (comparing cached hashes vs server).
@@ -1075,11 +1181,9 @@ export default function HomeScreen({ navigation, route }) {
             // 4. Perform Deep Hash Crypto-Sync
             try {
                 console.log('[HomeScreen] Starting SyncService.sync...');
-                setSyncProgress({ message: 'Organizing photos...' });
-                const diff = await SyncService.sync(cumulativeLocalAssets, (progress) => {
-                    if (!isMounted.current) return;
-                    setSyncProgress(progress);
-                });
+                // No user-facing progress here on purpose — this is a local hash/diff pass,
+                // not something a photo count would meaningfully describe to the user.
+                const diff = await SyncService.sync(cumulativeLocalAssets, () => {});
 
                 if (!isMounted.current) return;
 
@@ -1097,7 +1201,9 @@ export default function HomeScreen({ navigation, route }) {
                     mergeAndSetAssets(cumulativeLocalAssets, true);
                     setSyncing(false);
                     setSyncProgress(null);
-                    
+                    setShowScanHint(false);
+                    if (scanHintTimer.current) { clearTimeout(scanHintTimer.current); scanHintTimer.current = null; }
+
                     // Trigger offline cache sync in background
                     OfflineCacheService.syncFavoritesFromServer().catch(e => {
                         console.error('[HomeScreen] OfflineCacheService failed:', e);
@@ -1151,15 +1257,13 @@ export default function HomeScreen({ navigation, route }) {
         if (item.id === currentAssetId || activeAssetIds.includes(item.id)) {
             return <ActivityIndicator size="small" color="#007AFF" style={styles.statusIcon} />;
         }
-        switch (item.status) {
-            case 'remote':
-            case 'synced':
-                return <Cloud size={16} color="white" style={styles.statusIcon} />;
-            case 'local':
-                return <UploadCloud size={14} color="rgba(255,255,255,0.7)" style={styles.statusIcon} />;
-            default:
-                return null;
+        // 'remote'/'synced' both mean "safely backed up" and used to render the same
+        // badge on nearly every tile — noise, not information. Only flag the ones
+        // still waiting to go up, so the badge means something when it appears.
+        if (item.status === 'local') {
+            return <UploadCloud size={14} color="rgba(255,255,255,0.7)" style={styles.statusIcon} />;
         }
+        return null;
     });
 
     const RenderAsset = memo(function RenderAsset({ asset, globalIndex, navigation, debugMode, currentAssetId, activeAssetIds, activeLoadRef, source, serverEpoch }) {
@@ -1439,6 +1543,14 @@ export default function HomeScreen({ navigation, route }) {
         return /network error|timeout|econnrefused|econnaborted|enotfound|failed to fetch|net::err|unable to resolve host/i.test(error);
     }, [error]);
 
+    // Plain-language stand-in for the raw error string — the raw text is still
+    // reachable via "Details" for anyone who needs to report it.
+    const friendlyError = useMemo(() => {
+        if (!error) return null;
+        if (/401|unauthoriz/i.test(error)) return 'Your session expired — please log in again.';
+        return 'Something went wrong while checking your library.';
+    }, [error]);
+
     const flashListExtraData = useMemo(() => ({
         isScrubbing,
         currentAssetId: backupState.currentAssetId,
@@ -1457,25 +1569,17 @@ export default function HomeScreen({ navigation, route }) {
                     <Text style={styles.onThisDayTitle}>On This Day</Text>
                 </View>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.onThisDayScrollContent}>
-                    {onThisDayAssets.map((asset, index) => {
-                        const date = new Date(asset.creationTime);
-                        const yearsAgo = new Date().getFullYear() - date.getFullYear();
-                        return (
-                            <TouchableOpacity 
-                                key={asset.id} 
-                                style={styles.onThisDayCard}
-                                onPress={() => navigation.navigate('AssetDetail', { initialIndex: index, source: 'onThisDay' })}
-                            >
-                                <Image 
-                                    source={{ uri: safeUri(asset.uri, asset.mediaType) }} 
-                                    style={styles.onThisDayImage} 
-                                />
-                                <View style={styles.onThisDayOverlay}>
-                                    <Text style={styles.onThisDayText}>{yearsAgo} {yearsAgo === 1 ? 'year' : 'years'} ago</Text>
-                                </View>
-                            </TouchableOpacity>
-                        );
-                    })}
+                    {onThisDayAssets.map((asset, index) => (
+                        <OnThisDayTile
+                            key={asset.id}
+                            asset={asset}
+                            index={index}
+                            navigation={navigation}
+                            serverEpoch={serverEpoch}
+                            safeUri={safeUri}
+                            styles={styles}
+                        />
+                    ))}
                 </ScrollView>
             </View>
         );
@@ -1712,12 +1816,10 @@ export default function HomeScreen({ navigation, route }) {
                     <View style={{ flex: 1 }}>
                         <Text style={styles.title} numberOfLines={1} adjustsFontSizeToFit>Lomorage</Text>
                         <Text style={styles.subtitle}>
-                            {`${assets.length} items${syncing ? ` • ${syncProgress?.message || 'Loading...'}` : isOfflineError ? ' • Server offline' : error ? ' • Error' : ''}`}
+                            {`${assets.length} items${syncing ? ` • ${syncProgress?.message || 'Checking your library…'}` : isOfflineError ? ' • Server offline' : error ? ' • Error' : ''}`}
                         </Text>
-                        {syncing && syncProgress?.total > 0 && syncProgress?.current !== undefined ? (
-                            <Text style={styles.progressText}>
-                                 {`(${syncProgress.current}/${syncProgress.total})`}
-                            </Text>
+                        {syncing && showScanHint ? (
+                            <Text style={styles.progressText}>First-time setup can take a few minutes</Text>
                         ) : null}
                     </View>
                     <View style={{ flexDirection: 'row', alignItems: 'center' }}>
@@ -1793,7 +1895,7 @@ export default function HomeScreen({ navigation, route }) {
                         <WifiOff size={16} color="#5B7290" />
                         <View style={{ flex: 1, marginLeft: 10 }}>
                             <Text style={styles.offlineTitle}>Can&apos;t reach your server</Text>
-                            <Text style={styles.offlineSubtext}>Your local photos are safe on this phone — we&apos;ll keep syncing automatically once it&apos;s back.</Text>
+                            <Text style={styles.offlineSubtext}>Your local photos are safe on this phone — we&apos;ll keep backing up automatically once it&apos;s back.</Text>
                         </View>
                         <TouchableOpacity onPress={() => loadAndSync()} style={styles.offlineRetryButton}>
                             <Text style={styles.offlineRetryText}>Retry</Text>
@@ -1801,7 +1903,10 @@ export default function HomeScreen({ navigation, route }) {
                     </View>
                 ) : (
                     <View style={styles.errorBanner}>
-                        <Text style={styles.errorText} numberOfLines={1}>{error}</Text>
+                        <Text style={styles.errorText} numberOfLines={1}>{friendlyError}</Text>
+                        <TouchableOpacity onPress={() => Alert.alert('Error details', error)} style={{ marginLeft: 10, paddingVertical: 6 }}>
+                            <Text style={[styles.retryText, { color: '#D32F2F' }]}>Details</Text>
+                        </TouchableOpacity>
                         <TouchableOpacity onPress={() => loadAndSync()} style={styles.retryButton}>
                             <Text style={styles.retryText}>Retry</Text>
                         </TouchableOpacity>
@@ -1825,8 +1930,11 @@ export default function HomeScreen({ navigation, route }) {
                         });
                     }}
                 >
+                    {!freeUpSpaceInfo.visible && showAiTip && !isSearching && (
+                        <AiIndexingTipBanner styles={styles} onDismiss={dismissAiTip} />
+                    )}
                     {freeUpSpaceInfo.visible && !isSearching && (
-                        <SwipeableBanner 
+                        <SwipeableBanner
                             info={freeUpSpaceInfo} 
                             styles={styles} 
                             onPress={() => navigation.navigate('FreeUpSpace')} 
@@ -1918,19 +2026,23 @@ export default function HomeScreen({ navigation, route }) {
                         <View style={styles.bottomSheetSummary}>
                             <View style={{ flex: 1 }}>
                                 <Text style={styles.bottomSheetSummaryText}>
-                                    {backupState.isPaused 
-                                        ? `Paused (${backupState.pendingCount} left)` 
-                                        : backupState.pendingCount > 0 
+                                    {backupState.isPaused
+                                        ? `⏸ Paused${backupState.pauseReason ? ` — ${backupState.pauseReason}` : ''}`
+                                        : backupState.pendingCount > 0
                                             ? (backupState.totalCount > 0
-                                                ? `Backing up... ${backupState.totalCount - backupState.pendingCount}/${backupState.totalCount} (${Math.round(smoothOverallProgress * 100)}%)`
-                                                : `Backing up... ${Math.round(smoothOverallProgress * 100)}%`)
-                                            : 'Backup Complete!'}
+                                                ? `☁️ Backing up ${backupState.totalCount - backupState.pendingCount} of ${backupState.totalCount} photos`
+                                                : `☁️ Backing up… ${Math.round(smoothOverallProgress * 100)}%`)
+                                            : 'Backup complete'}
                                 </Text>
-                                {backupState.isPaused && (backupState.retryMessage || backupState.pauseReason) && (
-                                    <Text style={{ fontSize: 13, color: '#FF3B30', marginTop: 4 }}>
-                                        {backupState.retryMessage || backupState.pauseReason}
+                                {backupState.isPaused ? (
+                                    <Text style={{ fontSize: 13, color: backupState.retryMessage ? '#FF3B30' : '#888', marginTop: 4 }}>
+                                        {backupState.retryMessage || `${backupState.pendingCount} photo${backupState.pendingCount === 1 ? '' : 's'} waiting`}
                                     </Text>
-                                )}
+                                ) : backupState.pendingCount > 0 ? (
+                                    <Text style={{ fontSize: 13, color: '#888', marginTop: 4 }}>
+                                        Keeping your originals safe on your Lomorage server
+                                    </Text>
+                                ) : null}
                             </View>
                             {backupState.pendingCount > 0 && (
                                 backupState.isPaused ? (
@@ -1990,11 +2102,7 @@ export default function HomeScreen({ navigation, route }) {
                         <Text style={{ fontSize: 14, marginRight: 6 }}>✓</Text>
                     )}
                     <Text style={styles.aiPillText} numberOfLines={1}>
-                        {aiStatus.isProcessing && aiStatus.total > 0
-                            ? (aiStatus.message || `Analyzing photos ${aiStatus.current}/${aiStatus.total}`)
-                            : aiStatus.isProcessing
-                            ? (aiStatus.message || 'Analyzing photos...')
-                            : 'Analysis complete'}
+                        {aiStatus.isProcessing ? 'Enhancing search…' : 'Search index up to date'}
                     </Text>
                 </Animated.View>
             )}

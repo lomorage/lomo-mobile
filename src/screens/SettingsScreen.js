@@ -14,6 +14,79 @@ import * as MediaLibrary from 'expo-media-library';
 import { Image } from 'expo-image';
 import { useVideoPlayer, VideoView } from 'expo-video';
 
+const aiPct = (num, den) => (den > 0 ? Math.min(100, Math.round((num / den) * 100)) : 0);
+
+const aiHasPendingWork = (detailed) => {
+    if (!detailed) return false;
+    const { onDevice, sync } = detailed;
+    return onDevice.analyzed < onDevice.total || sync.uploaded < sync.uploadCandidates || sync.remoteDone < sync.remoteTotal;
+};
+
+const aiEtaText = (etaSeconds) => {
+    if (etaSeconds == null || etaSeconds <= 0) return null;
+    return etaSeconds < 60 ? `~${etaSeconds}s left` : `~${Math.round(etaSeconds / 60)} min left`;
+};
+
+// Local/content/ph:// asset thumbnails can occasionally fail to resolve (permission
+// edge cases, a file MediaLibrary reports but the OS can't hand back in time). Rather
+// than show the native "broken image" glyph, fall back to a plain tinted tile.
+const LiveThumb = ({ uri, style, placeholderStyle }) => {
+    const [failed, setFailed] = React.useState(false);
+    React.useEffect(() => { setFailed(false); }, [uri]);
+    if (!uri || failed) {
+        return <View style={[style, placeholderStyle]} />;
+    }
+    return <Image source={{ uri }} style={style} contentFit="cover" onError={() => setFailed(true)} />;
+};
+
+// Photo-forward "currently processing" card for the Settings > AI & Search screen.
+// Shown only while a specific asset is actively being analyzed; falls back to the
+// plain progress row the rest of the time (idle, or between-asset gaps).
+const AiLiveCard = ({ status, styles }) => {
+    const { currentAssetUri, currentStepLabel, current, total, rate, etaSeconds, recentFinds } = status;
+    const etaText = aiEtaText(etaSeconds);
+    const topFind = recentFinds && recentFinds.length > 0 ? recentFinds[0] : null;
+
+    return (
+        <View style={styles.liveCard}>
+            <View style={styles.liveSpot}>
+                <LiveThumb uri={currentAssetUri} style={styles.liveSpotImage} placeholderStyle={styles.liveSpotImagePlaceholder} />
+                <View style={[styles.scanCorner, styles.scanCornerTL]} />
+                <View style={[styles.scanCorner, styles.scanCornerTR]} />
+                <View style={[styles.scanCorner, styles.scanCornerBL]} />
+                <View style={[styles.scanCorner, styles.scanCornerBR]} />
+                <View style={styles.liveSpotCaption}>
+                    <Text style={styles.liveAction} numberOfLines={1}>{currentStepLabel || '🖼 Analyzing photo…'}</Text>
+                </View>
+            </View>
+            <View style={styles.statBarBg}>
+                <View style={[styles.statBarFill, { width: `${aiPct(current, total)}%` }]} />
+            </View>
+            <View style={styles.liveMetaRow}>
+                <Text style={styles.liveMetaText}>{current.toLocaleString()} / {total.toLocaleString()}</Text>
+                <Text style={styles.liveMetaText}>{rate > 0 ? `${rate} photos/sec${etaText ? ` · ${etaText}` : ''}` : 'Starting…'}</Text>
+            </View>
+            {recentFinds && recentFinds.length > 0 && (
+                <>
+                    <View style={styles.liveFilmstrip}>
+                        {recentFinds.map((find, i) => (
+                            <View key={`${find.id}-${i}`} style={styles.filmTile}>
+                                <LiveThumb uri={find.uri} style={styles.filmTileImage} placeholderStyle={styles.liveSpotImagePlaceholder} />
+                                <View style={styles.filmBadge}>
+                                    <Text style={styles.filmBadgeText}>{find.badge}</Text>
+                                </View>
+                            </View>
+                        ))}
+                    </View>
+                    {topFind && (
+                        <Text style={styles.liveHighlight} numberOfLines={1}>{topFind.badge} {topFind.detail}</Text>
+                    )}
+                </>
+            )}
+        </View>
+    );
+};
+
 const SimpleVideoPlayer = ({ uri, isActive }) => {
     const [showControls, setShowControls] = React.useState(false);
     const player = useVideoPlayer(uri, player => {
@@ -96,6 +169,9 @@ export default function SettingsScreen({ navigation }) {
     const [isPHashIndexing, setIsPHashIndexing] = React.useState(false);
     const [isCLIPIndexing, setIsCLIPIndexing] = React.useState(false);
     const [aiStatus, setAiStatus] = React.useState({ isProcessing: false, current: 0, total: 0, message: 'Idle' });
+    const [aiDetailedStatus, setAiDetailedStatus] = React.useState(null);
+    const [aiBlockReason, setAiBlockReason] = React.useState(null);
+    const [showAiBreakdown, setShowAiBreakdown] = React.useState(false);
     const [isExportingLogs, setIsExportingLogs] = React.useState(false);
     const [serverUrl, setServerUrl] = React.useState(AuthService.getServerUrl());
     const [localUrl, setLocalUrl] = React.useState(AuthService.getLocalUrl());
@@ -135,6 +211,16 @@ export default function SettingsScreen({ navigation }) {
         // Load initial status
         setAiStatus(AIService.getProcessingStatus());
 
+        // The breakdown's counts only change as batches complete deep inside AIService,
+        // which doesn't event out per-count-change — so poll it instead of trying to
+        // catch every transition. Cheap COUNT queries, and only while this screen is open.
+        const refreshAiDetail = () => {
+            AIService.getDetailedIndexStatus().then(setAiDetailedStatus);
+            AIService.getIdleBlockReason().then(setAiBlockReason);
+        };
+        refreshAiDetail();
+        const aiDetailInterval = setInterval(refreshAiDetail, 6000);
+
         const sub = DeviceEventEmitter.addListener('onServerUrlChanged', (newUrl) => {
             setServerUrl(newUrl);
             setLocalUrl(AuthService.getLocalUrl());
@@ -149,6 +235,7 @@ export default function SettingsScreen({ navigation }) {
         return () => {
             sub.remove();
             aiSub.remove();
+            clearInterval(aiDetailInterval);
         };
     }, []);
 
@@ -478,7 +565,7 @@ export default function SettingsScreen({ navigation }) {
                 <View style={styles.settingRow}>
                     <View style={styles.settingTextContainer}>
                         <Text style={styles.settingLabel}>Local AI Features</Text>
-                        <Text style={styles.settingDescription}>Duplicate detection and semantic search run entirely on this device. Nothing is uploaded anywhere to make this work.</Text>
+                        <Text style={styles.settingDescription}>Makes photos searchable by what&apos;s in them or written on them, groups photos of the same person, and finds duplicates — all on your phone. Nothing is uploaded to make this work.</Text>
                     </View>
                     <Switch
                         value={aiEnabled}
@@ -529,13 +616,92 @@ export default function SettingsScreen({ navigation }) {
                             />
                         </View>
 
-                        <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8, paddingTop: 8 }]}>
-                            <View style={styles.settingTextContainer}>
-                                <Text style={styles.settingLabel}>AI Background Indexer Status</Text>
-                                <Text style={styles.settingDescription}>{aiStatus.message}</Text>
+                        <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8, paddingTop: 8, flexDirection: 'column', alignItems: 'stretch' }]}>
+                            <Text style={styles.statGroupHeader}>On this device</Text>
+                            {aiStatus.isProcessing && aiStatus.currentAssetUri ? (
+                                <AiLiveCard status={aiStatus} styles={styles} />
+                            ) : (
+                                <View style={styles.statRow}>
+                                    <View style={styles.statRowHeader}>
+                                        <Text style={styles.statRowLabel}>🧠 Analyzing photos</Text>
+                                        <Text style={styles.statRowValue}>
+                                            {aiDetailedStatus ? `${aiDetailedStatus.onDevice.analyzed.toLocaleString()} / ${aiDetailedStatus.onDevice.total.toLocaleString()}` : '—'}
+                                        </Text>
+                                    </View>
+                                    <View style={styles.statBarBg}>
+                                        <View style={[styles.statBarFill, { width: `${aiPct(aiDetailedStatus?.onDevice.analyzed, aiDetailedStatus?.onDevice.total)}%` }]} />
+                                    </View>
+                                </View>
+                            )}
+
+                            {aiDetailedStatus && (
+                                <TouchableOpacity onPress={() => setShowAiBreakdown(v => !v)} style={styles.discloseRow}>
+                                    <Text style={styles.discloseText}>{showAiBreakdown ? 'Hide breakdown  ⌃' : 'Show breakdown  ⌄'}</Text>
+                                </TouchableOpacity>
+                            )}
+
+                            {showAiBreakdown && aiDetailedStatus && (
+                                <View>
+                                    {[
+                                        ['🖼 Semantic search', aiDetailedStatus.onDevice.semantic],
+                                        ['🔤 Text in photos', aiDetailedStatus.onDevice.text],
+                                        ['🙂 Face recognition', aiDetailedStatus.onDevice.faces],
+                                        ['🧬 Duplicate detection', aiDetailedStatus.onDevice.duplicates],
+                                    ].map(([label, done]) => (
+                                        <View key={label} style={styles.subStatRow}>
+                                            <View style={styles.statRowHeader}>
+                                                <Text style={styles.subStatRowLabel}>{label}</Text>
+                                                <Text style={styles.subStatRowValue}>{done.toLocaleString()}</Text>
+                                            </View>
+                                            <View style={styles.subStatBarBg}>
+                                                <View style={[styles.subStatBarFill, { width: `${aiPct(done, aiDetailedStatus.onDevice.total)}%` }]} />
+                                            </View>
+                                        </View>
+                                    ))}
+                                </View>
+                            )}
+
+                            {aiBlockReason && aiHasPendingWork(aiDetailedStatus) && (
+                                <View style={styles.calloutBox}>
+                                    <Text style={styles.calloutText}>⏸ On-device analysis is paused. {aiBlockReason}</Text>
+                                </View>
+                            )}
+
+                            <Text style={[styles.statGroupHeader, { marginTop: 14 }]}>Syncing with your server</Text>
+                            <View style={styles.statRow}>
+                                <View style={styles.statRowHeader}>
+                                    <Text style={styles.statRowLabel}>↑ Uploading results to server</Text>
+                                    <Text style={styles.statRowValue}>
+                                        {aiDetailedStatus ? `${aiDetailedStatus.sync.uploaded.toLocaleString()} / ${aiDetailedStatus.sync.uploadCandidates.toLocaleString()}` : '—'}
+                                    </Text>
+                                </View>
+                                <View style={styles.statBarBg}>
+                                    <View style={[styles.statBarFill, { width: `${aiPct(aiDetailedStatus?.sync.uploaded, aiDetailedStatus?.sync.uploadCandidates)}%` }]} />
+                                </View>
                             </View>
+                            <View style={styles.statRow}>
+                                <View style={styles.statRowHeader}>
+                                    <Text style={styles.statRowLabel}>☁️ Remote-only photos indexed</Text>
+                                    <Text style={styles.statRowValue}>
+                                        {aiDetailedStatus ? `${aiDetailedStatus.sync.remoteDone.toLocaleString()} / ${aiDetailedStatus.sync.remoteTotal.toLocaleString()}` : '—'}
+                                    </Text>
+                                </View>
+                                <View style={styles.statBarBg}>
+                                    <View style={[styles.statBarFill, { width: `${aiPct(aiDetailedStatus?.sync.remoteDone, aiDetailedStatus?.sync.remoteTotal)}%` }]} />
+                                </View>
+                            </View>
+
+                            {aiHasPendingWork(aiDetailedStatus) && !aiBlockReason && (
+                                <View style={styles.calloutBox}>
+                                    <Text style={styles.calloutText}>⚡ Keep Lomorage open, charging, and on Wi-Fi to index faster. Your phone&apos;s operating system limits how much can run in the background.</Text>
+                                </View>
+                            )}
+
                             {aiStatus.isProcessing && (
-                                <ActivityIndicator size="small" color="#007AFF" style={{ marginLeft: 8 }} />
+                                <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 10 }}>
+                                    <ActivityIndicator size="small" color="#007AFF" />
+                                    <Text style={{ marginLeft: 8, fontSize: 12, color: '#888' }}>Working…</Text>
+                                </View>
                             )}
                         </View>
                     </>
@@ -559,6 +725,17 @@ export default function SettingsScreen({ navigation }) {
 
                 {debugMode && (
                     <>
+                        <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8, paddingTop: 8 }]}>
+                            <View style={styles.settingTextContainer}>
+                                <Text style={styles.settingLabel}>AI Current Phase</Text>
+                                <Text style={styles.settingDescription}>Live, raw status from the background indexer.</Text>
+                                <Text style={styles.devRawText}>{aiStatus.message}</Text>
+                            </View>
+                            {aiStatus.isProcessing && (
+                                <ActivityIndicator size="small" color="#007AFF" style={{ marginLeft: 8 }} />
+                            )}
+                        </View>
+
                         <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8, paddingTop: 8 }]}>
                             <View style={styles.settingTextContainer}>
                                 <Text style={styles.settingLabel}>Search Match Strictness</Text>
@@ -1297,6 +1474,190 @@ const styles = StyleSheet.create({
         fontSize: 12.5,
         lineHeight: 17,
         color: '#2E5941',
+    },
+    statGroupHeader: {
+        fontSize: 11,
+        fontWeight: '700',
+        color: '#8E8E93',
+        textTransform: 'uppercase',
+        letterSpacing: 0.5,
+        marginBottom: 6,
+    },
+    statRow: {
+        marginBottom: 10,
+    },
+    statRowHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+    },
+    statRowLabel: {
+        fontSize: 14,
+        color: '#333',
+    },
+    statRowValue: {
+        fontSize: 13,
+        color: '#888',
+        fontVariant: ['tabular-nums'],
+    },
+    statBarBg: {
+        height: 4,
+        backgroundColor: '#E5E5EA',
+        borderRadius: 2,
+        marginTop: 5,
+        overflow: 'hidden',
+    },
+    statBarFill: {
+        height: '100%',
+        backgroundColor: '#007AFF',
+        borderRadius: 2,
+    },
+    discloseRow: {
+        paddingVertical: 6,
+    },
+    discloseText: {
+        fontSize: 13,
+        color: '#007AFF',
+        fontWeight: '600',
+    },
+    subStatRow: {
+        marginBottom: 7,
+        paddingLeft: 14,
+    },
+    subStatRowLabel: {
+        fontSize: 12.5,
+        color: '#5A6672',
+    },
+    subStatRowValue: {
+        fontSize: 12,
+        color: '#999',
+        fontVariant: ['tabular-nums'],
+    },
+    subStatBarBg: {
+        height: 3,
+        backgroundColor: '#EDEDF0',
+        borderRadius: 2,
+        marginTop: 4,
+        overflow: 'hidden',
+    },
+    subStatBarFill: {
+        height: '100%',
+        backgroundColor: '#8FB8E8',
+        borderRadius: 2,
+    },
+    liveCard: {
+        backgroundColor: '#F2F2F7',
+        borderRadius: 12,
+        padding: 10,
+    },
+    liveSpot: {
+        position: 'relative',
+        width: '100%',
+        height: 110,
+        borderRadius: 10,
+        overflow: 'hidden',
+        backgroundColor: '#D7D7DC',
+    },
+    liveSpotImage: {
+        width: '100%',
+        height: '100%',
+    },
+    liveSpotImagePlaceholder: {
+        backgroundColor: '#D7D7DC',
+    },
+    scanCorner: {
+        position: 'absolute',
+        width: 16,
+        height: 16,
+        borderColor: 'rgba(255,255,255,0.95)',
+    },
+    scanCornerTL: { top: 8, left: 8, borderTopWidth: 2, borderLeftWidth: 2, borderTopLeftRadius: 5 },
+    scanCornerTR: { top: 8, right: 8, borderTopWidth: 2, borderRightWidth: 2, borderTopRightRadius: 5 },
+    scanCornerBL: { bottom: 8, left: 8, borderBottomWidth: 2, borderLeftWidth: 2, borderBottomLeftRadius: 5 },
+    scanCornerBR: { bottom: 8, right: 8, borderBottomWidth: 2, borderRightWidth: 2, borderBottomRightRadius: 5 },
+    liveSpotCaption: {
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        bottom: 0,
+        paddingHorizontal: 10,
+        paddingVertical: 7,
+    },
+    liveAction: {
+        fontSize: 13,
+        fontWeight: '600',
+        color: '#fff',
+        textShadowColor: 'rgba(0,0,0,0.6)',
+        textShadowOffset: { width: 0, height: 1 },
+        textShadowRadius: 3,
+    },
+    liveMetaRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        marginTop: 8,
+    },
+    liveMetaText: {
+        fontSize: 11,
+        color: '#8E8E93',
+        fontVariant: ['tabular-nums'],
+    },
+    liveFilmstrip: {
+        flexDirection: 'row',
+        gap: 6,
+        marginTop: 9,
+    },
+    filmTile: {
+        position: 'relative',
+        width: 36,
+        height: 36,
+        borderRadius: 8,
+        overflow: 'hidden',
+        backgroundColor: '#D7D7DC',
+    },
+    filmTileImage: {
+        width: '100%',
+        height: '100%',
+    },
+    filmBadge: {
+        position: 'absolute',
+        bottom: -3,
+        right: -3,
+        width: 15,
+        height: 15,
+        borderRadius: 8,
+        backgroundColor: '#fff',
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    filmBadgeText: {
+        fontSize: 9,
+    },
+    liveHighlight: {
+        fontSize: 12,
+        color: '#48505A',
+        marginTop: 9,
+        lineHeight: 17,
+    },
+    calloutBox: {
+        backgroundColor: '#FFF6E2',
+        borderRadius: 8,
+        padding: 10,
+        marginTop: 12,
+    },
+    calloutText: {
+        fontSize: 12,
+        color: '#7A5B12',
+        lineHeight: 17,
+    },
+    devRawText: {
+        fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+        fontSize: 11,
+        color: '#B5690A',
+        marginTop: 6,
+        backgroundColor: '#FBF3E8',
+        borderRadius: 6,
+        paddingHorizontal: 7,
+        paddingVertical: 5,
+        overflow: 'hidden',
     },
     serverBadge: {
         fontSize: 12,
