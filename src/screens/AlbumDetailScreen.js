@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useLayoutEffect } from 'react';
+import React, { useEffect, useState, useLayoutEffect, memo } from 'react';
 import { View, Text, StyleSheet, Dimensions, ActivityIndicator, TouchableOpacity, Alert, Modal, TextInput, KeyboardAvoidingView, Platform, DeviceEventEmitter } from 'react-native';
 import { Image } from 'expo-image';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -11,13 +11,64 @@ import AssetDBService from '../services/AssetDBService';
 import GalleryStore from '../store/GalleryStore';
 import MediaService from '../services/MediaService';
 import AIService from '../services/AIService';
+import { useServerEpoch } from '../hooks/useServerEpoch';
+import { useImageRetry, withRetryBuster } from '../hooks/useImageRetry';
 
 const { width } = Dimensions.get('window');
 const SPACING = 2;
 const NUM_COLUMNS = 4;
 const ITEM_SIZE = (width - SPACING * (NUM_COLUMNS + 1)) / NUM_COLUMNS;
 
+// A bare uri built once from getPreviewUrl() has no way to recover if the server
+// switches from a slow/stale connection to a fast one mid-session, or if a single
+// request just fails transiently -- see useServerEpoch/useImageRetry for why.
+const AlbumGridTile = memo(function AlbumGridTile({ item, index, handleAssetPress, handleAssetLongPress, selectMode, selectedHashes, albumName, serverEpoch }) {
+    const { retryTick, onError } = useImageRetry(item.id);
+    const isVideo = item.mediaType === 'video';
+    const useLocal = item.localCachePath && item.mediaType !== 'video';
+    const uri = useLocal ? item.localCachePath : withRetryBuster(item.uri, serverEpoch, retryTick);
+
+    return (
+        <TouchableOpacity
+            activeOpacity={0.8}
+            onPress={() => handleAssetPress(item, index)}
+            onLongPress={() => handleAssetLongPress(item)}
+            style={styles.itemContainer}
+        >
+            <Image
+                source={{ uri }}
+                style={styles.image}
+                contentFit="cover"
+                cachePolicy="memory-disk"
+                transition={0}
+                recyclingKey={item.id ? String(item.id) : null}
+                onError={useLocal ? undefined : onError}
+            />
+            {isVideo && (
+                <View style={styles.videoIndicator}>
+                    <PlayCircle color="#fff" size={20} />
+                </View>
+            )}
+            {item.isFavorite && albumName !== 'Favorites' && albumName !== '/Favorites' && (
+                <View style={styles.favoriteIndicator}>
+                    <Heart color="#ef4444" fill="#ef4444" size={14} />
+                </View>
+            )}
+            {selectMode && (
+                <View style={styles.selectOverlay}>
+                    {selectedHashes.has(item.hash) ? (
+                        <CheckCircle2 color="#007AFF" fill="#fff" size={24} />
+                    ) : (
+                        <Circle color="#fff" size={24} />
+                    )}
+                </View>
+            )}
+        </TouchableOpacity>
+    );
+});
+
 export default function AlbumDetailScreen() {
+    const serverEpoch = useServerEpoch();
     const [assets, setAssets] = useState([]);
     const [loading, setLoading] = useState(true);
     const [selectMode, setSelectMode] = useState(false);
@@ -280,45 +331,18 @@ export default function AlbumDetailScreen() {
         setLoading(false);
     };
 
-    const renderItem = ({ item, index }) => {
-        const isVideo = item.mediaType === 'video';
-        return (
-            <TouchableOpacity
-                activeOpacity={0.8}
-                onPress={() => handleAssetPress(item, index)}
-                onLongPress={() => handleAssetLongPress(item)}
-                style={styles.itemContainer}
-            >
-                <Image
-                    source={(item.localCachePath && item.mediaType !== 'video') ? { uri: item.localCachePath } : { uri: item.uri }}
-                    style={styles.image}
-                    contentFit="cover"
-                    cachePolicy="memory-disk"
-                    transition={0}
-                    recyclingKey={item.id ? String(item.id) : null}
-                />
-                {isVideo && (
-                    <View style={styles.videoIndicator}>
-                        <PlayCircle color="#fff" size={20} />
-                    </View>
-                )}
-                {item.isFavorite && albumName !== 'Favorites' && albumName !== '/Favorites' && (
-                    <View style={styles.favoriteIndicator}>
-                        <Heart color="#ef4444" fill="#ef4444" size={14} />
-                    </View>
-                )}
-                {selectMode && (
-                    <View style={styles.selectOverlay}>
-                        {selectedHashes.has(item.hash) ? (
-                            <CheckCircle2 color="#007AFF" fill="#fff" size={24} />
-                        ) : (
-                            <Circle color="#fff" size={24} />
-                        )}
-                    </View>
-                )}
-            </TouchableOpacity>
-        );
-    };
+    const renderItem = ({ item, index }) => (
+        <AlbumGridTile
+            item={item}
+            index={index}
+            handleAssetPress={handleAssetPress}
+            handleAssetLongPress={handleAssetLongPress}
+            selectMode={selectMode}
+            selectedHashes={selectedHashes}
+            albumName={albumName}
+            serverEpoch={serverEpoch}
+        />
+    );
 
     return (
         <View style={styles.container}>

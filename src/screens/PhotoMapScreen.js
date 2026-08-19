@@ -11,6 +11,8 @@ import { useVideoPlayer, VideoView } from 'expo-video';
 import AssetDBService from '../services/AssetDBService';
 import AuthService from '../services/AuthService';
 import MediaService from '../services/MediaService';
+import { useServerEpoch } from '../hooks/useServerEpoch';
+import { useImageRetry, withRetryBuster } from '../hooks/useImageRetry';
 
 const { width, height } = Dimensions.get('window');
 const ASPECT_RATIO = width / height;
@@ -56,9 +58,14 @@ function AssetVideoPlayer({ uri, style, shouldPlay, nativeControls = false }) {
 // Separate component so each marker manages its own tracksViewChanges lifecycle.
 // tracksViewChanges=true while image is loading, then false after onLoad fires,
 // so Android re-captures the marker bitmap exactly once after the image appears.
-const PhotoMarker = React.memo(function PhotoMarker({ coordinate, thumbUrl, fallbackUrl, onPress }) {
+const PhotoMarker = React.memo(function PhotoMarker({ coordinate, thumbUrl, fallbackUrl, onPress, isRemote, serverEpoch }) {
   const [tracksViewChanges, setTracksViewChanges] = useState(true);
   const [useRemoteFallback, setUseRemoteFallback] = useState(false);
+  // thumbUrl/fallbackUrl are recomputed fresh whenever this screen re-renders (they read
+  // AuthService.getServerUrl() live), so they already pick up a server switch on their
+  // own -- this only needs to cover a single transient request failure against the SAME
+  // url, where the string wouldn't otherwise change enough to retrigger a reload.
+  const { retryTick, onError: onRetryError } = useImageRetry(thumbUrl);
 
   const stopTracking = useCallback(() => {
     // A brief delay to let the map capture the final rendered image
@@ -80,6 +87,9 @@ const PhotoMarker = React.memo(function PhotoMarker({ coordinate, thumbUrl, fall
     };
   }, [thumbUrl]);
 
+  const baseUri = (useRemoteFallback && fallbackUrl) ? fallbackUrl : (thumbUrl || '');
+  const displayUri = isRemote ? withRetryBuster(baseUri, serverEpoch, retryTick) : baseUri;
+
   return (
     <Marker
       coordinate={coordinate}
@@ -87,7 +97,7 @@ const PhotoMarker = React.memo(function PhotoMarker({ coordinate, thumbUrl, fall
       onPress={onPress}
     >
       <Image
-        source={{ uri: (useRemoteFallback && fallbackUrl) ? fallbackUrl : (thumbUrl || '') }}
+        source={{ uri: displayUri }}
         style={{
           width: 52,
           height: 52,
@@ -98,10 +108,15 @@ const PhotoMarker = React.memo(function PhotoMarker({ coordinate, thumbUrl, fall
         }}
         contentFit="cover"
         onLoad={stopTracking}
-        onError={() => {
+        onError={(e) => {
             if (fallbackUrl && !useRemoteFallback) {
                 setUseRemoteFallback(true);
                 setTracksViewChanges(true); // Re-enable tracking to capture the fallback image
+                return;
+            }
+            if (isRemote) {
+                setTracksViewChanges(true);
+                onRetryError(e);
             }
         }}
       />
@@ -139,6 +154,7 @@ export default function PhotoMapScreen() {
   const mapRef = useRef(null);
   const navigation = useNavigation();
   const isFocused = useIsFocused();
+  const serverEpoch = useServerEpoch();
   const [points, setPoints] = useState([]);
   const [clusters, setClusters] = useState([]);
   const [region, setRegion] = useState({
@@ -584,6 +600,8 @@ export default function PhotoMapScreen() {
         coordinate={{ latitude, longitude }}
         thumbUrl={thumbUrl}
         fallbackUrl={fallbackUrl}
+        isRemote={!isLocal}
+        serverEpoch={serverEpoch}
         onPress={(e) => {
           e.stopPropagation();
           openPhoto({ thumbUrl, fullUrl, hash, isLocal });

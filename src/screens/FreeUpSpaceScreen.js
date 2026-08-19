@@ -8,8 +8,11 @@ import AssetDBService from '../services/AssetDBService';
 import MediaService from '../services/MediaService';
 import GalleryStore from '../store/GalleryStore';
 import { formatBytesLog } from '../utils/formatters';
+import { useServerEpoch } from '../hooks/useServerEpoch';
+import { useImageRetry, withRetryBuster } from '../hooks/useImageRetry';
 
 export default function FreeUpSpaceScreen({ navigation }) {
+    const serverEpoch = useServerEpoch();
     const [videos, setVideos] = useState([]);
     const [loading, setLoading] = useState(true);
     const [selectedIds, setSelectedIds] = useState(new Set());
@@ -127,29 +130,34 @@ export default function FreeUpSpaceScreen({ navigation }) {
         }
     };
 
-const VideoCard = React.memo(function VideoCard({ item, isSelected, playVideo, toggleSelection, formatSize }) {
+const VideoCard = React.memo(function VideoCard({ item, isSelected, playVideo, toggleSelection, formatSize, serverEpoch }) {
     const [useRemoteFallback, setUseRemoteFallback] = React.useState(false);
+    const { retryTick, onError: onRemoteRetryError } = useImageRetry(item.id);
 
     const remoteFallbackUri = item.hash
         ? MediaService.getPreviewUrl(item.hash, 'video')
         : null;
 
-    const displayUri = (useRemoteFallback && remoteFallbackUri) ? remoteFallbackUri : item.uri;
+    const displayUri = (useRemoteFallback && remoteFallbackUri)
+        ? withRetryBuster(remoteFallbackUri, serverEpoch, retryTick)
+        : item.uri;
 
     return (
-        <TouchableOpacity 
+        <TouchableOpacity
             style={styles.card}
             activeOpacity={0.8}
             onPress={() => playVideo(item)}
         >
-            <Image 
-                source={{ uri: displayUri }} 
+            <Image
+                source={{ uri: displayUri }}
                 style={styles.thumbnail}
                 contentFit="cover"
-                onError={() => {
+                onError={(e) => {
                     if (remoteFallbackUri && !useRemoteFallback) {
                         setUseRemoteFallback(true);
+                        return;
                     }
+                    if (useRemoteFallback) onRemoteRetryError(e);
                 }}
             />
             <View style={styles.overlay}>
@@ -185,6 +193,7 @@ const VideoCard = React.memo(function VideoCard({ item, isSelected, playVideo, t
                 playVideo={playVideo}
                 toggleSelection={toggleSelection}
                 formatSize={formatSize}
+                serverEpoch={serverEpoch}
             />
         );
     };

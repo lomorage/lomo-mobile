@@ -23,6 +23,9 @@ import OfflineCacheService from '../services/OfflineCacheService';
 import AssetDBService from '../services/AssetDBService';
 import GalleryStore from '../store/GalleryStore';
 import ZoomableMedia from '../components/ZoomableMedia';
+import { useServerEpoch } from '../hooks/useServerEpoch';
+import { withRetryBuster } from '../hooks/useImageRetry';
+import { isNotFoundImageError } from '../utils/imageErrors';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImageManipulator from 'expo-image-manipulator';
 
@@ -277,6 +280,32 @@ export default function AssetDetailScreen({ route, navigation }) {
     const [isUploading, setIsUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(0);
     const [currentIndex, setCurrentIndex] = useState(initialIndex || 0);
+    // Recovers remote preview/full-size images that fail to load -- either because the
+    // server URL switched (serverEpoch, e.g. dual-connection failover finding a faster
+    // path) or a single request just failed transiently (retryEpoch, backoff retry).
+    // Shared across visible items rather than per-tile state, since this full-screen
+    // swiper only ever has a couple of items mounted at once; resets on navigation
+    // between photos so one photo's failures don't eat another's retry budget.
+    const serverEpoch = useServerEpoch();
+    const retryAttemptRef = useRef(0);
+    const retryTimeoutRef = useRef(null);
+    const [retryEpoch, setRetryEpoch] = useState(0);
+    useEffect(() => {
+        retryAttemptRef.current = 0;
+        setRetryEpoch(0);
+        if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
+    }, [currentIndex]);
+    useEffect(() => () => {
+        if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
+    }, []);
+    const handleRemoteImageError = useCallback((e) => {
+        if (retryAttemptRef.current < 3 && !isNotFoundImageError(e?.error || e?.nativeEvent?.error)) {
+            const attempt = retryAttemptRef.current + 1;
+            retryAttemptRef.current = attempt;
+            const backoffMs = [1000, 3000, 6000][attempt - 1];
+            retryTimeoutRef.current = setTimeout(() => setRetryEpoch(t => t + 1), backoffMs);
+        }
+    }, []);
     const [extractedVideoUris, setExtractedVideoUris] = useState({});
     const [isPreparingLive, setIsPreparingLive] = useState(false);
     const [isLivePlaying, setIsLivePlaying] = useState(false);
@@ -1064,9 +1093,15 @@ export default function AssetDetailScreen({ route, navigation }) {
             }
         }
         // Offline Cache overriding logic:
-        if (item.status === 'remote' && item.localCachePath && item.mediaType !== 'video') {
+        const usingLocalCache = item.status === 'remote' && item.localCachePath && item.mediaType !== 'video';
+        if (usingLocalCache) {
             thumbUri = item.localCachePath;
             staticImageUri = item.localCachePath;
+        } else {
+            // Recover from a stale/slow server URL or a transient load failure -- see
+            // serverEpoch/retryEpoch above. Bare URLs alone won't re-trigger the loader.
+            thumbUri = withRetryBuster(thumbUri, serverEpoch, retryEpoch);
+            staticImageUri = withRetryBuster(staticImageUri, serverEpoch, retryEpoch);
         }
 
         return (
@@ -1086,6 +1121,7 @@ export default function AssetDetailScreen({ route, navigation }) {
                                 contentFit="contain"
                                 cachePolicy="memory-disk"
                                 transition={0}
+                                onError={usingLocalCache ? undefined : handleRemoteImageError}
                             />
                             {/* The streaming video player layered on top, only mounted when visible and proxy url resolved */}
                             {shouldMountVideo && resolvedVideoUri && (
@@ -1117,6 +1153,7 @@ export default function AssetDetailScreen({ route, navigation }) {
                                         contentFit="contain"
                                         cachePolicy="memory-disk"
                                         transition={0}
+                                        onError={usingLocalCache ? undefined : handleRemoteImageError}
                                         onLoad={(event) => {
                                             if (event.source) {
                                                 console.log('[AssetDetailScreen] Image loaded for item:', loadedDimsKey, 'source size:', event.source.width, event.source.height);

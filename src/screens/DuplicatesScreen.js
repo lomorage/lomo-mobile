@@ -27,14 +27,17 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Device from 'expo-device';
 import { useSettings } from '../context/SettingsContext';
 import { formatBytesLog } from '../utils/formatters';
+import { useServerEpoch } from '../hooks/useServerEpoch';
+import { useImageRetry, withRetryBuster } from '../hooks/useImageRetry';
 
 const { width } = Dimensions.get('window');
 
 // Lazily resolves the local URI + size/dimensions for a local asset on first render.
 // onMetadata(uri, width, height, size) is called once info is available.
-function LazyLocalAsset({ asset, style, onMetadata, ...rest }) {
+function LazyLocalAsset({ asset, style, onMetadata, serverEpoch, ...rest }) {
     const [uri, setUri] = React.useState(null);
     const [useRemoteFallback, setUseRemoteFallback] = React.useState(false);
+    const { retryTick, onError: onRemoteRetryError } = useImageRetry(asset.id);
 
     React.useEffect(() => {
         let cancelled = false;
@@ -61,16 +64,20 @@ function LazyLocalAsset({ asset, style, onMetadata, ...rest }) {
         ? MediaService.getPreviewUrl(asset.hash, asset.mediaType)
         : null;
 
-    const displayUri = (useRemoteFallback && remoteFallbackUri) ? remoteFallbackUri : uri;
+    const displayUri = (useRemoteFallback && remoteFallbackUri)
+        ? withRetryBuster(remoteFallbackUri, serverEpoch, retryTick)
+        : uri;
 
     return (
         <Image
             source={displayUri ? { uri: displayUri } : null}
             style={style}
-            onError={() => {
+            onError={(e) => {
                 if (remoteFallbackUri && !useRemoteFallback) {
                     setUseRemoteFallback(true);
+                    return;
                 }
+                if (useRemoteFallback) onRemoteRetryError(e);
             }}
             {...rest}
         />
@@ -79,9 +86,13 @@ function LazyLocalAsset({ asset, style, onMetadata, ...rest }) {
 
 // Standalone card for one asset within a duplicate group.
 // Needed so that useState (for lazy metadata) follows React Hooks rules (no hooks in loops).
-const AssetCard = React.memo(function AssetCard({ asset, idx, isSelected, onToggle, onSize, globalMeta, onOpenCompare }) {
+const AssetCard = React.memo(function AssetCard({ asset, idx, isSelected, onToggle, onSize, globalMeta, onOpenCompare, serverEpoch }) {
     const isBest = idx === 0;
     const [localMeta, setLocalMeta] = React.useState({ width: 0, height: 0, size: 0 });
+    // asset.displayUri is built once (in AIService.findDuplicateGroups) against whatever
+    // server was active at that moment -- see useServerEpoch/useImageRetry for why this
+    // needs to recover on its own if the connection changes or a load fails transiently.
+    const { retryTick, onError: onRemoteError } = useImageRetry(asset.id);
 
     const formatSizeLocal = (bytes) => formatBytesLog(bytes, { fallback: '' });
 
@@ -99,6 +110,7 @@ const AssetCard = React.memo(function AssetCard({ asset, idx, isSelected, onTogg
                             style={styles.thumbnail}
                             contentFit="cover"
                             cachePolicy="memory-disk"
+                            serverEpoch={serverEpoch}
                             onMetadata={(uri, w, h, s) => {
                                 setLocalMeta({ width: w, height: h, size: s });
                                 if (onSize && s > 0) onSize(asset.id, s);
@@ -106,10 +118,11 @@ const AssetCard = React.memo(function AssetCard({ asset, idx, isSelected, onTogg
                         />
                     ) : (
                         <Image
-                            source={{ uri: asset.displayUri }}
+                            source={{ uri: withRetryBuster(asset.displayUri, serverEpoch, retryTick) }}
                             style={styles.thumbnail}
                             contentFit="cover"
                             cachePolicy="memory-disk"
+                            onError={onRemoteError}
                         />
                     )}
 
@@ -159,11 +172,12 @@ const AssetCard = React.memo(function AssetCard({ asset, idx, isSelected, onTogg
 }, (prevProps, nextProps) => {
     return prevProps.isSelected === nextProps.isSelected &&
            prevProps.globalMeta === nextProps.globalMeta &&
-           prevProps.asset.id === nextProps.asset.id;
+           prevProps.asset.id === nextProps.asset.id &&
+           prevProps.serverEpoch === nextProps.serverEpoch;
 });
 
 // Memoized group container to prevent massive FlatList re-renders when selection changes
-const DuplicateGroup = React.memo(function DuplicateGroup({ group, groupIndex, selectedMap, modalMeta, toggleSelect, handleSize, handleIgnoreGroup, handleDeleteGroup, onOpenCompare }) {
+const DuplicateGroup = React.memo(function DuplicateGroup({ group, groupIndex, selectedMap, modalMeta, toggleSelect, handleSize, handleIgnoreGroup, handleDeleteGroup, onOpenCompare, serverEpoch }) {
     const formatDate = (timestamp) => {
         if (!timestamp) return 'Unknown Date';
         const date = new Date(timestamp);
@@ -214,6 +228,7 @@ const DuplicateGroup = React.memo(function DuplicateGroup({ group, groupIndex, s
                         onSize={handleSize}
                         globalMeta={modalMeta[asset.id]}
                         onOpenCompare={() => onOpenCompare(group, idx)}
+                        serverEpoch={serverEpoch}
                     />
                 ))}
             </ScrollView>
@@ -222,7 +237,7 @@ const DuplicateGroup = React.memo(function DuplicateGroup({ group, groupIndex, s
 }, (prev, next) => {
     const selectionChanged = prev.group.some(asset => !!prev.selectedMap[asset.id] !== !!next.selectedMap[asset.id]);
     const metaChanged = prev.group.some(asset => prev.modalMeta[asset.id] !== next.modalMeta[asset.id]);
-    return !selectionChanged && !metaChanged && prev.group === next.group;
+    return !selectionChanged && !metaChanged && prev.group === next.group && prev.serverEpoch === next.serverEpoch;
 });
 
 // Standalone page for one asset within the comparison swiper.
@@ -454,6 +469,7 @@ export default function DuplicatesScreen() {
     const insets = useSafeAreaInsets();
     const navigation = useNavigation();
     const { debugMode } = useSettings();
+    const serverEpoch = useServerEpoch();
     const [loading, setLoading] = useState(true);
     const [deleting, setDeleting] = useState(false);
     const [groups, setGroups] = useState([]);
@@ -768,9 +784,10 @@ export default function DuplicatesScreen() {
                 handleIgnoreGroup={handleIgnoreGroup}
                 handleDeleteGroup={handleDeleteGroup}
                 onOpenCompare={handleOpenCompare}
+                serverEpoch={serverEpoch}
             />
         );
-    }, [selectedMap, modalMeta, toggleSelect, handleSize, handleIgnoreGroup, handleDeleteGroup, handleOpenCompare]);
+    }, [selectedMap, modalMeta, toggleSelect, handleSize, handleIgnoreGroup, handleDeleteGroup, handleOpenCompare, serverEpoch]);
 
     return (
         <View style={styles.container}>
