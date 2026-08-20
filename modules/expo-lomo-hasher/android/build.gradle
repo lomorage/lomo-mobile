@@ -19,7 +19,11 @@ android {
 }
 
 dependencies {
-  implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.20.0'
+  // 1.20.0's libonnxruntime4j_jni.so was only 4KB-page aligned, which Google Play now
+  // rejects (Nov 2025 16KB page size requirement, effective for 64-bit .so libs). 1.23.0
+  // fixes that specific file -- verified by inspecting both AARs' arm64-v8a/x86_64 .so
+  // ELF program headers directly, since the app's own libonnxruntime.so was already fine.
+  implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.23.0'
   androidTestImplementation 'androidx.test.ext:junit:1.1.5'
   androidTestImplementation 'androidx.test:runner:1.5.2'
   androidTestImplementation 'androidx.test:rules:1.5.0'
