@@ -575,6 +575,15 @@ export default function HomeScreen({ navigation, route }) {
                 status: isSynced ? 'synced' : 'local'
             };
         });
+        // MediaLibrary sorts pages by creationTime alone, but grouping/merging below fall back to
+        // modificationTime when creationTime is 0 (common for screenshots/imports on Android). Re-sort
+        // by that same effective time so those assets land in the right spot instead of wherever the
+        // OS's creationTime-only sort put them (which showed up as an older date group above "Today").
+        initialAssets.sort((a, b) => {
+            const timeA = a.creationTime || a.modificationTime || 0;
+            const timeB = b.creationTime || b.modificationTime || 0;
+            return timeB - timeA;
+        });
         const localHashes = new Set(initialAssets.filter(a => a.hash).map(a => a.hash.toLowerCase()));
         
         // Build a Set of local timestamps (using ±2s range to solve edge-of-bucket divide issues).
@@ -1425,7 +1434,8 @@ export default function HomeScreen({ navigation, route }) {
             prevProps.asset.uri !== nextProps.asset.uri ||
             prevProps.asset.score !== nextProps.asset.score ||
             prevProps.asset.isPHash !== nextProps.asset.isPHash ||
-            prevProps.source !== nextProps.source
+            prevProps.source !== nextProps.source ||
+            prevProps.globalIndex !== nextProps.globalIndex
         ) return false;
         if (prevProps.debugMode !== nextProps.debugMode) return false;
         if (prevProps.serverEpoch !== nextProps.serverEpoch) return false;
@@ -1470,12 +1480,13 @@ export default function HomeScreen({ navigation, route }) {
 
         if (prevItems.length !== nextItems.length) return false;
         for (let i = 0; i < prevItems.length; i++) {
-            if (prevItems[i].id !== nextItems[i].id || 
+            if (prevItems[i].id !== nextItems[i].id ||
                 prevItems[i].status !== nextItems[i].status ||
                 prevItems[i].hash !== nextItems[i].hash ||
                 prevItems[i].uri !== nextItems[i].uri ||
                 prevItems[i].score !== nextItems[i].score ||
-                prevItems[i].isPHash !== nextItems[i].isPHash) {
+                prevItems[i].isPHash !== nextItems[i].isPHash ||
+                prevItems[i].globalIndex !== nextItems[i].globalIndex) {
                 return false;
             }
         }
