@@ -24,6 +24,7 @@ import { processBlocksToMetadata } from './ai/ocrUtils';
 import { buildFaceBoundingBox, isFaceTooSmall, attachEyeLandmarks } from './ai/faceGeometry';
 import { translateToEnglish } from './ai/translateQuery';
 import { rankFaceAlbumMatches, DEFAULT_FACE_MATCH_THRESHOLD } from './ai/faceAlbumMatching';
+import { clusterDuplicateAssets } from './ai/duplicateDetection';
 
 export const BACKGROUND_AI_SYNC_TASK = 'LOMO_AI_SYNC_TASK';
 class AIService {
@@ -3128,6 +3129,7 @@ class AIService {
   // Find duplicate groups using pHash Hamming distance <= 10.
   // Returns an array of groups, each containing detailed asset objects sorted by quality (highest first).
   async findDuplicateGroups(forceRescan = false) {
+    const scanStart = Date.now();
     try {
       if (forceRescan) {
         this.clearDuplicateCache();
@@ -3138,7 +3140,6 @@ class AIService {
         return this.duplicateGroupsCache;
       }
 
-      console.time('[AIService] duplicate_scan_total');
       if (this.isPHashClearedInMemory) {
         console.log('[AIService] pHash cache cleared flag is active, returning empty duplicate groups.');
         return [];
@@ -3148,169 +3149,14 @@ class AIService {
       console.log(`[AIService] DB fetch completed. Total assets with pHash: ${assets.length}`);
       if (assets.length === 0) return [];
 
-      // 1.5 Deduplicate local/remote synced pairs by Hash
-      const uniqueByHash = new Map();
-      for (const a of assets) {
-        if (a.hash && uniqueByHash.has(a.hash)) {
-          // Prefer local asset if both exist
-          if (a.isLocal === 1) {
-            uniqueByHash.set(a.hash, a);
-          }
-        } else if (a.hash) {
-          uniqueByHash.set(a.hash, a);
-        } else {
-          // No hash, just use ID
-          uniqueByHash.set(a.id, a);
-        }
-      }
-      const deduplicatedAssets = Array.from(uniqueByHash.values());
-      console.log(`[AIService] Hash deduplication completed. Unique assets by hash: ${deduplicatedAssets.length}`);
-
-      // 2. Parse phash into BigInts and Pre-group identical exact matches
-      const exactGroupsMap = new Map();
-      for (const a of deduplicatedAssets) {
-        try {
-          if (a.phash) {
-            const phashBig = BigInt(a.phash);
-            const pLow = Number(phashBig & 0xffffffffn) | 0;
-            const pHigh = Number((phashBig >> 32n) & 0xffffffffn) | 0;
-            if (!exactGroupsMap.has(a.phash)) {
-              exactGroupsMap.set(a.phash, { pLow, pHigh, items: [] });
-            }
-            exactGroupsMap.get(a.phash).items.push({ ...a });
-          }
-        } catch (e) {
-          console.warn(`[AIService] Invalid phash BigInt for asset ${a.id}:`, a.phash);
-        }
-      }
-
-      const uniquePhashGroups = Array.from(exactGroupsMap.values());
-      console.log(`[AIService] Exact phash grouping completed. Unique phash groups: ${uniquePhashGroups.length}`);
-      if (uniquePhashGroups.length === 0) return [];
-
-      // 3. Fast popcount helper (computes hamming distance of 64-bit BigInts in ~50ns)
-      // 3. Fast popcount helper for 32-bit ints
-      const countBits = (v) => {
-        v = v - ((v >>> 1) & 0x55555555);
-        v = (v & 0x33333333) + ((v >>> 2) & 0x33333333);
-        return (((v + (v >>> 4)) & 0x0F0F0F0F) * 0x01010101) >>> 24;
-      };
-
-      // 4. Greedy clustering loop (Hamming distance <= 6)
-      const clusters = [];
-      const visited = new Set();
-      console.time('[AIService] greedy_clustering');
-
-      const len = uniquePhashGroups.length;
-      const pLowArr = new Int32Array(len);
-      const pHighArr = new Int32Array(len);
-      for(let i=0; i<len; i++) {
-        pLowArr[i] = uniquePhashGroups[i].pLow;
-        pHighArr[i] = uniquePhashGroups[i].pHigh;
-      }
-
-      for (let i = 0; i < len; i++) {
-        // Yield to event loop to prevent UI freezing
-        if (i > 0 && i % 500 === 0) {
-          await new Promise(resolve => setTimeout(resolve, 0));
-        }
-
-        const groupA = uniquePhashGroups[i];
-        const representativeId = groupA.items[0].id;
-        
-        if (visited.has(representativeId)) continue;
-
-        let cluster = [...groupA.items];
-        const pLowA = pLowArr[i];
-        const pHighA = pHighArr[i];
-        
-        for (let j = i + 1; j < len; j++) {
-          let vLow = pLowA ^ pLowArr[j];
-          vLow = vLow - ((vLow >>> 1) & 0x55555555);
-          vLow = (vLow & 0x33333333) + ((vLow >>> 2) & 0x33333333);
-          const cLow = (((vLow + (vLow >>> 4)) & 0x0F0F0F0F) * 0x01010101) >>> 24;
-          
-          if (cLow > 6) continue;
-
-          let vHigh = pHighA ^ pHighArr[j];
-          vHigh = vHigh - ((vHigh >>> 1) & 0x55555555);
-          vHigh = (vHigh & 0x33333333) + ((vHigh >>> 2) & 0x33333333);
-          const cHigh = (((vHigh + (vHigh >>> 4)) & 0x0F0F0F0F) * 0x01010101) >>> 24;
-
-          if (cLow + cHigh <= 6) {
-            const groupB = uniquePhashGroups[j];
-            const repBId = groupB.items[0].id;
-            if (visited.has(repBId)) continue;
-
-            cluster = cluster.concat(groupB.items);
-            visited.add(repBId);
-          }
-        }
-
-        if (cluster.length > 1) {
-          visited.add(representativeId);
-          clusters.push(cluster);
-        }
-      }
-      console.timeEnd('[AIService] greedy_clustering');
-      console.log(`[AIService] Greedy clustering completed. Clusters found: ${clusters.length}`);
-
-      // 5. Build result clusters - use data already in SQLite, skip expensive network/filesystem calls.
-      // Sort heuristic: prefer local assets (isLocal=1) over remote, then newer createTime first.
-      // This avoids hundreds of MediaService.getAssetInfo / axios.head calls that were causing the long wait.
-      const enrichedClusters = clusters.map(cluster => {
-        const sorted = [...cluster].sort((a, b) => {
-          // Local beats remote
-          const localDiff = (b.isLocal === 1 ? 1 : 0) - (a.isLocal === 1 ? 1 : 0);
-          if (localDiff !== 0) return localDiff;
-          // Newer createTime first
-          return (b.createTime || 0) - (a.createTime || 0);
-        });
-
-        const filteredCluster = [];
-        const seenIds = new Set();
-        for (const asset of sorted) {
-          if (!seenIds.has(asset.id)) {
-            seenIds.add(asset.id);
-            filteredCluster.push(asset);
-          }
-        }
-
-        return filteredCluster.map(asset => {
-          let displayUri = null;
-          if (asset.isLocal === 1) {
-            // Will be resolved lazily by the UI when the user views the asset
-            displayUri = null;
-          } else if (asset.localCachePath && asset.mediaType !== 'video') {
-            displayUri = asset.localCachePath;
-          } else {
-            displayUri = MediaService.getPreviewUrl(asset.hash, 'photo');
-          }
-          return {
-            id: asset.id,
-            hash: asset.hash,
-            isLocal: asset.isLocal === 1,
-            filename: asset.filename,
-            createTime: asset.createTime,
-            mediaType: asset.mediaType,
-            width: 0,
-            height: 0,
-            size: 0,
-            displayUri,
-            qualityScore: 0
-          };
-        });
-      });
-
-      // Filter out clusters that have less than 2 items after deduplication
-      const finalClusters = enrichedClusters.filter(c => c.length > 1);
+      const finalClusters = await clusterDuplicateAssets(assets, (hash) => MediaService.getPreviewUrl(hash, 'photo'));
 
       this.duplicateGroupsCache = finalClusters;
       this.duplicateGroupsCacheTime = Date.now();
-      console.timeEnd('[AIService] duplicate_scan_total');
+      console.log(`[AIService] duplicate_scan_total: ${Date.now() - scanStart}ms`);
       return finalClusters;
     } catch (error) {
-      console.timeEnd('[AIService] duplicate_scan_total');
+      console.log(`[AIService] duplicate_scan_total: ${Date.now() - scanStart}ms (failed)`);
       console.error('[AIService] Failed in findDuplicateGroups:', error);
       return [];
     }
