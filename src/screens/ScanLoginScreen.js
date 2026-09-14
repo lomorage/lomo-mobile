@@ -1,10 +1,19 @@
 import React, { useState, useRef } from 'react';
-import { StyleSheet, View, Text, TouchableOpacity, ActivityIndicator, Linking } from 'react-native';
+import { StyleSheet, View, Text, TouchableOpacity, ActivityIndicator, Linking, Alert } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { ArrowLeft, QrCode } from 'lucide-react-native';
 import { useAuth } from '../context/AuthContext';
-import { PAIRING_QR_TYPE } from '../constants/pairing';
+import { classifyScannedQR } from './scanLoginScreenHelpers';
 
+// Handles both QR types Lomorage produces, so the one visible "scan" button
+// works regardless of which one is in front of the camera:
+//   - pairing: shown by another already-signed-in phone, carries real
+//     credentials -- signs straight in.
+//   - setup: shown on a fresh lomod instance's own web page before any
+//     account exists -- carries no credentials, just enough to find the
+//     server, so it hands off to account creation instead (after the user
+//     confirms the server, since this code invites scans from strangers by
+//     design and a spoofed one could point anywhere).
 export default function ScanLoginScreen({ navigation }) {
     const { login: contextLogin } = useAuth();
     const [permission, requestPermission] = useCameraPermissions();
@@ -13,33 +22,57 @@ export default function ScanLoginScreen({ navigation }) {
     const [scanError, setScanError] = useState(null);
     const hasHandledScan = useRef(false);
 
+    const resumeScanning = () => {
+        hasHandledScan.current = false;
+        setScanning(true);
+    };
+
     const handleBarcodeScanned = async ({ data }) => {
         if (hasHandledScan.current || signingIn) return;
 
-        let payload;
-        try {
-            payload = JSON.parse(data);
-        } catch (e) {
-            setScanError("That QR code isn't a Lomorage sign-in code.");
-            return;
-        }
+        const result = classifyScannedQR(data);
 
-        if (payload?.type !== PAIRING_QR_TYPE || !payload.server || !payload.username || !payload.password) {
-            setScanError("That QR code isn't a Lomorage sign-in code.");
+        if (result.kind === 'invalid') {
+            setScanError("That QR code isn't a Lomorage sign-in or setup code.");
             return;
         }
 
         hasHandledScan.current = true;
         setScanning(false);
         setScanError(null);
+
+        if (result.kind === 'setup') {
+            const label = result.serverName ? `${result.serverName} (${result.server})` : result.server;
+            Alert.alert(
+                'Connect to this server?',
+                `This will start account setup on ${label}.`,
+                [
+                    { text: 'Cancel', style: 'cancel', onPress: resumeScanning },
+                    {
+                        text: 'Continue',
+                        onPress: () => {
+                            // navigate, not replace: if this screen was reached from
+                            // RegisterScreen's own "scan setup code" link, a Register
+                            // instance already sits below in the stack -- navigate
+                            // returns to and merges params into that existing instance
+                            // instead of orphaning it (and any username/password the
+                            // user already typed there) under a brand new one.
+                            navigation.navigate('Register', { server: result.server, serverName: result.serverName });
+                        },
+                    },
+                ]
+            );
+            return;
+        }
+
+        // result.kind === 'pairing'
         setSigningIn(true);
         try {
-            await contextLogin(payload.server, payload.username, payload.password, payload.serverName || null);
+            await contextLogin(result.server, result.username, result.password, result.serverName);
             // RootNavigator swaps to the authenticated stack automatically once isAuthenticated flips.
         } catch (error) {
             setSigningIn(false);
-            hasHandledScan.current = false;
-            setScanning(true);
+            resumeScanning();
             setScanError(error.message || 'Sign-in failed. Ask them to show the code again.');
         }
     };
@@ -50,7 +83,7 @@ export default function ScanLoginScreen({ navigation }) {
                 <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
                     <ArrowLeft size={24} color="#fff" />
                 </TouchableOpacity>
-                <Text style={styles.title}>Scan to Sign In</Text>
+                <Text style={styles.title}>Scan QR Code</Text>
                 <View style={{ width: 24 }} />
             </View>
 
@@ -60,7 +93,7 @@ export default function ScanLoginScreen({ navigation }) {
                 <View style={styles.centered}>
                     <QrCode size={48} color="#fff" style={{ opacity: 0.6, marginBottom: 16 }} />
                     <Text style={styles.permissionText}>
-                        Lomorage needs camera access to scan the sign-in code from another device.
+                        Lomorage needs camera access to scan a sign-in code from another device, or a setup code from your server&apos;s web page.
                     </Text>
                     {permission.canAskAgain ? (
                         <TouchableOpacity style={styles.permissionButton} onPress={requestPermission}>
@@ -84,7 +117,7 @@ export default function ScanLoginScreen({ navigation }) {
                     ) : (
                         <View style={styles.centered}>
                             <ActivityIndicator size="large" color="#fff" />
-                            <Text style={styles.signingInText}>Signing in...</Text>
+                            <Text style={styles.signingInText}>{signingIn ? 'Signing in...' : 'One moment...'}</Text>
                         </View>
                     )}
 
@@ -92,7 +125,7 @@ export default function ScanLoginScreen({ navigation }) {
                         <View style={styles.overlay} pointerEvents="none">
                             <View style={styles.frame} />
                             <Text style={styles.hint}>
-                                Point the camera at the sign-in QR code shown on the other device
+                                Point the camera at a sign-in code from another device, or the setup code on your server&apos;s web page
                             </Text>
                         </View>
                     )}

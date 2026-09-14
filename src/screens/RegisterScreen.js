@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { StyleSheet, View, Text, TextInput, TouchableOpacity, ActivityIndicator, KeyboardAvoidingView, Platform, Alert, ScrollView } from 'react-native';
 import AuthService from '../services/AuthService';
 import DiscoveryService from '../services/DiscoveryService';
-import { Eye, EyeOff, ArrowLeft, HardDrive, CheckCircle } from 'lucide-react-native';
+import { Eye, EyeOff, ArrowLeft, HardDrive, CheckCircle, QrCode } from 'lucide-react-native';
 import { useAuth } from '../context/AuthContext';
 import { PAIRING_QR_TYPE } from '../constants/pairing';
 import PairingQRModal from '../components/PairingQRModal';
@@ -10,7 +10,8 @@ import PairingQRModal from '../components/PairingQRModal';
 export default function RegisterScreen({ navigation, route }) {
     const { register: contextRegister } = useAuth();
     const fromSettings = route?.params?.fromSettings || false;
-    const [server, setServer] = useState('');
+    const scannedServer = route?.params?.server || null;
+    const [server, setServer] = useState(scannedServer || '');
     const [disks, setDisks] = useState([]);
     const [selectedDisk, setSelectedDisk] = useState(null);
     const [username, setUsername] = useState('');
@@ -24,6 +25,19 @@ export default function RegisterScreen({ navigation, route }) {
     const [pairingPayload, setPairingPayload] = useState(null);
 
     useEffect(() => {
+        if (scannedServer) {
+            // Came from ScanLoginScreen (setup QR) with a specific server already
+            // picked; no need to also run mDNS discovery. Depending on
+            // `scannedServer` (not []) also covers re-entering an already-mounted
+            // Register instance with a newly merged `server` param -- see
+            // ScanLoginScreen's setup-QR handling, which navigates (not replaces)
+            // so a Register screen already on the stack is reused rather than
+            // orphaned along with anything the user had already typed into it.
+            setServer(scannedServer);
+            fetchDisks(scannedServer);
+            return;
+        }
+
         setIsScanning(true);
         const unsubscribe = DiscoveryService.onDiscovered((service) => {
             setServer(service.address);
@@ -38,7 +52,7 @@ export default function RegisterScreen({ navigation, route }) {
         return () => {
             unsubscribe();
         };
-    }, []);
+    }, [scannedServer]);
 
     const fetchDisks = async (serverUrl) => {
         setFetchingDisks(true);
@@ -148,6 +162,13 @@ export default function RegisterScreen({ navigation, route }) {
                             }}
                             autoCapitalize="none"
                         />
+                        <TouchableOpacity
+                            style={styles.scanSetupLink}
+                            onPress={() => navigation.navigate('ScanLogin')}
+                        >
+                            <QrCode size={16} color="#007AFF" />
+                            <Text style={styles.scanSetupText}>Scan the setup code from your server&apos;s web page</Text>
+                        </TouchableOpacity>
                     </View>
 
                     {/* Disk Selection */}
@@ -266,6 +287,8 @@ const styles = StyleSheet.create({
     formContainer: { backgroundColor: '#fff', borderRadius: 16, padding: 20, elevation: 2 },
     inputGroup: { marginBottom: 20 },
     labelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+    scanSetupLink: { flexDirection: 'row', alignItems: 'center', marginTop: 8 },
+    scanSetupText: { color: '#007AFF', fontSize: 13, fontWeight: '600', marginLeft: 6 },
     label: { fontSize: 14, fontWeight: '600', color: '#4A5568', marginBottom: 8 },
     input: { height: 52, borderWidth: 1.5, borderColor: '#E2E8F0', borderRadius: 12, paddingHorizontal: 16, fontSize: 16, backgroundColor: '#F8FAFC', color: '#1A202C' },
     passwordContainer: { flexDirection: 'row', alignItems: 'center', height: 52, borderWidth: 1.5, borderColor: '#E2E8F0', borderRadius: 12, paddingHorizontal: 16, backgroundColor: '#F8FAFC' },
