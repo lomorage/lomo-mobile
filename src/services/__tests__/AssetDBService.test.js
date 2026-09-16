@@ -165,6 +165,81 @@ describe('AssetDBService', () => {
     );
   });
 
+  test('ensureRemoteMirrorRowsBatch inserts mirror rows for multiple hashes in one transaction', async () => {
+    await AssetDBService.ensureRemoteMirrorRowsBatch(['h1', 'h2', 'h3']);
+
+    expect(mockSpies.withExclusiveTransactionAsync).toHaveBeenCalledTimes(1);
+    expect(mockSpies.prepareAsync).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT OR IGNORE INTO MediaAsset (id, hash, isLocal) VALUES (?, ?, 0)')
+    );
+    expect(mockStatement.executeSync).toHaveBeenCalledTimes(3);
+    expect(mockStatement.executeSync).toHaveBeenNthCalledWith(1, 'h1', 'h1');
+    expect(mockStatement.executeSync).toHaveBeenNthCalledWith(3, 'h3', 'h3');
+    expect(mockStatement.finalizeAsync).toHaveBeenCalledTimes(1);
+  });
+
+  test('ensureRemoteMirrorRowsBatch is a no-op for an empty list', async () => {
+    await AssetDBService.ensureRemoteMirrorRowsBatch([]);
+    expect(mockSpies.withExclusiveTransactionAsync).not.toHaveBeenCalled();
+  });
+
+  test('saveAssetOCRBatch updates OCR text for multiple assets in one transaction', async () => {
+    const updates = [
+      { idOrHash: 'h1', ocr: 'hello world' },
+      { idOrHash: 'h2', ocr: 'none' },
+    ];
+
+    await AssetDBService.saveAssetOCRBatch(updates);
+
+    expect(mockSpies.withExclusiveTransactionAsync).toHaveBeenCalledTimes(1);
+    expect(mockSpies.prepareAsync).toHaveBeenCalledWith(
+      expect.stringContaining('UPDATE MediaAsset SET ocrText = ? WHERE id = ? OR hash = ?')
+    );
+    expect(mockStatement.executeSync).toHaveBeenCalledTimes(2);
+    expect(mockStatement.executeSync).toHaveBeenNthCalledWith(1, 'hello world', 'h1', 'h1');
+    expect(mockStatement.executeSync).toHaveBeenNthCalledWith(2, 'none', 'h2', 'h2');
+    expect(mockStatement.finalizeAsync).toHaveBeenCalledTimes(1);
+  });
+
+  test('saveAssetOCRBatch is a no-op for an empty list', async () => {
+    await AssetDBService.saveAssetOCRBatch([]);
+    expect(mockSpies.withExclusiveTransactionAsync).not.toHaveBeenCalled();
+  });
+
+  test('saveAssetEmbeddingsBatch scopes to isLocal when scopeIsLocal is passed', async () => {
+    const updates = [{ idOrHash: 'h1', embedding: 'EMB1', version: 0 }];
+
+    await AssetDBService.saveAssetEmbeddingsBatch(updates, 0);
+
+    expect(mockSpies.prepareAsync).toHaveBeenCalledWith(
+      expect.stringContaining('WHERE (id = ? OR hash = ?) AND isLocal = ?')
+    );
+    expect(mockStatement.executeSync).toHaveBeenCalledWith('EMB1', 0, 'h1', 'h1', 0);
+  });
+
+  test('saveAssetEmbeddingsBatch omits the isLocal scope when scopeIsLocal is not passed', async () => {
+    const updates = [{ idOrHash: 'h1', embedding: 'EMB1', version: 1 }];
+
+    await AssetDBService.saveAssetEmbeddingsBatch(updates);
+
+    expect(mockSpies.prepareAsync).toHaveBeenCalledWith(
+      expect.stringContaining('WHERE (id = ? OR hash = ?)')
+    );
+    expect(mockSpies.prepareAsync.mock.calls[0][0]).not.toContain('isLocal');
+    expect(mockStatement.executeSync).toHaveBeenCalledWith('EMB1', 1, 'h1', 'h1');
+  });
+
+  test('saveAssetPHashesBatch scopes to isLocal when scopeIsLocal is passed', async () => {
+    const updates = [{ idOrHash: 'h1', phash: 'PH1' }];
+
+    await AssetDBService.saveAssetPHashesBatch(updates, 0);
+
+    expect(mockSpies.prepareAsync).toHaveBeenCalledWith(
+      expect.stringContaining('WHERE (id = ? OR hash = ?) AND isLocal = ?')
+    );
+    expect(mockStatement.executeSync).toHaveBeenCalledWith('PH1', 'h1', 'h1', 0);
+  });
+
   test('getLocalAssetsWithoutGeo returns local assets without geo details', async () => {
     mockSpies.getAllAsync.mockResolvedValue([
       { id: '1' },

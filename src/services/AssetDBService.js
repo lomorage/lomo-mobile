@@ -432,17 +432,24 @@ class AssetDBService {
     });
   }
 
-  // Batch save perceptual hashes (pHashes) in a single transaction
-  async saveAssetPHashesBatch(updates) {
+  // Batch save perceptual hashes (pHashes) in a single transaction.
+  // scopeIsLocal restricts the match to isLocal=0/1 rows only (see the same
+  // parameter on AIService.saveAssetPHash) -- pass 0 when writing back to a
+  // remote mirror row so a local row sharing the same hash isn't also touched.
+  async saveAssetPHashesBatch(updates, scopeIsLocal = null) {
     if (!this.db || !updates || updates.length === 0) return;
+    const scopeSql = scopeIsLocal === null ? '' : ' AND isLocal = ?';
     try {
       await this.db.withExclusiveTransactionAsync(async () => {
         const statement = await this.db.prepareAsync(
-          'UPDATE MediaAsset SET phash = ? WHERE id = ? OR hash = ?'
+          `UPDATE MediaAsset SET phash = ? WHERE (id = ? OR hash = ?)${scopeSql}`
         );
         try {
           for (const update of updates) {
-            statement.executeSync(update.phash, update.idOrHash, update.idOrHash);
+            const params = scopeIsLocal === null
+              ? [update.phash, update.idOrHash, update.idOrHash]
+              : [update.phash, update.idOrHash, update.idOrHash, scopeIsLocal];
+            statement.executeSync(...params);
           }
         } finally {
           await statement.finalizeAsync();
@@ -454,17 +461,22 @@ class AssetDBService {
     }
   }
 
-  // Batch save embeddings in a single transaction
-  async saveAssetEmbeddingsBatch(updates) {
+  // Batch save embeddings in a single transaction. See scopeIsLocal note on
+  // saveAssetPHashesBatch above -- same reasoning applies here.
+  async saveAssetEmbeddingsBatch(updates, scopeIsLocal = null) {
     if (!this.db || !updates || updates.length === 0) return;
+    const scopeSql = scopeIsLocal === null ? '' : ' AND isLocal = ?';
     try {
       await this.db.withExclusiveTransactionAsync(async () => {
         const statement = await this.db.prepareAsync(
-          'UPDATE MediaAsset SET clipEmbedding = ?, clipEmbeddingVersion = ? WHERE id = ? OR hash = ?'
+          `UPDATE MediaAsset SET clipEmbedding = ?, clipEmbeddingVersion = ? WHERE (id = ? OR hash = ?)${scopeSql}`
         );
         try {
           for (const update of updates) {
-            statement.executeSync(update.embedding, update.version, update.idOrHash, update.idOrHash);
+            const params = scopeIsLocal === null
+              ? [update.embedding, update.version, update.idOrHash, update.idOrHash]
+              : [update.embedding, update.version, update.idOrHash, update.idOrHash, scopeIsLocal];
+            statement.executeSync(...params);
           }
         } finally {
           await statement.finalizeAsync();
@@ -473,6 +485,49 @@ class AssetDBService {
       console.log(`[AssetDBService] Batch saved ${updates.length} embeddings.`);
     } catch (error) {
       console.error('[AssetDBService] Failed to batch save embeddings:', error);
+    }
+  }
+
+  // Batch insert-or-ignore remote mirror rows in a single transaction
+  async ensureRemoteMirrorRowsBatch(hashes) {
+    if (!this.db || !hashes || hashes.length === 0) return;
+    try {
+      await this.db.withExclusiveTransactionAsync(async () => {
+        const statement = await this.db.prepareAsync(
+          'INSERT OR IGNORE INTO MediaAsset (id, hash, isLocal) VALUES (?, ?, 0)'
+        );
+        try {
+          for (const hash of hashes) {
+            statement.executeSync(hash, hash);
+          }
+        } finally {
+          await statement.finalizeAsync();
+        }
+      });
+    } catch (error) {
+      console.error('[AssetDBService] Failed to batch insert mirror rows:', error);
+    }
+  }
+
+  // Batch save OCR text in a single transaction
+  async saveAssetOCRBatch(updates) {
+    if (!this.db || !updates || updates.length === 0) return;
+    try {
+      await this.db.withExclusiveTransactionAsync(async () => {
+        const statement = await this.db.prepareAsync(
+          'UPDATE MediaAsset SET ocrText = ? WHERE id = ? OR hash = ?'
+        );
+        try {
+          for (const update of updates) {
+            statement.executeSync(update.ocr, update.idOrHash, update.idOrHash);
+          }
+        } finally {
+          await statement.finalizeAsync();
+        }
+      });
+      console.log(`[AssetDBService] Batch saved ${updates.length} OCR entries.`);
+    } catch (error) {
+      console.error('[AssetDBService] Failed to batch save OCR text:', error);
     }
   }
 

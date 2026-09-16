@@ -1545,6 +1545,24 @@ class AIService {
     );
   }
 
+  // Syncs the in-memory vector cache after a batch embedding write (see
+  // saveAssetEmbeddingsBatch). Shared by syncEmbeddings()'s upload and download paths.
+  async _syncVectorCache(embeddingUpdates) {
+    const db = AssetDBService.db;
+    if (!db) return;
+    for (const update of embeddingUpdates) {
+      try {
+        const row = await db.getFirstAsync('SELECT id FROM MediaAsset WHERE id = ? OR hash = ?', [update.idOrHash, update.idOrHash]);
+        if (!row || !row.id) continue;
+        if (update.embedding && update.embedding !== 'failed' && update.embedding !== 'none') {
+          this._setVector(row.id, base64ToFloat32Array(update.embedding));
+        } else {
+          this._deleteVector(row.id);
+        }
+      } catch (_) {}
+    }
+  }
+
   // 2. Synchronize embeddings with lomo-backend
   async syncEmbeddings(force = false) {
     if (this.isSyncing) return;
@@ -1581,39 +1599,42 @@ class AIService {
       // all of it, so the settings mean what they say everywhere.
       const isIdle = force ? true : await this.isIdleForAI();
 
-      // Part A: Upload local embeddings to server
+      // Part A: Upload local embeddings + pHashes to server (batched, merged pass —
+      // an asset needing either one gets a single row here, and both are packed into
+      // one /assets/metadata array per chunk instead of two separate full passes).
+      const AI_UPLOAD_BATCH_SIZE = 50;
+      const uploadPendingWhere = `
+          isLocal = 1
+          AND uploaded = 1
+          AND hash IS NOT NULL
+          AND (
+            (clipEmbedding IS NOT NULL AND clipEmbedding != "" AND clipEmbedding != "failed"
+              AND hash NOT IN (SELECT hash FROM MediaAsset WHERE isLocal = 0 AND clipEmbedding IS NOT NULL AND clipEmbedding != ""))
+            OR
+            (phash IS NOT NULL AND phash != "" AND phash != "failed" AND phash != "none"
+              AND hash NOT IN (SELECT hash FROM MediaAsset WHERE isLocal = 0 AND phash IS NOT NULL AND phash != ""))
+          )
+      `;
       if (!isIdle) {
-        console.log('[AIService] Skip embeddings upload: device is not on Wi-Fi/charging per settings.');
+        console.log('[AIService] Skip embeddings/pHash upload: device is not on Wi-Fi/charging per settings.');
       } else {
       let hasMoreUploads = true;
-      const totalUploadsRow = await db.getFirstAsync(`
-        SELECT COUNT(*) as count
-        FROM MediaAsset
-        WHERE isLocal = 1
-          AND uploaded = 1
-          AND clipEmbedding IS NOT NULL
-          AND clipEmbedding != ""
-          AND clipEmbedding != "failed"
-          AND hash NOT IN (
-            SELECT hash FROM MediaAsset WHERE isLocal = 0 AND clipEmbedding IS NOT NULL AND clipEmbedding != ""
-          )
-      `);
+      const totalUploadsRow = await db.getFirstAsync(`SELECT COUNT(*) as count FROM MediaAsset WHERE ${uploadPendingWhere}`);
       const totalUploads = totalUploadsRow?.count || 0;
       let processedUploads = 0;
 
       while (hasMoreUploads) {
         const localPendingUpload = await db.getAllAsync(`
-          SELECT id, hash, clipEmbedding 
-          FROM MediaAsset 
-          WHERE isLocal = 1 
-            AND uploaded = 1 
-            AND clipEmbedding IS NOT NULL 
-            AND clipEmbedding != "" 
-            AND clipEmbedding != "failed" 
-            AND hash NOT IN (
-              SELECT hash FROM MediaAsset WHERE isLocal = 0 AND clipEmbedding IS NOT NULL AND clipEmbedding != ""
-            )
-          LIMIT 10
+          SELECT id, hash, clipEmbedding, phash,
+            CASE WHEN clipEmbedding IS NOT NULL AND clipEmbedding != "" AND clipEmbedding != "failed"
+                  AND hash NOT IN (SELECT hash FROM MediaAsset WHERE isLocal = 0 AND clipEmbedding IS NOT NULL AND clipEmbedding != "")
+                 THEN 1 ELSE 0 END AS needsEmbedding,
+            CASE WHEN phash IS NOT NULL AND phash != "" AND phash != "failed" AND phash != "none"
+                  AND hash NOT IN (SELECT hash FROM MediaAsset WHERE isLocal = 0 AND phash IS NOT NULL AND phash != "")
+                 THEN 1 ELSE 0 END AS needsPHash
+          FROM MediaAsset
+          WHERE ${uploadPendingWhere}
+          LIMIT ${AI_UPLOAD_BATCH_SIZE}
         `);
 
         if (localPendingUpload.length === 0) {
@@ -1621,153 +1642,92 @@ class AIService {
           break;
         }
 
-        console.log(`[AIService] Uploading batch of ${localPendingUpload.length} local embeddings to server...`);
+        console.log(`[AIService] Uploading batch of ${localPendingUpload.length} local embeddings/pHashes to server...`);
+        const device = Platform.OS === 'ios' ? 'ios' : 'android';
+        const metadataItems = [];
+        const embeddingUpdates = [];
+        const pHashUpdates = [];
+        const mirrorHashes = [];
+
         for (const asset of localPendingUpload) {
-          try {
-            processedUploads++;
-            this.status = {
-              isProcessing: true,
-              current: processedUploads,
-              total: totalUploads,
-              message: `Uploading photo features (${processedUploads}/${totalUploads})...`
-            };
-            DeviceEventEmitter.emit('ai_processing_status', this.status);
+          processedUploads++;
+          this.status = {
+            isProcessing: true,
+            current: processedUploads,
+            total: totalUploads,
+            message: `Uploading photo features (${processedUploads}/${totalUploads})...`
+          };
+          DeviceEventEmitter.emit('ai_processing_status', this.status);
 
-            const serverAssetId = await this.getServerAssetIdByHash(asset.hash);
-            if (!serverAssetId) {
-              console.log(`[AIService] Skipping upload for ${asset.hash}: server ID not synced yet.`);
-              continue;
-            }
+          const serverAssetId = await this.getServerAssetIdByHash(asset.hash);
+          if (!serverAssetId) {
+            console.log(`[AIService] Skipping upload for ${asset.hash}: server ID not synced yet.`);
+            continue;
+          }
 
-            const device = Platform.OS === 'ios' ? 'ios' : 'android';
-            const name = 'shared.similarity.clip.embedding';
-            
-            const payload = [{
+          if (asset.needsEmbedding) {
+            metadataItems.push({
               Category: 'similarity',
               SourceDevice: device,
               AssetID: serverAssetId,
-              Name: name,
+              Name: 'shared.similarity.clip.embedding',
               Value: asset.clipEmbedding,
               Version: 1
-            }];
-
-            await axios.post(`${url}/assets/metadata?force=1`, payload, {
-              headers: { Authorization: `token=${token}` },
-              timeout: 15000,
-              skipAutoProbe: true,
-              priority: 5
             });
-            await new Promise(resolve => setTimeout(resolve, 50));
-            console.log(`[AIService] Uploaded embedding for server asset ID ${serverAssetId} successfully.`);
-            // Mark remote asset representation in SQLite as having the embedding to avoid re-upload loop
-            await db.runAsync(
-              'INSERT OR IGNORE INTO MediaAsset (id, hash, isLocal) VALUES (?, ?, 0)',
-              [asset.hash, asset.hash]
-            );
-            await this.saveAssetEmbedding(asset.hash, asset.clipEmbedding, 0, 0);
-          } catch (e) {
-            console.warn(`[AIService] Failed to upload embedding for ${asset.hash}:`, e.message);
+            // version: 0 here is the local mirror-row's clipEmbeddingVersion (distinct from
+            // the Version: 1 sent to the server above) -- 0 marks it as an already-synced
+            // mirror, not something needing (re-)upload. See scopeIsLocal on saveAssetEmbedding.
+            embeddingUpdates.push({ idOrHash: asset.hash, embedding: asset.clipEmbedding, version: 0 });
           }
-        }
-        await new Promise(resolve => setTimeout(resolve, 300));
-      }
-      } // end Part A isIdle gate
-
-      // Part A2: Upload locally calculated pHashes to server
-      if (!isIdle) {
-        console.log('[AIService] Skip pHash upload: device is not on Wi-Fi/charging per settings.');
-      } else {
-      const totalPHashUploadsRow = await db.getFirstAsync(`
-        SELECT COUNT(*) as count 
-        FROM MediaAsset 
-        WHERE isLocal = 1 
-          AND uploaded = 1 
-          AND phash IS NOT NULL 
-          AND phash != "" 
-          AND phash != "failed" 
-          AND phash != "none"
-          AND hash IS NOT NULL
-          AND hash NOT IN (
-            SELECT hash FROM MediaAsset WHERE isLocal = 0 AND phash IS NOT NULL AND phash != ""
-          )
-      `);
-      const totalPHashUploads = totalPHashUploadsRow?.count || 0;
-      let processedPHashUploads = 0;
-      let hasMorePHashUploads = true;
-
-      while (hasMorePHashUploads) {
-        const localPendingPHashUpload = await db.getAllAsync(`
-          SELECT id, hash, phash 
-          FROM MediaAsset 
-          WHERE isLocal = 1 
-            AND uploaded = 1 
-            AND phash IS NOT NULL 
-            AND phash != "" 
-            AND phash != "failed" 
-            AND phash != "none"
-            AND hash NOT IN (
-              SELECT hash FROM MediaAsset WHERE isLocal = 0 AND phash IS NOT NULL AND phash != ""
-            )
-          LIMIT 10
-        `);
-
-        if (localPendingPHashUpload.length === 0) {
-          hasMorePHashUploads = false;
-          break;
-        }
-
-        console.log(`[AIService] Uploading batch of ${localPendingPHashUpload.length} local pHashes to server...`);
-        for (const asset of localPendingPHashUpload) {
-          try {
-            processedPHashUploads++;
-            this.status = {
-              isProcessing: true,
-              current: processedPHashUploads,
-              total: totalPHashUploads,
-              message: `Uploading photo fingerprints (${processedPHashUploads}/${totalPHashUploads})...`
-            };
-            DeviceEventEmitter.emit('ai_processing_status', this.status);
-
-            const serverAssetId = await this.getServerAssetIdByHash(asset.hash);
-            if (!serverAssetId) {
-              console.log(`[AIService] Skipping phash upload for ${asset.hash}: server ID not synced yet.`);
-              continue;
-            }
-
-            const device = Platform.OS === 'ios' ? 'ios' : 'android';
-            const name = 'shared.phash.fingerprint';
-            
-            const payload = [{
+          if (asset.needsPHash) {
+            metadataItems.push({
               Category: 'similarity',
               SourceDevice: device,
               AssetID: serverAssetId,
-              Name: name,
+              Name: 'shared.phash.fingerprint',
               Value: asset.phash,
               Version: 1
-            }];
-
-            await axios.post(`${url}/assets/metadata?force=1`, payload, {
-              headers: { Authorization: `token=${token}` },
-              timeout: 15000,
-              skipAutoProbe: true,
-              priority: 5
             });
-            await new Promise(resolve => setTimeout(resolve, 50));
-            console.log(`[AIService] Uploaded phash for server asset ID ${serverAssetId} successfully.`);
-            // Mark remote asset representation in SQLite as having the phash to avoid re-upload loop
-            await db.runAsync(
-              'INSERT OR IGNORE INTO MediaAsset (id, hash, isLocal) VALUES (?, ?, 0)',
-              [asset.hash, asset.hash]
-            );
-            await this.saveAssetPHash(asset.hash, asset.phash, 0);
+            pHashUpdates.push({ idOrHash: asset.hash, phash: asset.phash });
+          }
+          mirrorHashes.push(asset.hash);
+        }
+
+        if (metadataItems.length > 0) {
+          try {
+            await axios.post(`${url}/assets/metadata?force=1`, metadataItems, {
+              headers: { Authorization: `token=${token}` },
+              timeout: 20000,
+              skipAutoProbe: true,
+              priority: 5,
+              groupId: 'AIService'
+            });
+            console.log(`[AIService] Uploaded batch of ${metadataItems.length} metadata items (${mirrorHashes.length} assets) successfully.`);
+
+            // Mark remote asset mirror rows in SQLite as having the embedding/phash to avoid re-upload loop.
+            // scopeIsLocal=0 on both batch writes below matches the single-item saveAssetEmbedding/
+            // saveAssetPHash calls this replaced -- restricting the match to the isLocal=0 mirror row
+            // is required, not optional: without it, "id = ? OR hash = ?" also hits the isLocal=1 local
+            // row sharing that hash, which is exactly the bug repairClipVersionResetBug() exists to fix.
+            await AssetDBService.ensureRemoteMirrorRowsBatch(mirrorHashes);
+            if (embeddingUpdates.length > 0) {
+              await AssetDBService.saveAssetEmbeddingsBatch(embeddingUpdates, 0);
+              await this._syncVectorCache(embeddingUpdates);
+            }
+            if (pHashUpdates.length > 0) {
+              await AssetDBService.saveAssetPHashesBatch(pHashUpdates, 0);
+            }
           } catch (e) {
-            console.warn(`[AIService] Failed to upload phash for ${asset.hash}:`, e.message);
+            // Nothing persisted to SQLite on failure -- the same assets are naturally
+            // re-selected by uploadPendingWhere's NOT IN(...) on the next syncEmbeddings()
+            // pass, since InsertOrUpdateMetadata is a safe, idempotent upsert to resend.
+            console.warn(`[AIService] Failed to upload metadata batch of ${metadataItems.length} items:`, e.message);
             this._tryReconnectOnNetworkError(e);
           }
         }
         await new Promise(resolve => setTimeout(resolve, 300));
       }
-      } // end Part A2 isIdle gate
+      } // end Part A isIdle gate
 
       // Part B: Download remote embeddings and phash from server
       const savedRemoteAI = await SecureStore.getItemAsync('lomorage_remote_ai_processing');
@@ -1787,16 +1747,17 @@ class AIService {
         let processedDownloads = 0;
 
         let hasMoreDownloads = true;
+        const AI_DOWNLOAD_BATCH_SIZE = 100; // hard cap enforced server-side by /assets/metadata/byid
         while (hasMoreDownloads) {
           // Yield to user interactions to prevent scroll stuttering
           await TaskSchedulerService.waitUntilIdle();
 
           const remotePendingDownload = await db.getAllAsync(`
-            SELECT id, hash 
-            FROM MediaAsset 
-            WHERE isLocal = 0 
+            SELECT id, hash
+            FROM MediaAsset
+            WHERE isLocal = 0
               AND ((clipEmbedding IS NULL OR clipEmbedding = "") OR (phash IS NULL OR phash = ""))
-            LIMIT 20
+            LIMIT ${AI_DOWNLOAD_BATCH_SIZE}
           `);
 
           if (remotePendingDownload.length === 0) {
@@ -1807,46 +1768,68 @@ class AIService {
           console.log(`[AIService] Syncing batch of ${remotePendingDownload.length} remote embeddings & phash from server...`);
           const pHashUpdates = [];
           const embeddingUpdates = [];
+          const ocrUpdates = [];
+          const ids = [];
+          const hashToAsset = new Map();
 
           for (const asset of remotePendingDownload) {
-              await TaskSchedulerService.waitUntilIdle();
-            try {
-              processedDownloads++;
-              this.status = {
-                isProcessing: true,
-                current: Math.min(processedDownloads, totalDownloads),
-                total: totalDownloads,
-                message: `Syncing remote photo features (${Math.min(processedDownloads, totalDownloads)}/${totalDownloads})...`
-              };
-              DeviceEventEmitter.emit('ai_processing_status', this.status);
+            processedDownloads++;
+            this.status = {
+              isProcessing: true,
+              current: Math.min(processedDownloads, totalDownloads),
+              total: totalDownloads,
+              message: `Syncing remote photo features (${Math.min(processedDownloads, totalDownloads)}/${totalDownloads})...`
+            };
+            DeviceEventEmitter.emit('ai_processing_status', this.status);
 
-              const res = await axios.get(`${url}/asset/metadata/${asset.hash}`, {
-                headers: { Authorization: `token=${token}` },
-                timeout: 10000,
-                skipAutoProbe: true,
-                priority: 5
-              });
-              await new Promise(resolve => setTimeout(resolve, 50));
-              const data = res.data;
-              let foundEmbedding = false;
-              let foundPHash = false;
+            const serverAssetId = await this.getServerAssetIdByHash(asset.hash);
+            if (!serverAssetId) {
+              console.log(`[AIService] Skipping download for ${asset.hash}: server ID not resolved yet.`);
+              continue;
+            }
+            ids.push(serverAssetId);
+            hashToAsset.set(asset.hash, asset);
+          }
+
+          if (ids.length === 0) {
+            // Nothing in this chunk was resolvable -- stop instead of looping forever
+            // re-fetching the same unresolved rows.
+            hasMoreDownloads = false;
+            break;
+          }
+
+          try {
+            const res = await axios.post(`${url}/assets/metadata/byid`, ids, {
+              headers: { Authorization: `token=${token}` },
+              timeout: 20000,
+              skipAutoProbe: true,
+              priority: 5,
+              groupId: 'AIService'
+            });
+            const returned = Array.isArray(res.data) ? res.data : [];
+            const seenHashes = new Set();
+
+            for (const item of returned) {
+              if (!item || !item.Hash) continue;
+              seenHashes.add(item.Hash);
+              const asset = hashToAsset.get(item.Hash);
+              if (!asset) continue;
+
+              let foundOcr = false;
               let pHashVal = 'none';
               let embeddingVal = 'none';
-              let foundOcr = false;
               let ocrVal = 'none';
-              
-              if (data && data.Metadatas) {
-                for (const meta of data.Metadatas) {
+
+              if (item.Metadatas) {
+                for (const meta of item.Metadatas) {
                   if (meta.Name === 'shared.phash.fingerprint' || meta.Name === 'ios.phash.fingerprint' || meta.Name === 'android.phash.fingerprint') {
                     if (meta.Value && meta.Value.length > 0) {
                       pHashVal = meta.Value;
-                      foundPHash = true;
                     }
                   }
                   if (meta.Name && meta.Name.endsWith('.similarity.clip.embedding')) {
                     if (meta.Value && meta.Value.length > 100) {
                       embeddingVal = meta.Value;
-                      foundEmbedding = true;
                     }
                   }
                   if (meta.Name === 'ios.vision.text.content') {
@@ -1869,50 +1852,37 @@ class AIService {
               }
 
               pHashUpdates.push({ idOrHash: asset.hash, phash: pHashVal });
-              embeddingUpdates.push({ idOrHash: asset.hash, embedding: embeddingVal, version: foundEmbedding ? 1 : 1 });
-              
-              if (foundOcr && ocrVal && ocrVal !== 'none') {
-                 await AssetDBService.saveAssetOCR(asset.hash, ocrVal);
-              } else if (!foundOcr) {
-                 await AssetDBService.saveAssetOCR(asset.hash, 'none');
-              }
-            } catch (e) {
-              if (e.response && e.response.status === 404) {
-                pHashUpdates.push({ idOrHash: asset.hash, phash: 'none' });
-                embeddingUpdates.push({ idOrHash: asset.hash, embedding: 'none', version: 1 });
-                await AssetDBService.saveAssetOCR(asset.hash, 'none');
-              } else {
-                console.warn(`[AIService] Failed to get metadata for remote asset ${asset.hash}:`, e.message);
-                this._tryReconnectOnNetworkError(e);
+              embeddingUpdates.push({ idOrHash: asset.hash, embedding: embeddingVal, version: 1 });
+              ocrUpdates.push({ idOrHash: asset.hash, ocr: (foundOcr && ocrVal) ? ocrVal : 'none' });
+            }
+
+            // Any requested hash absent from the response = server-side skip
+            // (stale/deleted ID, or truly no metadata rows) -- treat exactly like
+            // the old code treated an HTTP 404 for that single asset.
+            for (const [hash] of hashToAsset) {
+              if (!seenHashes.has(hash)) {
+                pHashUpdates.push({ idOrHash: hash, phash: 'none' });
+                embeddingUpdates.push({ idOrHash: hash, embedding: 'none', version: 1 });
+                ocrUpdates.push({ idOrHash: hash, ocr: 'none' });
               }
             }
+          } catch (e) {
+            // Nothing persisted on failure -- these rows stay pending (still missing
+            // embedding/phash) and are naturally retried on the next syncEmbeddings() pass.
+            console.warn(`[AIService] Failed to fetch metadata batch of ${ids.length} ids:`, e.message);
+            this._tryReconnectOnNetworkError(e);
           }
 
           // Execute batch database writes
           if (pHashUpdates.length > 0) {
             await AssetDBService.saveAssetPHashesBatch(pHashUpdates);
           }
+          if (ocrUpdates.length > 0) {
+            await AssetDBService.saveAssetOCRBatch(ocrUpdates);
+          }
           if (embeddingUpdates.length > 0) {
             await AssetDBService.saveAssetEmbeddingsBatch(embeddingUpdates);
-
-            // Sync with in-memory vector cache
-            for (const update of embeddingUpdates) {
-              if (update.embedding && update.embedding !== 'failed' && update.embedding !== 'none') {
-                try {
-                  const row = await db.getFirstAsync('SELECT id FROM MediaAsset WHERE id = ? OR hash = ?', [update.idOrHash, update.idOrHash]);
-                  if (row && row.id) {
-                    this._setVector(row.id, base64ToFloat32Array(update.embedding));
-                  }
-                } catch (_) {}
-              } else {
-                try {
-                  const row = await db.getFirstAsync('SELECT id FROM MediaAsset WHERE id = ? OR hash = ?', [update.idOrHash, update.idOrHash]);
-                  if (row && row.id) {
-                    this._deleteVector(row.id);
-                  }
-                } catch (_) {}
-              }
-            }
+            await this._syncVectorCache(embeddingUpdates);
           }
         await new Promise(resolve => setTimeout(resolve, 300));
       }
