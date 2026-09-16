@@ -1747,7 +1747,14 @@ class AIService {
         let processedDownloads = 0;
 
         let hasMoreDownloads = true;
-        const AI_DOWNLOAD_BATCH_SIZE = 100; // hard cap enforced server-side by /assets/metadata/byid
+        // Server hard-caps a single /assets/metadata/byid request at 100 ids, but that request
+        // handler also does synchronous per-asset GPS probing (shelling out to exiftool) for any
+        // asset that doesn't have geo data yet -- observed taking 2-4.5 minutes and pinning this
+        // NAS's single lomod process at 100% CPU with a 100-id batch, starving unrelated requests
+        // (previews included) for the duration. The backend fix removes that probing from this
+        // endpoint entirely, but this stays well under the server cap as a second line of defense
+        // in case an unpatched/older backend is ever talking to a client running this code.
+        const AI_DOWNLOAD_BATCH_SIZE = 20;
         while (hasMoreDownloads) {
           // Yield to user interactions to prevent scroll stuttering
           await TaskSchedulerService.waitUntilIdle();
