@@ -401,8 +401,7 @@ class AutoBackupManager {
             processNext();
         }).then(() => {
             this.isBackingUp = false;
-            this.updateNotification();
-            
+
             // If we finished the sequence but the gallery still has local items (added during backup), restart.
             const remaining = GalleryStore.getAssets().filter(a => a.status === 'local');
             if (remaining.length > 0 && !this.isPaused) {
@@ -415,6 +414,10 @@ class AutoBackupManager {
                 // If paused, keep the queue intact so the banner correctly displays "Backup Paused"
                 this.emitState();
             }
+            // Refresh/dismiss the sticky notification using the final queue state
+            // (must run after the queue is cleared above, otherwise the Android
+            // notification is left stuck showing "backing up" forever).
+            this.updateNotification();
             stopKeepAlive();
         });
     }
