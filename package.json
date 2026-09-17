@@ -1,6 +1,6 @@
 {
   "name": "lomo-mobile",
-  "version": "1.0.143",
+  "version": "1.0.144",
   "main": "index.js",
   "scripts": {
     "start": "expo start",
@@ -9,7 +9,9 @@
     "web": "expo start --web",
     "test": "jest",
     "lint": "eslint .",
-    "postinstall": "patch-package"
+    "postinstall": "patch-package",
+    "release:android": "bundle exec fastlane android deploy",
+    "release:android:production": "bundle exec fastlane android deploy track:production release_status:completed"
   },
   "jest": {
     "preset": "jest-expo",

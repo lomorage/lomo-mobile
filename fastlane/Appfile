@@ -3,3 +3,11 @@ apple_id("lovejennifer14@gmail.com") # Your Apple email address
 
 # itc_team_id("...") # App Store Connect Team ID
 # team_id("...") # Developer Portal Team ID
+
+for_platform :android do
+  package_name("com.wtao.lomo")
+  # Google Play service account JSON key — download it from Google Cloud Console
+  # (IAM > Service Accounts) after linking it in Play Console > API access.
+  # Never commit this file; it's covered by .gitignore below.
+  json_key_file("fastlane/play-store-credentials.json")
+end

@@ -69,3 +69,4 @@ upload_certificate.pem
 # Fastlane
 fastlane/report.xml
 fastlane/README.md
+fastlane/play-store-credentials.json

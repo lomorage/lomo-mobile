@@ -21,3 +21,32 @@ platform :ios do
     )
   end
 end
+
+platform :android do
+  desc "Build the release AAB"
+  lane :build_release do
+    # Deliberately no `clean` task here: on this project, Gradle's `clean` triggers a CMake
+    # reconfigure/clean that runs before the React Native codegen tasks regenerate their output
+    # directories, which breaks the native build (CMake can't find the codegen JNI dirs). If a
+    # from-scratch build is ever needed, delete android/app/build, android/app/.cxx, and each
+    # node_modules/*/android/build (and .cxx) directory manually, then run this lane.
+    gradle(
+      task: "bundleRelease",
+      project_dir: "android/"
+    )
+  end
+
+  desc "Build and upload a new release to the Google Play Console (defaults to the internal track)"
+  lane :deploy do |options|
+    build_release
+
+    upload_to_play_store(
+      track: options[:track] || "internal",
+      aab: "android/app/build/outputs/bundle/release/app-release.aab",
+      release_status: options[:release_status] || "draft",
+      skip_upload_metadata: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true
+    )
+  end
+end
