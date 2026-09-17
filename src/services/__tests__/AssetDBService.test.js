@@ -63,6 +63,39 @@ describe('AssetDBService', () => {
     expect(mockSpies.execAsync).toHaveBeenCalledWith(expect.stringContaining('ALTER TABLE MediaAsset ADD COLUMN filename TEXT'));
   });
 
+  test('reads and writes on the shared connection are serialized in call order', async () => {
+    // Regression test for a real crash: NativeDatabase.prepareAsync calls racing on the
+    // native JS<->Kotlin bridge's object registry when two callers hit the connection at
+    // once (a write's prepareAsync overlapping a concurrent read's). getAllAsync/
+    // getFirstAsync/prepareAsync must go through the same queue as writes, not run directly.
+    const order = [];
+    mockSpies.getAllAsync.mockImplementation(async () => { order.push('read-start'); await Promise.resolve(); order.push('read-end'); return []; });
+    mockSpies.runAsync.mockImplementation(async () => { order.push('write-start'); await Promise.resolve(); order.push('write-end'); return {}; });
+
+    await Promise.all([
+      AssetDBService.db.getAllAsync('SELECT 1'),
+      AssetDBService.db.runAsync('UPDATE MediaAsset SET id = ?', ['x']),
+    ]);
+
+    // Whichever ran first, it must fully finish (start+end adjacent) before the other starts --
+    // never interleaved as read-start/write-start/read-end/write-end.
+    expect(order).toEqual(order[0] === 'read-start'
+      ? ['read-start', 'read-end', 'write-start', 'write-end']
+      : ['write-start', 'write-end', 'read-start', 'read-end']);
+  });
+
+  test('prepareAsync called from inside a transaction does not deadlock (reentrant lock)', async () => {
+    mockSpies.withExclusiveTransactionAsync.mockImplementation(async (cb) => {
+      // Simulate real usage: prepareAsync invoked from inside the already-locked callback.
+      await AssetDBService.db.prepareAsync('SELECT 1');
+      return cb();
+    });
+
+    await expect(
+      AssetDBService.db.withExclusiveTransactionAsync(() => Promise.resolve('done'))
+    ).resolves.toBe('done');
+  });
+
   test('insertLocalAssets inserts local assets successfully within transaction', async () => {
     const mockAssets = [
       { id: '1', creationTime: 123456, mediaType: 'photo', location: { latitude: 12.3, longitude: 45.6 } }

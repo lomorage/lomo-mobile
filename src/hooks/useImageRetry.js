@@ -1,5 +1,6 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
 import { isNotFoundImageError } from '../utils/imageErrors';
+import ImageLoadGate from '../services/ImageLoadGate';
 
 // Retries a failed remote preview load a few times with backoff, matching the pattern
 // HomeScreen's RenderAsset/OnThisDayTile use for the main grid. A 404 means the server
@@ -27,7 +28,15 @@ export function useImageRetry(resetKey) {
         if (retryCountRef.current < 3 && !isNotFoundImageError(errorMessage)) {
             const attempt = retryCountRef.current + 1;
             retryCountRef.current = attempt;
-            const backoffMs = [1000, 3000, 6000][attempt - 1];
+            // expo-image's own load timeout (~10s) fires well before this NAS finishes a
+            // slow preview under load (15-20s+ observed in lomod_access.log) -- the old
+            // 1s/3s/6s backoff meant the retry's fresh, cache-busted request nearly always
+            // landed while the original was *still being generated server-side*, doubling
+            // (then tripling) load on the exact request that was already too slow. Backing
+            // off longer than the server's real response time lets the original finish and
+            // get cached, so the retry is normally a cheap served-from-cache hit instead of
+            // triggering duplicate work.
+            const backoffMs = [10000, 20000, 30000][attempt - 1];
             retryTimeoutRef.current = setTimeout(() => {
                 setRetryTick(t => t + 1);
             }, backoffMs);
@@ -42,4 +51,57 @@ export function useImageRetry(resetKey) {
 export function withRetryBuster(uri, serverEpoch, retryTick) {
     if (!uri || (retryTick <= 0 && serverEpoch <= 0)) return uri;
     return `${uri}${uri.includes('?') ? '&' : '?'}_r=${serverEpoch}.${retryTick}`;
+}
+
+// Withholds a remote (http) preview URI from the Image component until ImageLoadGate
+// grants a concurrency slot, so a burst of newly-mounted grid cells doesn't all hit the
+// NAS at once. Local URIs (device photos, content://, ph://, ...) are never gated --
+// returned synchronously on first render, no extra render pass, no placeholder flash.
+// Caller must invoke the returned `release()` from both onLoad and onError so the slot
+// is freed as soon as the load settles either way.
+export function useGatedImageUri(uri) {
+    const isRemote = !!uri && uri.startsWith('http');
+    const [gatedRemoteUri, setGatedRemoteUri] = useState(null);
+    const tokenRef = useRef(null);
+    const pendingUriRef = useRef(null);
+
+    useEffect(() => {
+        if (!isRemote) {
+            if (tokenRef.current) {
+                ImageLoadGate.cancel(tokenRef.current);
+                tokenRef.current = null;
+            }
+            pendingUriRef.current = null;
+            return;
+        }
+        if (pendingUriRef.current === uri) return; // already granted/pending for this exact uri
+        pendingUriRef.current = uri;
+
+        if (tokenRef.current) {
+            ImageLoadGate.cancel(tokenRef.current);
+            tokenRef.current = null;
+        }
+        setGatedRemoteUri(null);
+
+        let isCurrent = true;
+        ImageLoadGate.acquire().then(token => {
+            if (!isCurrent) {
+                ImageLoadGate.cancel(token);
+                return;
+            }
+            tokenRef.current = token;
+            setGatedRemoteUri(uri);
+        });
+
+        return () => { isCurrent = false; };
+    }, [uri, isRemote]);
+
+    const release = useCallback(() => {
+        if (tokenRef.current) {
+            ImageLoadGate.cancel(tokenRef.current);
+            tokenRef.current = null;
+        }
+    }, []);
+
+    return { gatedUri: isRemote ? gatedRemoteUri : uri, release };
 }

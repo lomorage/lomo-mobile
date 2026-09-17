@@ -3,7 +3,7 @@ import { StyleSheet, View, Dimensions, TouchableOpacity, Text, ActivityIndicator
 import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 import { FlashList } from '@shopify/flash-list';
-import { Cloud, CheckCircle, Smartphone, PlayCircle, PauseCircle, Settings as SettingsIcon, UploadCloud, X, MapPin, Heart, Search, ScanText, Clock, Calendar, WifiOff, Images as ImagesIcon } from 'lucide-react-native';
+import { Cloud, CheckCircle, Smartphone, PlayCircle, PauseCircle, Settings as SettingsIcon, UploadCloud, X, MapPin, Heart, Search, ScanText, Clock, Calendar, WifiOff, Images as ImagesIcon, ChevronRight } from 'lucide-react-native';
 import MediaService from '../services/MediaService';
 import SyncService from '../services/SyncService';
 import OfflineCacheService from '../services/OfflineCacheService';
@@ -18,6 +18,7 @@ import { formatBytes, formatSpeed } from '../utils/formatters';
 import { isVideoExtension } from '../utils/mediaType';
 import { isLivePhoto } from '../utils/livePhoto';
 import { isNotFoundImageError } from '../utils/imageErrors';
+import { useGatedImageUri } from '../hooks/useImageRetry';
 import { parseTimeTokenExtra } from './homeScreenHelpers';
 import * as SecureStore from 'expo-secure-store';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
@@ -202,6 +203,7 @@ const OnThisDayTile = memo(function OnThisDayTile({ asset, index, navigation, se
     if (thumbnailUri && (retryTick > 0 || serverEpoch > 0)) {
         thumbnailUri += `${thumbnailUri.includes('?') ? '&' : '?'}_r=${serverEpoch}.${retryTick}`;
     }
+    const { gatedUri: gatedThumbnailUri, release: releaseImageGate } = useGatedImageUri(thumbnailUri);
 
     return (
         <TouchableOpacity
@@ -209,13 +211,18 @@ const OnThisDayTile = memo(function OnThisDayTile({ asset, index, navigation, se
             onPress={() => navigation.navigate('AssetDetail', { initialIndex: index, source: 'onThisDay' })}
         >
             <Image
-                source={{ uri: thumbnailUri }}
+                source={{ uri: gatedThumbnailUri }}
                 style={styles.onThisDayImage}
+                onLoad={releaseImageGate}
                 onError={(e) => {
+                    releaseImageGate();
                     if (retryCountRef.current < 3 && !isNotFoundImageError(e.error)) {
                         const attempt = retryCountRef.current + 1;
                         retryCountRef.current = attempt;
-                        const backoffMs = [1000, 3000, 6000][attempt - 1];
+                        // See useImageRetry.js's onError for why this is 10s/20s/30s and not
+                        // a short backoff -- must outlast this NAS's real response time or the
+                        // retry duplicates load on a request that's still in flight server-side.
+                        const backoffMs = [10000, 20000, 30000][attempt - 1];
                         retryTimeoutRef.current = setTimeout(() => {
                             setRetryTick(t => t + 1);
                         }, backoffMs);
@@ -1320,15 +1327,16 @@ export default function HomeScreen({ navigation, route }) {
         if (thumbnailUri && asset.status === 'remote' && (retryTick > 0 || serverEpoch > 0)) {
             thumbnailUri += `${thumbnailUri.includes('?') ? '&' : '?'}_r=${serverEpoch}.${retryTick}`;
         }
+        const { gatedUri: gatedThumbnailUri, release: releaseImageGate } = useGatedImageUri(thumbnailUri);
 
         return (
             <TouchableOpacity
                 style={styles.itemContainer}
                 onPress={() => navigation.navigate('AssetDetail', { initialIndex: globalIndex, source })}
             >
-                {thumbnailUri ? (
+                {gatedThumbnailUri ? (
                     <Image
-                        source={{ uri: thumbnailUri }}
+                        source={{ uri: gatedThumbnailUri }}
                         style={styles.image}
                         contentFit="cover"
                         cachePolicy={GRID_IMAGE_CACHE_POLICY}
@@ -1342,6 +1350,7 @@ export default function HomeScreen({ navigation, route }) {
                             }
                         }}
                         onLoad={() => {
+                            releaseImageGate();
                             if (asset.status === 'remote' && loadStartTime.current > 0) {
                                 activeLoadRef.current--;
                                 ThumbnailLoadTracker.decrement();
@@ -1351,6 +1360,7 @@ export default function HomeScreen({ navigation, route }) {
                             }
                         }}
                         onError={(e) => {
+                                releaseImageGate();
                                 if (asset.status === 'remote') { activeLoadRef.current--; ThumbnailLoadTracker.decrement(); }
                                 if (remoteFallbackUri && !useRemoteFallback) {
                                     // Local video thumbnail failed (e.g. WeChat codec) — fall back to remote preview
@@ -1366,7 +1376,11 @@ export default function HomeScreen({ navigation, route }) {
                                 if (asset.status === 'remote' && retryCountRef.current < 3 && !isNotFoundImageError(e.error)) {
                                     const attempt = retryCountRef.current + 1;
                                     retryCountRef.current = attempt;
-                                    const backoffMs = [1000, 3000, 6000][attempt - 1];
+                                    // See useImageRetry.js's onError for why this is 10s/20s/30s
+                                    // and not a short backoff -- must outlast this NAS's real
+                                    // response time or the retry duplicates load on a request
+                                    // that's still in flight server-side.
+                                    const backoffMs = [10000, 20000, 30000][attempt - 1];
                                     retryTimeoutRef.current = setTimeout(() => {
                                         setRetryTick(t => t + 1);
                                     }, backoffMs);
@@ -2104,17 +2118,26 @@ export default function HomeScreen({ navigation, route }) {
                 </View>
             </Modal>
 
-            {/* AI Processing Pill — Google Photos style, non-intrusive */}
+            {/* AI Processing Pill — Google Photos style, non-intrusive. Tap to see what's happening and why. */}
             {aiStatus && (
-                <Animated.View style={[styles.aiPill, { opacity: aiPillOpacity }]} pointerEvents="none">
-                    {aiStatus.isProcessing ? (
-                        <ActivityIndicator size="small" color="#fff" style={{ marginRight: 8 }} />
-                    ) : (
-                        <Text style={{ fontSize: 14, marginRight: 6 }}>✓</Text>
-                    )}
-                    <Text style={styles.aiPillText} numberOfLines={1}>
-                        {aiStatus.isProcessing ? 'Enhancing search…' : 'Search index up to date'}
-                    </Text>
+                <Animated.View style={[styles.aiPill, { opacity: aiPillOpacity }]} pointerEvents="auto">
+                    <TouchableOpacity
+                        onPress={() => navigation.navigate('Settings', { scrollToSection: 'ai' })}
+                        activeOpacity={0.7}
+                        style={{ flexDirection: 'row', alignItems: 'center' }}
+                    >
+                        {aiStatus.isProcessing ? (
+                            <ActivityIndicator size="small" color="#fff" style={{ marginRight: 8 }} />
+                        ) : (
+                            <Text style={{ fontSize: 14, marginRight: 6 }}>✓</Text>
+                        )}
+                        <Text style={styles.aiPillText} numberOfLines={1}>
+                            {aiStatus.isProcessing
+                                ? (aiStatus.message || 'Making your photos searchable…')
+                                : 'Search index up to date'}
+                        </Text>
+                        {aiStatus.isProcessing && <ChevronRight size={14} color="rgba(255,255,255,0.6)" style={{ marginLeft: 4 }} />}
+                    </TouchableOpacity>
                 </Animated.View>
             )}
         </View>

@@ -1,5 +1,5 @@
 import React from 'react';
-import { StyleSheet, View, ScrollView, Text, Switch, TouchableOpacity, Alert, ActivityIndicator, Platform, Modal, TextInput, DeviceEventEmitter, FlatList, Dimensions, Pressable } from 'react-native';
+import { StyleSheet, View, ScrollView, Text, Switch, TouchableOpacity, Alert, ActivityIndicator, Platform, Modal, TextInput, DeviceEventEmitter, FlatList, Dimensions, Pressable, Animated } from 'react-native';
 import { ChevronLeft, Trash2, RefreshCcw, Server, ChevronRight, Globe, ShieldCheck } from 'lucide-react-native';
 import Constants from 'expo-constants';
 import { useSettings } from '../context/SettingsContext';
@@ -128,7 +128,7 @@ const SimpleVideoPlayer = ({ uri, isActive }) => {
     );
 };
 
-export default function SettingsScreen({ navigation }) {
+export default function SettingsScreen({ navigation, route }) {
     const { 
         debugMode, 
         toggleDebugMode, 
@@ -202,6 +202,34 @@ export default function SettingsScreen({ navigation }) {
         }
     }).current;
     const viewabilityConfig = React.useRef({ itemVisiblePercentThreshold: 50 }).current;
+
+    // Deep-link target: HomeScreen's AI status pill navigates here with
+    // { scrollToSection: 'ai' } so tapping it actually lands on the relevant section
+    // instead of the top of a long settings page the user then has to hunt through.
+    const scrollViewRef = React.useRef(null);
+    const aiSectionYRef = React.useRef(0);
+    const aiSectionHighlight = React.useRef(new Animated.Value(0)).current;
+    const handledScrollToSectionRef = React.useRef(null);
+    React.useEffect(() => {
+        const target = route?.params?.scrollToSection;
+        if (!target || handledScrollToSectionRef.current === target) return;
+        handledScrollToSectionRef.current = target;
+        if (target === 'ai') {
+            // Short delay so the section's onLayout has had a chance to report its real
+            // position before we scroll to it (first render can still be measuring).
+            const timer = setTimeout(() => {
+                scrollViewRef.current?.scrollTo({ y: Math.max(0, aiSectionYRef.current - 12), animated: true });
+                aiSectionHighlight.setValue(1);
+                Animated.timing(aiSectionHighlight, {
+                    toValue: 0,
+                    duration: 1500,
+                    delay: 400,
+                    useNativeDriver: false,
+                }).start();
+            }, 80);
+            return () => clearTimeout(timer);
+        }
+    }, [route?.params?.scrollToSection]);
 
     React.useEffect(() => {
         loadStats();
@@ -412,7 +440,7 @@ export default function SettingsScreen({ navigation }) {
                 <View style={{ width: 44 }} />
             </View>
 
-            <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 40 }}>
+            <ScrollView ref={scrollViewRef} style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 40 }}>
             <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Backup Strategy</Text>
                 
@@ -552,7 +580,18 @@ export default function SettingsScreen({ navigation }) {
 
             </View>
 
-            <View style={styles.section}>
+            <Animated.View
+                onLayout={(e) => { aiSectionYRef.current = e.nativeEvent.layout.y; }}
+                style={[
+                    styles.section,
+                    {
+                        backgroundColor: aiSectionHighlight.interpolate({
+                            inputRange: [0, 1],
+                            outputRange: ['#fff', '#EAF3FF'],
+                        }),
+                    },
+                ]}
+            >
                 <Text style={styles.sectionTitle}>AI & Search Settings</Text>
 
                 <View style={styles.privacyNote}>
@@ -565,7 +604,7 @@ export default function SettingsScreen({ navigation }) {
                 <View style={styles.settingRow}>
                     <View style={styles.settingTextContainer}>
                         <Text style={styles.settingLabel}>Local AI Features</Text>
-                        <Text style={styles.settingDescription}>Makes photos searchable by what&apos;s in them or written on them, groups photos of the same person, and finds duplicates — all on your phone. Nothing is uploaded to make this work.</Text>
+                        <Text style={styles.settingDescription}>Finds text and faces in your photos, and spots duplicates — entirely on this phone.</Text>
                     </View>
                     <Switch
                         value={aiEnabled}
@@ -579,8 +618,8 @@ export default function SettingsScreen({ navigation }) {
                     <>
                         <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8, paddingTop: 8 }]}>
                             <View style={styles.settingTextContainer}>
-                                <Text style={styles.settingLabel}>AI Background Indexing Wi-Fi Only</Text>
-                                <Text style={styles.settingDescription}>Only run background feature extraction (phash/embeddings) when connected to a Wi-Fi network.</Text>
+                                <Text style={styles.settingLabel}>Wi-Fi Only</Text>
+                                <Text style={styles.settingDescription}>Only runs in the background on Wi-Fi, to save your mobile data.</Text>
                             </View>
                             <Switch
                                 value={aiWifiOnly}
@@ -592,8 +631,8 @@ export default function SettingsScreen({ navigation }) {
 
                         <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8, paddingTop: 8 }]}>
                             <View style={styles.settingTextContainer}>
-                                <Text style={styles.settingLabel}>AI Background Indexing Charging Only</Text>
-                                <Text style={styles.settingDescription}>Only run background feature extraction when the device is plugged in and charging to prevent battery drain.</Text>
+                                <Text style={styles.settingLabel}>Charging Only</Text>
+                                <Text style={styles.settingDescription}>Only runs in the background while charging, to save battery.</Text>
                             </View>
                             <Switch
                                 value={aiChargingOnly}
@@ -606,7 +645,7 @@ export default function SettingsScreen({ navigation }) {
                         <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8, paddingTop: 8 }]}>
                             <View style={styles.settingTextContainer}>
                                 <Text style={styles.settingLabel}>Sync Remote AI Features</Text>
-                                <Text style={styles.settingDescription}>Sync CLIP embeddings and photo fingerprints with your own server, so search covers remote photos too. This only ever reaches the server you log into — not a third-party AI service.</Text>
+                                <Text style={styles.settingDescription}>Extends search and face grouping to photos stored only on your server.</Text>
                             </View>
                             <Switch
                                 value={remoteAIProcessingEnabled}
@@ -670,7 +709,7 @@ export default function SettingsScreen({ navigation }) {
                             <Text style={[styles.statGroupHeader, { marginTop: 14 }]}>Syncing with your server</Text>
                             <View style={styles.statRow}>
                                 <View style={styles.statRowHeader}>
-                                    <Text style={styles.statRowLabel}>↑ Uploading results to server</Text>
+                                    <Text style={styles.statRowLabel}>↑ Sending analysis to server</Text>
                                     <Text style={styles.statRowValue}>
                                         {aiDetailedStatus ? `${aiDetailedStatus.sync.uploaded.toLocaleString()} / ${aiDetailedStatus.sync.uploadCandidates.toLocaleString()}` : '—'}
                                     </Text>
@@ -681,7 +720,7 @@ export default function SettingsScreen({ navigation }) {
                             </View>
                             <View style={styles.statRow}>
                                 <View style={styles.statRowHeader}>
-                                    <Text style={styles.statRowLabel}>☁️ Remote-only photos indexed</Text>
+                                    <Text style={styles.statRowLabel}>☁️ Analyzing photos not on this device</Text>
                                     <Text style={styles.statRowValue}>
                                         {aiDetailedStatus ? `${aiDetailedStatus.sync.remoteDone.toLocaleString()} / ${aiDetailedStatus.sync.remoteTotal.toLocaleString()}` : '—'}
                                     </Text>
@@ -706,7 +745,7 @@ export default function SettingsScreen({ navigation }) {
                         </View>
                     </>
                 )}
-            </View>
+            </Animated.View>
 
             <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Developer</Text>

@@ -9,16 +9,36 @@ class AssetDBService {
   constructor() {
     this.dbName = 'lomoAssets.db';
     this.db = null;
-    this.writePromise = Promise.resolve(); // Promise chain to serialize all database writes
+    this.writePromise = Promise.resolve(); // Promise chain to serialize all database access
+    this._inLock = false; // guards against the reentrant deadlock described in executeWrite below
   }
 
-  // Promise-based mutex lock for serializing writes sequentially
+  // Promise-based mutex lock serializing every native SQLite call expo-sqlite exposes on this
+  // connection -- not just writes despite the name (kept for the many existing call sites).
+  // getAllAsync/getFirstAsync/prepareAsync used to run unserialized directly against the native
+  // module, callable from several services (AIService, SyncService, OfflineCacheService, ...)
+  // at once. That raced against writes at the JS<->native bridge's own object bookkeeping (the
+  // NativeStatement "SharedObject" registry), not against SQLite itself (WAL mode already allows
+  // concurrent readers there) -- observed as "NativeDatabase.prepareAsync ... 2nd argument
+  // cannot be cast to NativeStatement (received Integer) ... SharedObject doesn't contain valid
+  // id", i.e. two prepareAsync calls colliding on that registry.
+  //
+  // Reentrant calls (e.g. prepareAsync invoked from inside a withExclusiveTransactionAsync
+  // callback that's already running inside this same lock) must NOT re-enqueue -- that would
+  // await a promise-chain slot that can't advance until the very callback awaiting it returns,
+  // deadlocking. _inLock marks "already holding the lock, run inline" for exactly that case.
   async executeWrite(callback) {
+    if (this._inLock) {
+      return callback();
+    }
     const nextPromise = this.writePromise.then(async () => {
+      this._inLock = true;
       try {
         return await callback();
       } catch (err) {
         throw err;
+      } finally {
+        this._inLock = false;
       }
     });
     this.writePromise = nextPromise.catch(() => {}); // Catch errors to prevent lock chain from breaking
@@ -36,16 +56,23 @@ class AssetDBService {
         await db.execAsync('PRAGMA busy_timeout = 30000;');
         await db.execAsync('PRAGMA journal_mode = WAL;');
 
-        // Add write serialization queue to prevent parallel writes from lock contentions
+        // Serialize every native call expo-sqlite exposes on this connection through the same
+        // queue -- see executeWrite's comment for why reads need this too, not just writes.
         const originalRunAsync = db.runAsync.bind(db);
         const originalExecAsync = db.execAsync.bind(db);
         const originalWithExclusiveTransactionAsync = db.withExclusiveTransactionAsync.bind(db);
         const originalWithTransactionAsync = db.withTransactionAsync.bind(db);
+        const originalGetAllAsync = db.getAllAsync.bind(db);
+        const originalGetFirstAsync = db.getFirstAsync.bind(db);
+        const originalPrepareAsync = db.prepareAsync.bind(db);
 
         db.runAsync = (...args) => this.executeWrite(() => originalRunAsync(...args));
         db.execAsync = (...args) => this.executeWrite(() => originalExecAsync(...args));
         db.withExclusiveTransactionAsync = (...args) => this.executeWrite(() => originalWithExclusiveTransactionAsync(...args));
         db.withTransactionAsync = (...args) => this.executeWrite(() => originalWithTransactionAsync(...args));
+        db.getAllAsync = (...args) => this.executeWrite(() => originalGetAllAsync(...args));
+        db.getFirstAsync = (...args) => this.executeWrite(() => originalGetFirstAsync(...args));
+        db.prepareAsync = (...args) => this.executeWrite(() => originalPrepareAsync(...args));
 
       // Create base table if not exists (Version 1)
       await db.execAsync(`

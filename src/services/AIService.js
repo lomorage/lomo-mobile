@@ -13,6 +13,8 @@ import AssetDBService from './AssetDBService';
 import AuthService from './AuthService';
 import MediaService from './MediaService';
 import TaskSchedulerService from './TaskSchedulerService';
+import NetworkQueue from './NetworkQueue';
+import ThumbnailLoadTracker from './ThumbnailLoadTracker';
 import { recognizeText } from '@infinitered/react-native-mlkit-text-recognition';
 import { RNMLKitFaceDetector } from '@infinitered/react-native-mlkit-face-detection';
 import { pinyin } from 'pinyin-pro';
@@ -63,6 +65,42 @@ class AIService {
     this.manualPickFaceDetector = new RNMLKitFaceDetector({ performanceMode: 'accurate', minFaceSize: 0.02, landmarkMode: true });
     // Set to true to run face detection WITHOUT writing to DB or server (for debugging)
     this.faceDryRun = true;
+
+    // Immediately give up the network the moment the user touches the screen, rather
+    // than waiting for the in-flight background-sync request to finish on its own --
+    // a single metadata batch can take many seconds on a slow server, and
+    // TaskSchedulerService.waitUntilIdle() only re-checks *between* batches, so without
+    // this an already-dispatched request keeps running (and keeps competing with
+    // whatever the user just triggered) for however long it takes to complete. Safe to
+    // cancel unconditionally: every catch block around these requests already treats a
+    // failure as "nothing persisted, naturally retried next pass" (see syncEmbeddings).
+    DeviceEventEmitter.addListener('user_interaction', () => {
+      NetworkQueue.cancelGroup('AIService');
+    });
+  }
+
+  // Paces background-sync requests relative to how long the server actually took to
+  // respond, instead of a fixed guess that's wrong on either end of the hardware
+  // spectrum -- a fast/lightly-loaded server gets barely any gap (near-continuous
+  // throughput), a struggling one gets real breathing room, and neither needs a
+  // hand-tuned constant. Floored so we never hammer a fast server, capped so a
+  // pathologically slow one doesn't stall the loop for minutes.
+  async _pacedDelay(elapsedMs) {
+    const delay = Math.min(5000, Math.max(500, elapsedMs));
+    await new Promise(resolve => setTimeout(resolve, delay));
+  }
+
+  // TaskSchedulerService.isInteractive() only stays true for 3s after the last touch,
+  // but a thumbnail fetch can still be in flight for far longer than that on a loaded
+  // server (15-20s+ observed) -- the user scrolls once, lets go, and waitUntilIdle()
+  // would consider that idle while a dozen grid tiles are still actively loading.
+  // ThumbnailLoadTracker tracks that more precisely (see SyncService's identical use of
+  // it for GPS backfill). Deadline-capped so a stuck counter can't stall sync forever.
+  async _waitForThumbnailsIdle() {
+    const deadline = Date.now() + 8000;
+    while (ThumbnailLoadTracker.isActive() && AppState.currentState === 'active' && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
   }
 
   /**
@@ -1602,7 +1640,16 @@ class AIService {
       // Part A: Upload local embeddings + pHashes to server (batched, merged pass —
       // an asset needing either one gets a single row here, and both are packed into
       // one /assets/metadata array per chunk instead of two separate full passes).
-      const AI_UPLOAD_BATCH_SIZE = 50;
+      // Batch size kept small and paced by _pacedDelay() (scaled to how long the last
+      // batch actually took) between batches -- on this NAS class (858MB RAM, single
+      // lomod process) a continuous stream of these requests measurably starves
+      // interactive preview fetches even though the server-side handler itself is
+      // cheap; confirmed live via lomod_access.log showing preview requests for small
+      // cached files taking 8-18s while embedding sync ran back-to-back with only a
+      // 300ms gap. Also gated on TaskSchedulerService.waitUntilIdle() between batches,
+      // and any in-flight request here is cancelled outright the instant the user
+      // touches the screen (see the 'user_interaction' listener in the constructor).
+      const AI_UPLOAD_BATCH_SIZE = 20;
       const uploadPendingWhere = `
           isLocal = 1
           AND uploaded = 1
@@ -1624,6 +1671,10 @@ class AIService {
       let processedUploads = 0;
 
       while (hasMoreUploads) {
+        // Yield to user interactions to prevent scroll stuttering
+        await TaskSchedulerService.waitUntilIdle();
+        await this._waitForThumbnailsIdle();
+
         const localPendingUpload = await db.getAllAsync(`
           SELECT id, hash, clipEmbedding, phash,
             CASE WHEN clipEmbedding IS NOT NULL AND clipEmbedding != "" AND clipEmbedding != "failed"
@@ -1693,7 +1744,9 @@ class AIService {
           mirrorHashes.push(asset.hash);
         }
 
+        let uploadBatchElapsedMs = 0;
         if (metadataItems.length > 0) {
+          const uploadBatchStart = Date.now();
           try {
             await axios.post(`${url}/assets/metadata?force=1`, metadataItems, {
               headers: { Authorization: `token=${token}` },
@@ -1702,6 +1755,7 @@ class AIService {
               priority: 5,
               groupId: 'AIService'
             });
+            uploadBatchElapsedMs = Date.now() - uploadBatchStart;
             console.log(`[AIService] Uploaded batch of ${metadataItems.length} metadata items (${mirrorHashes.length} assets) successfully.`);
 
             // Mark remote asset mirror rows in SQLite as having the embedding/phash to avoid re-upload loop.
@@ -1721,11 +1775,12 @@ class AIService {
             // Nothing persisted to SQLite on failure -- the same assets are naturally
             // re-selected by uploadPendingWhere's NOT IN(...) on the next syncEmbeddings()
             // pass, since InsertOrUpdateMetadata is a safe, idempotent upsert to resend.
+            uploadBatchElapsedMs = Date.now() - uploadBatchStart;
             console.warn(`[AIService] Failed to upload metadata batch of ${metadataItems.length} items:`, e.message);
             this._tryReconnectOnNetworkError(e);
           }
         }
-        await new Promise(resolve => setTimeout(resolve, 300));
+        await this._pacedDelay(uploadBatchElapsedMs);
       }
       } // end Part A isIdle gate
 
@@ -1747,17 +1802,24 @@ class AIService {
         let processedDownloads = 0;
 
         let hasMoreDownloads = true;
-        // Server hard-caps a single /assets/metadata/byid request at 100 ids, but that request
-        // handler also does synchronous per-asset GPS probing (shelling out to exiftool) for any
-        // asset that doesn't have geo data yet -- observed taking 2-4.5 minutes and pinning this
-        // NAS's single lomod process at 100% CPU with a 100-id batch, starving unrelated requests
-        // (previews included) for the duration. The backend fix removes that probing from this
-        // endpoint entirely, but this stays well under the server cap as a second line of defense
-        // in case an unpatched/older backend is ever talking to a client running this code.
-        const AI_DOWNLOAD_BATCH_SIZE = 20;
+        // Server hard-caps a single /assets/metadata/byid request at 100 ids. The handler
+        // no longer does the synchronous per-asset exiftool GPS probing that used to pin
+        // this NAS's single lomod process (see lomo-backend handler/metadata.go), but on
+        // this hardware class (858MB RAM, ~28MB free / swap maxed under normal load) the
+        // endpoint's response payload alone (full embeddings for each asset, 100s of KB
+        // per batch) is enough to keep the box thrashing when requested back-to-back --
+        // confirmed live via lomod_access.log: cached-file preview requests that should
+        // take milliseconds were taking 8-18s while this loop ran continuously with only
+        // a 300ms gap between batches. Smaller batches + _pacedDelay() (paced to how long
+        // the last batch actually took, not a fixed guess) give the server real recovery
+        // room on this hardware without permanently capping throughput on better hardware.
+        // waitUntilIdle() below also gates each new batch, and NetworkQueue.cancelGroup
+        // aborts anything already in flight the instant the user touches the screen.
+        const AI_DOWNLOAD_BATCH_SIZE = 10;
         while (hasMoreDownloads) {
           // Yield to user interactions to prevent scroll stuttering
           await TaskSchedulerService.waitUntilIdle();
+          await this._waitForThumbnailsIdle();
 
           const remotePendingDownload = await db.getAllAsync(`
             SELECT id, hash
@@ -1805,6 +1867,8 @@ class AIService {
             break;
           }
 
+          const downloadBatchStart = Date.now();
+          let downloadBatchElapsedMs = 0;
           try {
             const res = await axios.post(`${url}/assets/metadata/byid`, ids, {
               headers: { Authorization: `token=${token}` },
@@ -1813,6 +1877,7 @@ class AIService {
               priority: 5,
               groupId: 'AIService'
             });
+            downloadBatchElapsedMs = Date.now() - downloadBatchStart;
             const returned = Array.isArray(res.data) ? res.data : [];
             const seenHashes = new Set();
 
@@ -1876,6 +1941,7 @@ class AIService {
           } catch (e) {
             // Nothing persisted on failure -- these rows stay pending (still missing
             // embedding/phash) and are naturally retried on the next syncEmbeddings() pass.
+            downloadBatchElapsedMs = Date.now() - downloadBatchStart;
             console.warn(`[AIService] Failed to fetch metadata batch of ${ids.length} ids:`, e.message);
             this._tryReconnectOnNetworkError(e);
           }
@@ -1891,7 +1957,7 @@ class AIService {
             await AssetDBService.saveAssetEmbeddingsBatch(embeddingUpdates);
             await this._syncVectorCache(embeddingUpdates);
           }
-        await new Promise(resolve => setTimeout(resolve, 300));
+        await this._pacedDelay(downloadBatchElapsedMs);
       }
 
         // Part C: Scheme B - Local extraction for remote photos (idle Wi-Fi/Charging only)
