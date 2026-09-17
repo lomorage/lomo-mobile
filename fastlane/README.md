@@ -52,6 +52,14 @@ Build the release AAB
 
 Build and upload a new release to the Google Play Console (defaults to the internal track)
 
+### android promote_to_production
+
+```sh
+[bundle exec] fastlane android promote_to_production
+```
+
+Promote the current internal release to production at 100% rollout
+
 ----
 
 This README.md is auto-generated and will be re-generated every time [_fastlane_](https://fastlane.tools) is run.
