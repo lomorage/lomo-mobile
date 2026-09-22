@@ -166,7 +166,7 @@ class AutoBackupManager {
             await BackgroundTask.unregisterTaskAsync(BACKGROUND_BACKUP_TASK).catch(() => {});
             
             await BackgroundTask.registerTaskAsync(BACKGROUND_BACKUP_TASK, {
-                minimumInterval: 15 * 60, // 15 minutes
+                minimumInterval: 15, // minutes (expo-background-task takes minutes, not seconds)
                 stopOnTerminate: false,
                 startOnBoot: true,
                 wifiOnly: this.wifiOnlyBackup,

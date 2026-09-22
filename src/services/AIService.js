@@ -409,7 +409,7 @@ class AIService {
       const isRegistered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_AI_SYNC_TASK);
       if (!isRegistered) {
         await BackgroundTask.registerTaskAsync(BACKGROUND_AI_SYNC_TASK, {
-          minimumInterval: 3600, // 1 hour
+          minimumInterval: 60, // minutes (expo-background-task takes minutes, not seconds)
           stopOnTerminate: false,
           startOnBoot: true,
         });
