@@ -92,7 +92,8 @@
       "expo-sqlite",
       "./plugins/withWorkManagerForeground",
       "./plugins/withVideoCacheGradle",
-      "./plugins/withIosXcode26BuildFixes"
+      "./plugins/withIosXcode26BuildFixes",
+      "./plugins/withAdaptiveIconInset"
     ],
     "web": {
       "favicon": "./assets/favicon.png"
