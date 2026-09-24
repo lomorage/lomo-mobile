@@ -97,20 +97,6 @@ class AutoBackupManager {
             console.warn('[AutoBackupManager] Failed to add battery state listener:', e);
         }
 
-        // Narrow AppState listener, only for the stale-backup reminder notification below
-        // (not for driving sync -- see note just below on why we don't do that here).
-        try {
-            AppState.addEventListener('change', (nextState) => {
-                if (nextState === 'background') {
-                    this.scheduleStaleBackupReminder().catch(() => {});
-                } else if (nextState === 'active') {
-                    this.cancelStaleBackupReminder().catch(() => {});
-                }
-            });
-        } catch (e) {
-            console.warn('[AutoBackupManager] Failed to add app state listener:', e);
-        }
-
         // Note: We no longer listen to AppState changes here for queue syncing.
         // HomeScreen manages foregrounding and will call syncQueueWithGallery() 
         // ONLY after the efficient Merkle Tree deep-sync is complete.
@@ -915,4 +901,18 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     }
 });
 
-export default new AutoBackupManager();
+const autoBackupManagerInstance = new AutoBackupManager();
+
+// Registered once here (module-level, bound to the one true singleton) rather than in the
+// constructor: the background task below does `new AutoBackupManager()` on every run
+// (see BACKGROUND_BACKUP_TASK), and a constructor-registered listener would re-subscribe
+// -- and never unsubscribe -- on every one of those throwaway instances too.
+AppState.addEventListener('change', (nextState) => {
+    if (nextState === 'background') {
+        autoBackupManagerInstance.scheduleStaleBackupReminder().catch(() => {});
+    } else if (nextState === 'active') {
+        autoBackupManagerInstance.cancelStaleBackupReminder().catch(() => {});
+    }
+});
+
+export default autoBackupManagerInstance;
