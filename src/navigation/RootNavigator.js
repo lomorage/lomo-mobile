@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
-import { NavigationContainer } from '@react-navigation/native';
+import React, { useState, useEffect, useRef } from 'react';
+import { NavigationContainer, useNavigationContainerRef } from '@react-navigation/native';
 import { createStackNavigator, CardStyleInterpolators } from '@react-navigation/stack';
-import { View, Text, ActivityIndicator, StatusBar, Platform } from 'react-native';
+import { View, Text, ActivityIndicator, StatusBar, Platform, Linking, Alert } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { AuthProvider, useAuth } from '../context/AuthContext';
 import { SettingsProvider } from '../context/SettingsContext';
@@ -20,6 +20,8 @@ import FolderDetailScreen from '../screens/FolderDetailScreen';
 import AlbumDetailScreen from '../screens/AlbumDetailScreen';
 import DuplicatesScreen from '../screens/DuplicatesScreen';
 import AuthService from '../services/AuthService';
+import { setupLinkAction } from './setupLinkHelpers';
+import * as SecureStore from 'expo-secure-store';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 
 
@@ -76,8 +78,71 @@ function MainTabNavigator() {
     );
 }
 
+// A server's setup QR code is a https://lomorage.com/s/#server=... link, which
+// the OS hands to this app when it's installed (Universal Links / App Links).
+// Treat it like scanning the same code in ScanLoginScreen: confirm the server,
+// since anyone can craft such a link, then start account setup on it. What to
+// do with each URL is decided by setupLinkAction.
+const LAST_INITIAL_LINK_KEY = 'lomorage_last_initial_link';
+let initialLinkHandled = false;
+
+function useSetupLinks(navigationRef, enabled, isAuthenticated) {
+    const pending = useRef(null);
+    const isAuthenticatedRef = useRef(isAuthenticated);
+    isAuthenticatedRef.current = isAuthenticated;
+
+    const show = (action) => {
+        if (action.type === 'signed-in') {
+            Alert.alert('Already signed in', 'To set up a different server, sign out in Settings first, then scan its code again.');
+            return;
+        }
+        const { server, serverName } = action.result;
+        const label = serverName ? `${serverName} (${server})` : server;
+        Alert.alert('Connect to this server?', `This will start account setup on ${label}.`, [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Continue', onPress: () => navigationRef.navigate('Register', { server, serverName }) },
+        ]);
+    };
+
+    // Rebuilt every render and read through a ref, so the Linking listener the
+    // effect below registers once always sees the current auth state.
+    const handleRef = useRef(null);
+    handleRef.current = async (url, isInitial) => {
+        let lastInitialUrl = null;
+        if (isInitial && url) {
+            lastInitialUrl = await SecureStore.getItemAsync(LAST_INITIAL_LINK_KEY).catch(() => null);
+            SecureStore.setItemAsync(LAST_INITIAL_LINK_KEY, url).catch(() => {});
+        }
+        const action = setupLinkAction(url, { isAuthenticated: isAuthenticatedRef.current, isInitial, lastInitialUrl });
+        if (action.type === 'ignore') return;
+        if (navigationRef.isReady()) show(action);
+        else pending.current = action;
+    };
+
+    useEffect(() => {
+        if (!enabled) return undefined;
+        if (!initialLinkHandled) {
+            initialLinkHandled = true;
+            Linking.getInitialURL().then((url) => handleRef.current(url, true)).catch(() => {});
+        }
+        const sub = Linking.addEventListener('url', ({ url }) => handleRef.current(url, false));
+        return () => sub.remove();
+    }, [enabled]);
+
+    // Flush a link that arrived before the navigator finished mounting.
+    return () => {
+        if (pending.current) {
+            const action = pending.current;
+            pending.current = null;
+            show(action);
+        }
+    };
+}
+
 function Navigation() {
     const { isAuthenticated, isLoading } = useAuth();
+    const navigationRef = useNavigationContainerRef();
+    const onNavigationReady = useSetupLinks(navigationRef, !isLoading, isAuthenticated);
 
     if (isLoading) {
         return (
@@ -88,7 +153,7 @@ function Navigation() {
     }
 
     return (
-        <NavigationContainer>
+        <NavigationContainer ref={navigationRef} onReady={onNavigationReady}>
             <Stack.Navigator
                 screenOptions={{
                     headerStyle: {

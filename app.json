@@ -29,7 +29,10 @@
         "NSBonjourServices": [
           "_lomod._tcp."
         ]
-      }
+      },
+      "associatedDomains": [
+        "applinks:lomorage.com"
+      ]
     },
     "android": {
       "adaptiveIcon": {
@@ -54,7 +57,29 @@
         "android.permission.POST_NOTIFICATIONS"
       ],
       "package": "com.wtao.lomo",
-      "versionCode": 1000147
+      "versionCode": 1000147,
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "lomorage.com",
+              "path": "/s"
+            },
+            {
+              "scheme": "https",
+              "host": "lomorage.com",
+              "pathPrefix": "/s/"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
+      ]
     },
     "plugins": [
       "expo-notifications",
