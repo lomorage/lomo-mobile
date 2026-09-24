@@ -177,6 +177,28 @@ const AiIndexingTipBanner = ({ onDismiss, styles }) => (
     </View>
 );
 
+// Shown once, ever, on Android when auto-backup is on — Android's own battery/Doze
+// throttling means background backup can go long stretches without running unless the
+// user exempts the app from battery optimization. Points them straight at that toggle.
+const BatteryOptimizationTipBanner = ({ onOpenSettings, onDismiss, styles }) => (
+    <View style={styles.smartBannerContainer}>
+        <View style={styles.smartBanner}>
+            <View style={styles.smartBannerContent}>
+                <Text style={styles.smartBannerTitle}>🔋 Make background backup reliable</Text>
+                <Text style={styles.smartBannerText}>Android limits background apps by default. Set Lomorage&apos;s battery usage to &quot;Unrestricted&quot; so backup keeps running when the app isn&apos;t open.</Text>
+            </View>
+            <View style={{ flexDirection: 'row' }}>
+                <TouchableOpacity style={[styles.smartBannerButton, { marginRight: 6 }]} onPress={onOpenSettings}>
+                    <Text style={styles.smartBannerButtonText}>Settings</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.smartBannerButton} onPress={onDismiss}>
+                    <Text style={styles.smartBannerButtonText}>Not now</Text>
+                </TouchableOpacity>
+            </View>
+        </View>
+    </View>
+);
+
 // On This Day cards build their preview URI once, from whatever server was active at
 // loadAndSync() time. Unlike the main grid's RenderAsset, they had no way to recover if
 // that turned out to be a slow/stale connection or a one-off failure -- mirrors
@@ -269,8 +291,9 @@ export default function HomeScreen({ navigation, route }) {
     // remote thumbnails (which read getServerUrl() once at render time) know to retry.
     const [serverEpoch, setServerEpoch] = useState(0);
     
-    const { debugMode, excludedAlbums, aiEnabled } = useSettings();
+    const { debugMode, excludedAlbums, aiEnabled, autoBackupEnabled } = useSettings();
     const [showAiTip, setShowAiTip] = useState(false);
+    const [showBatteryTip, setShowBatteryTip] = useState(false);
     const [debugLogs, setDebugLogs] = useState([]);
 
     useEffect(() => {
@@ -286,6 +309,25 @@ export default function HomeScreen({ navigation, route }) {
             await SecureStore.setItemAsync('lomorage_ai_tip_dismissed', 'true');
         } catch (e) {}
     }, []);
+
+    useEffect(() => {
+        if (Platform.OS !== 'android' || !autoBackupEnabled) return;
+        SecureStore.getItemAsync('lomorage_battery_tip_dismissed').then(dismissed => {
+            if (dismissed !== 'true') setShowBatteryTip(true);
+        }).catch(() => {});
+    }, [autoBackupEnabled]);
+
+    const dismissBatteryTip = useCallback(async () => {
+        setShowBatteryTip(false);
+        try {
+            await SecureStore.setItemAsync('lomorage_battery_tip_dismissed', 'true');
+        } catch (e) {}
+    }, []);
+
+    const openBatterySettings = useCallback(() => {
+        dismissBatteryTip();
+        Linking.openSettings().catch(() => {});
+    }, [dismissBatteryTip]);
 
     useEffect(() => {
         if (!debugMode) return;
@@ -1957,6 +1999,9 @@ export default function HomeScreen({ navigation, route }) {
                 >
                     {!freeUpSpaceInfo.visible && showAiTip && !isSearching && (
                         <AiIndexingTipBanner styles={styles} onDismiss={dismissAiTip} />
+                    )}
+                    {!freeUpSpaceInfo.visible && !showAiTip && showBatteryTip && !isSearching && (
+                        <BatteryOptimizationTipBanner styles={styles} onOpenSettings={openBatterySettings} onDismiss={dismissBatteryTip} />
                     )}
                     {freeUpSpaceInfo.visible && !isSearching && (
                         <SwipeableBanner

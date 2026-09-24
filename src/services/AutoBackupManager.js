@@ -14,6 +14,15 @@ import { startKeepAlive, stopKeepAlive } from '../../modules/expo-background-kee
 export const BACKGROUND_BACKUP_TASK = 'LOMO_BACKUP_TASK';
 export const BACKGROUND_LOCATION_TASK = 'LOMO_LOCATION_TASK';
 
+// Android's Doze/App Standby throttling means the WorkManager background task can go
+// long stretches without a real chance to run (see LOMO_BACKUP_TASK). As a backstop, if
+// the app gets backgrounded with items still pending, arm a plain OS-scheduled
+// notification (AlarmManager-backed, not JobScheduler) that nudges the user to open the
+// app and finish the sync themselves. Cancelled early if the queue empties or the app
+// comes back to the foreground before it fires.
+const STALE_BACKUP_REMINDER_ID = 'LOMO_BACKUP_STALE_REMINDER';
+const STALE_BACKUP_REMINDER_DELAY_SECONDS = 8 * 60 * 60; // 8 hours
+
 class AutoBackupManager {
     constructor() {
         this.isBackingUp = false;
@@ -88,7 +97,21 @@ class AutoBackupManager {
             console.warn('[AutoBackupManager] Failed to add battery state listener:', e);
         }
 
-        // Note: We no longer listen to AppState changes here. 
+        // Narrow AppState listener, only for the stale-backup reminder notification below
+        // (not for driving sync -- see note just below on why we don't do that here).
+        try {
+            AppState.addEventListener('change', (nextState) => {
+                if (nextState === 'background') {
+                    this.scheduleStaleBackupReminder().catch(() => {});
+                } else if (nextState === 'active') {
+                    this.cancelStaleBackupReminder().catch(() => {});
+                }
+            });
+        } catch (e) {
+            console.warn('[AutoBackupManager] Failed to add app state listener:', e);
+        }
+
+        // Note: We no longer listen to AppState changes here for queue syncing.
         // HomeScreen manages foregrounding and will call syncQueueWithGallery() 
         // ONLY after the efficient Merkle Tree deep-sync is complete.
 
@@ -157,6 +180,43 @@ class AutoBackupManager {
                 isPaused: this.isPaused,
             });
         }
+    }
+
+    async scheduleStaleBackupReminder() {
+        // Android-only: this is a backstop for LOMO_BACKUP_TASK's Doze/App Standby
+        // throttling. iOS's own background fetch + the existing sync-complete notification
+        // already cover this case there.
+        if (Platform.OS !== 'android' || !this.autoBackupEnabled) return;
+        try {
+            const pendingCount = GalleryStore.getAssets().filter(a => a.status === 'local').length;
+            if (pendingCount === 0) return;
+
+            const { status } = await Notifications.getPermissionsAsync();
+            if (status !== 'granted') return;
+
+            // Re-scheduling under the same identifier replaces any previously armed reminder.
+            await Notifications.scheduleNotificationAsync({
+                identifier: STALE_BACKUP_REMINDER_ID,
+                content: {
+                    title: 'Lomorage',
+                    body: `${pendingCount} photo${pendingCount > 1 ? 's' : ''} still waiting to back up. Open Lomorage to finish syncing.`,
+                },
+                trigger: {
+                    type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
+                    seconds: STALE_BACKUP_REMINDER_DELAY_SECONDS,
+                    repeats: false,
+                },
+            });
+        } catch (e) {
+            console.warn('[AutoBackupManager] Failed to schedule stale backup reminder:', e);
+        }
+    }
+
+    async cancelStaleBackupReminder() {
+        if (Platform.OS !== 'android') return;
+        try {
+            await Notifications.cancelScheduledNotificationAsync(STALE_BACKUP_REMINDER_ID);
+        } catch (e) {}
     }
 
     async registerBackgroundTask() {
@@ -623,6 +683,10 @@ class AutoBackupManager {
     emitState() {
         const pending = Math.max(0, (this.queue.length - this.currentIndex) + this.activeAssetIds.size);
         const completed = this.completedSessionCount;
+        if (pending === 0) {
+            // Nothing left to nag about -- disarm any reminder scheduled from a previous backgrounding.
+            this.cancelStaleBackupReminder().catch(() => {});
+        }
         DeviceEventEmitter.emit('backupState', {
             isBackingUp: this.isBackingUp,
             isPaused: this.isPaused,
