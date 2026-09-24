@@ -46,6 +46,9 @@ platform :android do
       track: options[:track] || "internal",
       aab: "android/app/build/outputs/bundle/release/app-release.aab",
       release_status: options[:release_status] || "draft",
+      # A leftover app-release.apk from a local `assembleRelease` makes fastlane refuse to upload
+      # ("Cannot provide both apk(s) and aab"); this lane only ever ships the AAB.
+      skip_upload_apk: true,
       skip_upload_metadata: true,
       skip_upload_images: true,
       skip_upload_screenshots: true
