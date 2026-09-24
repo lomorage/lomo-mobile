@@ -17,7 +17,9 @@ platform :ios do
       workspace: "ios/lomomobile.xcworkspace",
       scheme: "lomomobile",
       output_directory: "ios/build",
-      output_name: "lomomobile.ipa"
+      output_name: "lomomobile.ipa",
+      # Let xcodebuild regenerate Xcode-managed profiles when App ID capabilities change
+      xcargs: "-allowProvisioningUpdates"
     )
   end
 end
