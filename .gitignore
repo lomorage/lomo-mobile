@@ -70,3 +70,6 @@ upload_certificate.pem
 fastlane/report.xml
 fastlane/README.md
 fastlane/play-store-credentials.json
+
+# integration test logs (lomod output per test file)
+integration/.artifacts/

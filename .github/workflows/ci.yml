@@ -22,3 +22,39 @@ jobs:
       - run: npm run lint
 
       - run: npm test -- --ci
+
+  # The service layer against a real lomod (see integration/README.md). Runs
+  # inside the lomod test image that lomo-backend's CI publishes, so LOMOD_BIN
+  # and its native deps (libvips, exiftool, ffmpeg) are already there.
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    container:
+      # Set the LOMOD_IMAGE repo variable to pin a backend build, e.g.
+      # ghcr.io/lomorage/lomod-test:sha-1234abc
+      image: ${{ vars.LOMOD_IMAGE || 'ghcr.io/lomorage/lomod-test:latest' }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      LOMOD_BIN: /opt/lomorage/bin/lomod
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24 # node:sqlite backs the expo-sqlite shim
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run test:integration -- --ci
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: lomod-logs
+          path: integration/.artifacts/
