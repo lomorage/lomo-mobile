@@ -70,6 +70,7 @@ npx expo run:ios
 # Pick a simulator when prompted, or pass it explicitly:
 npx expo run:ios --simulator "iPhone 16 Pro"
 ```
+> **Apple Silicon note**: Google ML Kit has no arm64-simulator build, so the app only builds for **x86_64 (Rosetta) simulators**. You need a simulator on a *universal* runtime; Xcode 26's default runtimes are arm64-only. See [Simulator: "Unable to find a destination"](#4-simulator-unable-to-find-a-destination-matching-the-provided-destination-specifier) for one-time setup.
 
 #### 3. Build and launch on a Physical iPhone
 
@@ -133,6 +134,18 @@ If you compile the project locally on Xcode 16+ (macOS 15 SDK), you may encounte
     "ios.buildReactNativeFromSource": "true"
     ```
     After updating, run `pod install` or `npx expo prebuild --clean` to re-compile React Native Core cleanly.
+
+#### 4. Simulator: "Unable to find a destination matching the provided destination specifier"
+*   **Symptom**: `npx expo run:ios` on a simulator fails before compiling, with `xcodebuild` exit code 70. `xcodebuild -showdestinations` lists only "Any iOS Simulator Device" and no concrete simulators.
+*   **Cause**: GoogleMLKit (pulled in by `@infinitered/react-native-mlkit-*`) ships fat frameworks whose `arm64` slice is for iOS *devices*, not simulators. Its pods therefore add `EXCLUDED_ARCHS[sdk=iphonesimulator*] = arm64`, so the simulator build is x86_64-only. On Apple Silicon, Xcode 26 installs arm64-only simulator runtimes by default, so no simulator matches. Newer GoogleMLKit releases have the same limitation.
+*   **Fix** (one-time): install a *universal* simulator runtime, create a simulator on it, and run the app under Rosetta:
+    ```bash
+    xcodebuild -downloadPlatform iOS -buildVersion 26.2 -architectureVariant universal   # ~10.5 GB
+    xcrun simctl create "iPhone 17 Pro (26.2 Rosetta)" \
+      com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro com.apple.CoreSimulator.SimRuntime.iOS-26-2
+    npx expo run:ios --device "iPhone 17 Pro (26.2 Rosetta)"
+    ```
+    Not every iOS version has a universal runtime. For Xcode 26.6, 26.5 and the default download both report "No needed downloadables found for universal", but 26.2 works. Check with `xcrun simctl runtime list -j`: the runtime's `supportedArchitectures` must include `x86_64`.
 
 ---
 
