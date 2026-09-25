@@ -30,6 +30,8 @@ describe('remote albums on lomod', () => {
     expect(await RemoteAlbumService.addAssetToAlbum(id, photo1)).toBe(true);
     expect(await RemoteAlbumService.addAssetToAlbum(id, photo2)).toBe(true);
     expect((await RemoteAlbumService.getAlbumAssets(id)).sort()).toEqual([photo1, photo2].sort());
+    // The album list's count drives the "N photos" label and the merge default name.
+    expect((await albumNamed('Trip')).count).toBe(2);
 
     expect(await RemoteAlbumService.removeAssetFromAlbum(id, photo1)).toBe(true);
     expect(await RemoteAlbumService.getAlbumAssets(id)).toEqual([photo2]);
