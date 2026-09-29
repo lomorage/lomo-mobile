@@ -19,6 +19,9 @@ export function SettingsProvider({ children }) {
     const [aiChargingOnly, setAIChargingOnly] = useState(true);
     const [aiEnabled, setAiEnabled] = useState(true);
     const [faceDryRun, setFaceDryRun] = useState(true);
+    // True while an existing (pre-fix) install still needs the one-time
+    // "face clustering is now on — index your library?" prompt answered.
+    const [faceDryRunMigrationNeeded, setFaceDryRunMigrationNeeded] = useState(false);
     const [iosBackgroundKeepAlive, setIosBackgroundKeepAlive] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
 
@@ -93,6 +96,20 @@ export function SettingsProvider({ children }) {
             const savedFaceDryRun = await SecureStore.getItemAsync('lomorage_face_dry_run');
             if (savedFaceDryRun !== null) {
                 setFaceDryRun(savedFaceDryRun === 'true');
+            } else {
+                // Face clustering ships for real on fresh installs (dry-run off).
+                // Existing installs that never set the flag ran under the old
+                // dry-run-by-default behavior — keep them in dry-run until the
+                // one-time migration prompt is answered, instead of silently
+                // flipping them to real writes.
+                const migrated = await SecureStore.getItemAsync('lomorage_face_dry_run_migrated_v1');
+                const deviceId = await SecureStore.getItemAsync('lomo_device_id');
+                if (migrated === 'true' || !deviceId) {
+                    setFaceDryRun(false);
+                } else {
+                    setFaceDryRun(true);
+                    setFaceDryRunMigrationNeeded(true);
+                }
             }
             const savedIosKeepAlive = await SecureStore.getItemAsync('lomorage_ios_background_keep_alive');
             if (savedIosKeepAlive !== null) {
@@ -289,6 +306,20 @@ export function SettingsProvider({ children }) {
         }
     };
 
+    // One-time answer to the face-clustering migration prompt. enableRealMode
+    // = true → turn the real feature on (dry-run off); false → keep the old
+    // dry-run behavior. Either way the prompt never shows again.
+    const resolveFaceDryRunMigration = async (enableRealMode) => {
+        try {
+            await SecureStore.setItemAsync('lomorage_face_dry_run', enableRealMode ? 'false' : 'true');
+            await SecureStore.setItemAsync('lomorage_face_dry_run_migrated_v1', 'true');
+            setFaceDryRun(!enableRealMode);
+            setFaceDryRunMigrationNeeded(false);
+        } catch (error) {
+            console.error('Error saving Face Dry Run migration:', error);
+        }
+    };
+
     const updateIosBackgroundKeepAlive = async (value) => {
         try {
             await SecureStore.setItemAsync('lomorage_ios_background_keep_alive', value.toString());
@@ -355,6 +386,8 @@ export function SettingsProvider({ children }) {
             toggleAIEnabled,
             faceDryRun,
             updateFaceDryRun,
+            faceDryRunMigrationNeeded,
+            resolveFaceDryRunMigration,
             iosBackgroundKeepAlive,
             updateIosBackgroundKeepAlive,
             isLoading

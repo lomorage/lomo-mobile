@@ -160,6 +160,8 @@ export default function SettingsScreen({ navigation, route }) {
         toggleAIEnabled,
         faceDryRun,
         updateFaceDryRun,
+        faceDryRunMigrationNeeded,
+        resolveFaceDryRunMigration,
         iosBackgroundKeepAlive,
         updateIosBackgroundKeepAlive
     } = useSettings();
@@ -230,6 +232,21 @@ export default function SettingsScreen({ navigation, route }) {
             return () => clearTimeout(timer);
         }
     }, [route?.params?.scrollToSection]);
+
+    // One-time migration prompt for installs that ran under the old
+    // dry-run-by-default behavior: face clustering now ships for real.
+    React.useEffect(() => {
+        if (!faceDryRunMigrationNeeded) return;
+        Alert.alert(
+            'Face clustering is now on',
+            'Face albums used to be simulated only (nothing was saved). Face clustering now runs for real — want to index your photo library into face albums on the server?',
+            [
+                { text: 'Keep dry run', style: 'cancel', onPress: () => resolveFaceDryRunMigration(false) },
+                { text: 'Index my library', onPress: () => resolveFaceDryRunMigration(true) },
+            ],
+            { cancelable: false }
+        );
+    }, [faceDryRunMigrationNeeded]);
 
     React.useEffect(() => {
         loadStats();

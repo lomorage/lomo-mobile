@@ -63,8 +63,10 @@ class AIService {
     // flow, where there's no "is this really the subject" ambiguity to guard
     // against.
     this.manualPickFaceDetector = new RNMLKitFaceDetector({ performanceMode: 'accurate', minFaceSize: 0.02, landmarkMode: true });
-    // Set to true to run face detection WITHOUT writing to DB or server (for debugging)
-    this.faceDryRun = true;
+    // Face clustering ships for real: face detection results are written to the
+    // server by default. Set `lomorage_face_dry_run` / the Settings toggle to
+    // run detection WITHOUT writing to DB or server (debug only).
+    this.faceDryRun = false;
 
     // Immediately give up the network the moment the user touches the screen, rather
     // than waiting for the in-flight background-sync request to finish on its own --
@@ -1112,7 +1114,15 @@ class AIService {
     if (savedFaceDryRun !== null) {
       this.faceDryRun = savedFaceDryRun === 'true';
     } else {
-      this.faceDryRun = true;
+      // Face clustering ships for real on fresh installs (dry-run off).
+      // Existing installs that never set the flag ran under the old
+      // dry-run-by-default behavior — keep dry-run on for them until the
+      // one-time migration prompt in Settings is answered (see
+      // SettingsContext.resolveFaceDryRunMigration), so we never silently
+      // flip an install from dry-run to real writes behind the user's back.
+      const migrated = await SecureStore.getItemAsync('lomorage_face_dry_run_migrated_v1');
+      const deviceId = await SecureStore.getItemAsync('lomo_device_id');
+      this.faceDryRun = (migrated === 'true' || !deviceId) ? false : true;
     }
 
     if (!force) {
