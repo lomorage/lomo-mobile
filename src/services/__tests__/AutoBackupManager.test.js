@@ -1,6 +1,7 @@
 import AutoBackupManager from '../AutoBackupManager';
 import GalleryStore from '../../store/GalleryStore';
 import UploadService from '../UploadService';
+import { startKeepAlive } from '../../../modules/expo-background-keepalive';
 
 // Mock dependencies
 jest.mock('react-native', () => {
@@ -71,6 +72,11 @@ jest.mock('../UploadService', () => ({
   uploadAsset: jest.fn(),
 }));
 
+jest.mock('../../../modules/expo-background-keepalive', () => ({
+  startKeepAlive: jest.fn(),
+  stopKeepAlive: jest.fn(),
+}));
+
 describe('AutoBackupManager', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -79,6 +85,7 @@ describe('AutoBackupManager', () => {
     AutoBackupManager.currentIndex = 0;
     AutoBackupManager.queue = [];
     AutoBackupManager.consecutiveErrors = 0;
+    AutoBackupManager.firstBackupPending = false;
     GalleryStore.setAssets([]);
   });
 
@@ -101,5 +108,16 @@ describe('AutoBackupManager', () => {
     // Verify it reached the end of the queue
     expect(UploadService.uploadAsset).toHaveBeenCalledTimes(1);
     expect(UploadService.uploadAsset).toHaveBeenCalledWith(assets[1], expect.any(Function));
+  });
+
+  test('uses iOS keep-alive automatically during the first backup', async () => {
+    const asset = { id: 'first', status: 'local', hash: 'first-hash' };
+    UploadService.uploadAsset.mockResolvedValue({ success: true, hash: 'first-hash' });
+    AutoBackupManager.firstBackupPending = true;
+    AutoBackupManager.queue = [asset];
+
+    await AutoBackupManager.startBackup();
+
+    expect(startKeepAlive).toHaveBeenCalledTimes(1);
   });
 });

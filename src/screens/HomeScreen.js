@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
 import { StyleSheet, View, Dimensions, TouchableOpacity, Text, ActivityIndicator, RefreshControl, DeviceEventEmitter, AppState, PanResponder, Animated, Modal, TextInput, ScrollView, Alert, Platform, Keyboard, Linking } from 'react-native';
 import * as Haptics from 'expo-haptics';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { Image } from 'expo-image';
 import { FlashList } from '@shopify/flash-list';
 import { Cloud, CheckCircle, Smartphone, PlayCircle, PauseCircle, Settings as SettingsIcon, UploadCloud, X, MapPin, Heart, Search, ScanText, Clock, Calendar, WifiOff, Images as ImagesIcon, ChevronRight } from 'lucide-react-native';
@@ -10,6 +11,7 @@ import OfflineCacheService from '../services/OfflineCacheService';
 import AssetDBService from '../services/AssetDBService';
 import AutoBackupManager from '../services/AutoBackupManager';
 import AIService from '../services/AIService';
+import FirstBackupService, { FIRST_BACKUP_CHANGED_EVENT } from '../services/FirstBackupService';
 import { useSettings } from '../context/SettingsContext';
 import GalleryStore from '../store/GalleryStore';
 import ThumbnailLoadTracker from '../services/ThumbnailLoadTracker';
@@ -27,6 +29,7 @@ import { pinyin } from 'pinyin-pro';
 const { width } = Dimensions.get('window');
 const COLUMN_COUNT = 3;
 const ITEM_SIZE = width / COLUMN_COUNT;
+const FIRST_BACKUP_KEEP_AWAKE_TAG = 'lomorage-first-backup';
 
 // Grid thumbnails intentionally skip the memory cache. We tried gating this on
 // Device.totalMemory (memory-disk above 4GB), but confirmed on a real 11.8GB-RAM
@@ -199,6 +202,41 @@ const BatteryOptimizationTipBanner = ({ onOpenSettings, onDismiss, styles }) => 
     </View>
 );
 
+const FirstBackupCard = ({ onOpen, styles }) => (
+    <View style={styles.firstBackupCardContainer}>
+        <View style={styles.firstBackupCard}>
+            <Text style={styles.firstBackupEyebrow}>YOUR FIRST BACKUP</Text>
+            <Text style={styles.firstBackupCardTitle}>Tonight: ① connect to Wi-Fi ② plug in your charger ③ keep Lomorage open.</Text>
+            <Text style={styles.firstBackupCardText}>Wake up fully backed up.</Text>
+            <TouchableOpacity style={styles.firstBackupCardButton} onPress={onOpen}>
+                <Text style={styles.firstBackupCardButtonText}>View backup progress</Text>
+            </TouchableOpacity>
+        </View>
+    </View>
+);
+
+const LimitedPhotoAccessBanner = ({ accessibleCount, onManage, styles }) => {
+    const visibleItems = accessibleCount == null
+        ? 'the photos and videos you selected'
+        : `${accessibleCount} selected ${accessibleCount === 1 ? 'item' : 'items'}`;
+
+    return (
+        <View style={styles.limitedAccessBannerContainer}>
+            <View style={styles.limitedAccessBanner}>
+                <View style={styles.smartBannerContent}>
+                    <Text style={styles.limitedAccessBannerTitle}>Some photos won&apos;t be backed up</Text>
+                    <Text style={styles.limitedAccessBannerText}>
+                        Lomorage can only see {visibleItems}. Only those will be backed up.
+                    </Text>
+                </View>
+                <TouchableOpacity style={styles.limitedAccessBannerButton} onPress={onManage}>
+                    <Text style={styles.limitedAccessBannerButtonText}>Select More</Text>
+                </TouchableOpacity>
+            </View>
+        </View>
+    );
+};
+
 // On This Day cards build their preview URI once, from whatever server was active at
 // loadAndSync() time. Unlike the main grid's RenderAsset, they had no way to recover if
 // that turned out to be a slow/stale connection or a one-off failure -- mirrors
@@ -271,9 +309,14 @@ export default function HomeScreen({ navigation, route }) {
     const [activeUploads, setActiveUploads] = useState({});
     const [uploadStats, setUploadStats] = useState({});
     const [isBottomSheetVisible, setBottomSheetVisible] = useState(false);
+    const [firstBackupPending, setFirstBackupPending] = useState(false);
+    const [firstBackupProgressVisible, setFirstBackupProgressVisible] = useState(false);
+    const [initialLibraryScanCompleted, setInitialLibraryScanCompleted] = useState(false);
     const [freeUpSpaceInfo, setFreeUpSpaceInfo] = useState({ visible: false, count: 0, loading: false });
     const [error, setError] = useState(null);
     const [permissionStatus, setPermissionStatus] = useState('granted');
+    const [hasLimitedPhotoAccess, setHasLimitedPhotoAccess] = useState(false);
+    const [limitedAccessCount, setLimitedAccessCount] = useState(null);
     const [loading, setLoading] = useState(true);
 
     const [isSearching, setIsSearching] = useState(false);
@@ -295,6 +338,72 @@ export default function HomeScreen({ navigation, route }) {
     const [showAiTip, setShowAiTip] = useState(false);
     const [showBatteryTip, setShowBatteryTip] = useState(false);
     const [debugLogs, setDebugLogs] = useState([]);
+    const firstBackupStarted = useRef(false);
+    const firstBackupProgressOpened = useRef(false);
+    const firstBackupCompleting = useRef(false);
+
+    useEffect(() => {
+        let active = true;
+        FirstBackupService.isPending().then((pending) => {
+            if (active) setFirstBackupPending(pending);
+        }).catch((error) => {
+            console.warn('[HomeScreen] Failed to load first-backup state:', error);
+        });
+
+        const subscription = DeviceEventEmitter.addListener(FIRST_BACKUP_CHANGED_EVENT, ({ pending }) => {
+            if (active) setFirstBackupPending(pending === true);
+        });
+        return () => {
+            active = false;
+            subscription.remove();
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!firstBackupPending) return;
+
+        if (backupState.totalCount > 0 && (backupState.isBackingUp || backupState.pendingCount > 0)) {
+            firstBackupStarted.current = true;
+        }
+
+        if (backupState.isBackingUp && !firstBackupProgressOpened.current) {
+            firstBackupProgressOpened.current = true;
+            setFirstBackupProgressVisible(true);
+        }
+
+        const firstBackupFinished = firstBackupStarted.current &&
+            backupState.totalCount > 0 &&
+            backupState.pendingCount === 0 &&
+            !backupState.isBackingUp &&
+            !backupState.isPaused;
+        const noUploadsNeeded = initialLibraryScanCompleted &&
+            backupState.pendingCount === 0 &&
+            !backupState.isBackingUp &&
+            !backupState.isPaused &&
+            !GalleryStore.getAssets().some(asset => asset.status === 'local');
+
+        if ((firstBackupFinished || noUploadsNeeded) && !firstBackupCompleting.current) {
+            firstBackupCompleting.current = true;
+            FirstBackupService.complete().then(() => {
+                setFirstBackupPending(false);
+                setFirstBackupProgressVisible(false);
+            }).catch((error) => {
+                firstBackupCompleting.current = false;
+                console.warn('[HomeScreen] Failed to complete first-backup guidance:', error);
+            });
+        }
+    }, [backupState.isBackingUp, backupState.isPaused, backupState.pendingCount, backupState.totalCount, firstBackupPending, initialLibraryScanCompleted]);
+
+    useEffect(() => {
+        if (!firstBackupPending || !firstBackupProgressVisible) return undefined;
+
+        activateKeepAwakeAsync(FIRST_BACKUP_KEEP_AWAKE_TAG).catch((error) => {
+            console.warn('[HomeScreen] Failed to keep the first-backup screen awake:', error);
+        });
+        return () => {
+            deactivateKeepAwake(FIRST_BACKUP_KEEP_AWAKE_TAG).catch(() => {});
+        };
+    }, [firstBackupPending, firstBackupProgressVisible]);
 
     useEffect(() => {
         if (!aiEnabled) return;
@@ -363,6 +472,9 @@ export default function HomeScreen({ navigation, route }) {
     const globalActiveLoadCount = useRef(0);
     const pendingAssetUpdates = useRef(new Map());
     const flushTimerRef = useRef(null);
+    const loadAndSyncInFlightRef = useRef(null);
+    const loadAndSyncQueuedRef = useRef(false);
+    const queuedSkipPrimingRef = useRef(false);
 
     const hideSuggestionsUntilFocusRef = useRef(false);
 
@@ -1017,6 +1129,12 @@ export default function HomeScreen({ navigation, route }) {
             appState.current = nextAppState;
         });
 
+        const mediaLibrarySubscription = MediaService.addLibraryChangeListener((event) => {
+            if (event?.hasIncrementalChanges === false && isMounted.current) {
+                loadAndSync();
+            }
+        });
+
         // Initialize AI and GPS sync throttles to maximum performance
         global.currentAiThrottle = 100;
         global.currentGpsThrottle = 50;
@@ -1110,6 +1228,7 @@ export default function HomeScreen({ navigation, route }) {
             if (scanHintTimer.current) clearTimeout(scanHintTimer.current);
             isMounted.current = false;
             subscription.remove();
+            mediaLibrarySubscription.remove();
             memoryWarning.remove();
             subDelete.remove();
             subUpdate.remove();
@@ -1132,11 +1251,12 @@ export default function HomeScreen({ navigation, route }) {
 
 
 
-    const loadAndSync = useCallback(async (skipPriming = false) => {
+    const performLoadAndSync = useCallback(async (skipPriming = false) => {
         if (assetsCountRef.current === 0) {
             setLoading(true);
         }
         setError(null);
+        let libraryScanCompleted = false;
         try {
             if (!skipPriming) {
                 // Check without triggering the OS dialog, so a first-time user sees an
@@ -1152,8 +1272,25 @@ export default function HomeScreen({ navigation, route }) {
             const granted = await MediaService.requestPermissions();
             setPermissionStatus(granted ? 'granted' : 'denied');
             if (!granted) {
+                setHasLimitedPhotoAccess(false);
+                setLimitedAccessCount(null);
                 setLoading(false);
                 return;
+            }
+
+            const currentPermission = await MediaService.getPermissionStatus();
+            if (Platform.OS === 'ios' && currentPermission.accessPrivileges === 'limited') {
+                setHasLimitedPhotoAccess(true);
+                try {
+                    const accessibleCount = await MediaService.getAccessibleAssetCount();
+                    setLimitedAccessCount(accessibleCount);
+                } catch (err) {
+                    console.warn('[HomeScreen] Could not count limited-library assets:', err);
+                    setLimitedAccessCount(null);
+                }
+            } else {
+                setHasLimitedPhotoAccess(false);
+                setLimitedAccessCount(null);
             }
 
             // 1. Load the lightweight local hash cache first (extremely fast flat json)
@@ -1242,6 +1379,7 @@ export default function HomeScreen({ navigation, route }) {
                 // No user-facing progress here on purpose — this is a local hash/diff pass,
                 // not something a photo count would meaningfully describe to the user.
                 const diff = await SyncService.sync(cumulativeLocalAssets, () => {});
+                libraryScanCompleted = true;
 
                 if (!isMounted.current) return;
 
@@ -1257,6 +1395,7 @@ export default function HomeScreen({ navigation, route }) {
                 if (isMounted.current) {
                     // One final explicit UI refresh to ensure any out-of-sync states are caught and to start backup queue
                     mergeAndSetAssets(cumulativeLocalAssets, true);
+                    if (libraryScanCompleted) setInitialLibraryScanCompleted(true);
                     setSyncing(false);
                     setSyncProgress(null);
                     setShowScanHint(false);
@@ -1305,11 +1444,48 @@ export default function HomeScreen({ navigation, route }) {
             console.error('Initial load error:', err);
             if (isMounted.current) setError(String(err.message || err));
         } finally {
-            if (isMounted.current && loading) {
-                 setLoading(false);
-            }
+            if (isMounted.current) setLoading(false);
         }
-    }, [loading, mergeAndSetAssets]);
+    }, [excludedAlbums, mergeAndSetAssets]);
+
+    const performLoadAndSyncRef = useRef(performLoadAndSync);
+    performLoadAndSyncRef.current = performLoadAndSync;
+
+    const loadAndSync = useCallback(async (skipPriming = false) => {
+        if (loadAndSyncInFlightRef.current) {
+            loadAndSyncQueuedRef.current = true;
+            queuedSkipPrimingRef.current = queuedSkipPrimingRef.current || skipPriming;
+            return loadAndSyncInFlightRef.current;
+        }
+
+        const runQueuedLoads = async () => {
+            let nextSkipPriming = skipPriming;
+            do {
+                loadAndSyncQueuedRef.current = false;
+                queuedSkipPrimingRef.current = false;
+                await performLoadAndSyncRef.current(nextSkipPriming);
+                nextSkipPriming = queuedSkipPrimingRef.current;
+            } while (loadAndSyncQueuedRef.current);
+        };
+
+        const inFlight = runQueuedLoads().finally(() => {
+            loadAndSyncInFlightRef.current = null;
+        });
+        loadAndSyncInFlightRef.current = inFlight;
+        return inFlight;
+    }, []);
+
+    const manageLimitedPhotoAccess = useCallback(async () => {
+        try {
+            const presented = await MediaService.presentLimitedLibraryPicker();
+            if (!presented) {
+                await Linking.openSettings();
+            }
+        } catch (err) {
+            console.warn('[HomeScreen] Could not open the limited photo picker:', err);
+            Linking.openSettings().catch(() => {});
+        }
+    }, []);
 
     const StatusIcon = memo(function StatusIcon({ item, currentAssetId, activeAssetIds = [] }) {
         if (item.id === currentAssetId || activeAssetIds.includes(item.id)) {
@@ -1997,10 +2173,23 @@ export default function HomeScreen({ navigation, route }) {
                         });
                     }}
                 >
-                    {!freeUpSpaceInfo.visible && showAiTip && !isSearching && (
+                    {hasLimitedPhotoAccess && !isSearching && (
+                        <LimitedPhotoAccessBanner
+                            accessibleCount={limitedAccessCount}
+                            onManage={manageLimitedPhotoAccess}
+                            styles={styles}
+                        />
+                    )}
+                    {!freeUpSpaceInfo.visible && firstBackupPending && !isSearching && (
+                        <FirstBackupCard
+                            styles={styles}
+                            onOpen={() => setFirstBackupProgressVisible(true)}
+                        />
+                    )}
+                    {!freeUpSpaceInfo.visible && !firstBackupPending && showAiTip && !isSearching && (
                         <AiIndexingTipBanner styles={styles} onDismiss={dismissAiTip} />
                     )}
-                    {!freeUpSpaceInfo.visible && !showAiTip && showBatteryTip && !isSearching && (
+                    {!freeUpSpaceInfo.visible && !firstBackupPending && !showAiTip && showBatteryTip && !isSearching && (
                         <BatteryOptimizationTipBanner styles={styles} onOpenSettings={openBatterySettings} onDismiss={dismissBatteryTip} />
                     )}
                     {freeUpSpaceInfo.visible && !isSearching && (
@@ -2081,6 +2270,64 @@ export default function HomeScreen({ navigation, route }) {
                     </ScrollView>
                 </View>
             )}
+
+            <Modal
+                visible={firstBackupPending && firstBackupProgressVisible}
+                animationType="slide"
+                presentationStyle="fullScreen"
+                onRequestClose={() => setFirstBackupProgressVisible(false)}
+            >
+                <View style={styles.firstBackupProgressScreen}>
+                    <View style={styles.firstBackupProgressHeader}>
+                        <Text style={styles.firstBackupProgressHeaderTitle}>First Backup</Text>
+                        <TouchableOpacity onPress={() => setFirstBackupProgressVisible(false)} style={styles.firstBackupCloseButton}>
+                            <X size={24} color="#1C1C1E" />
+                        </TouchableOpacity>
+                    </View>
+
+                    <View style={styles.firstBackupProgressContent}>
+                        <View style={styles.firstBackupCloudCircle}>
+                            <UploadCloud size={42} color="#007AFF" />
+                        </View>
+                        <Text style={styles.firstBackupProgressTitle}>
+                            {backupState.isPaused
+                                ? 'Your backup is paused'
+                                : backupState.totalCount > 0
+                                    ? 'Keep Lomorage open'
+                                    : 'Preparing your first backup'}
+                        </Text>
+                        <Text style={styles.firstBackupProgressGuidance}>
+                            Switching apps pauses backup on iPhone. Leave this screen open while you&apos;re on Wi-Fi, preferably with your charger connected.
+                        </Text>
+
+                        <Text style={styles.firstBackupProgressCount}>
+                            {backupState.totalCount > 0
+                                ? `${backupState.completedCount || 0} of ${backupState.totalCount} uploaded`
+                                : 'Finding photos to back up…'}
+                        </Text>
+                        <View style={styles.firstBackupProgressTrack}>
+                            <View style={[styles.firstBackupProgressFill, { width: `${backupState.totalCount > 0 ? smoothOverallProgress * 100 : 0}%` }]} />
+                        </View>
+                        <Text style={styles.firstBackupProgressPercent}>
+                            {backupState.totalCount > 0 ? `${Math.round(smoothOverallProgress * 100)}%` : 'Preparing…'}
+                        </Text>
+
+                        <View style={styles.firstBackupChecklist}>
+                            <Text style={styles.firstBackupChecklistItem}>① Stay connected to Wi-Fi</Text>
+                            <Text style={styles.firstBackupChecklistItem}>② Plug in your charger</Text>
+                            <Text style={styles.firstBackupChecklistItem}>③ Keep Lomorage open overnight</Text>
+                        </View>
+
+                        {backupState.isPaused ? (
+                            <TouchableOpacity style={styles.firstBackupPrimaryButton} onPress={() => AutoBackupManager.resume()}>
+                                <Text style={styles.firstBackupPrimaryButtonText}>Resume backup</Text>
+                            </TouchableOpacity>
+                        ) : (
+                            <Text style={styles.firstBackupReassurance}>Lomorage will keep this screen awake and request extra background time from iOS while your first backup runs.</Text>
+                        )}
+                    </View>
+                </View>
+            </Modal>
 
             <Modal visible={isBottomSheetVisible} transparent animationType="slide" onRequestClose={() => setBottomSheetVisible(false)}>
                 <View style={styles.bottomSheetOverlay}>
@@ -2251,6 +2498,199 @@ const styles = StyleSheet.create({
         color: '#fff',
         fontSize: 13,
         fontWeight: 'bold',
+    },
+    firstBackupCardContainer: {
+        marginHorizontal: 15,
+        marginTop: 10,
+        marginBottom: 5,
+    },
+    firstBackupCard: {
+        backgroundColor: '#EAF3FF',
+        borderColor: '#B7D7FF',
+        borderWidth: 1,
+        borderRadius: 16,
+        padding: 16,
+    },
+    firstBackupEyebrow: {
+        color: '#0066CC',
+        fontSize: 11,
+        fontWeight: '800',
+        letterSpacing: 0.8,
+        marginBottom: 6,
+    },
+    firstBackupCardTitle: {
+        color: '#102A43',
+        fontSize: 16,
+        fontWeight: '700',
+        lineHeight: 22,
+    },
+    firstBackupCardText: {
+        color: '#486581',
+        fontSize: 14,
+        marginTop: 5,
+    },
+    firstBackupCardButton: {
+        alignSelf: 'flex-start',
+        backgroundColor: '#007AFF',
+        borderRadius: 18,
+        marginTop: 14,
+        paddingHorizontal: 15,
+        paddingVertical: 9,
+    },
+    firstBackupCardButtonText: {
+        color: '#FFFFFF',
+        fontSize: 13,
+        fontWeight: '700',
+    },
+    firstBackupProgressScreen: {
+        flex: 1,
+        backgroundColor: '#FFFFFF',
+        paddingTop: Platform.OS === 'ios' ? 50 : 20,
+    },
+    firstBackupProgressHeader: {
+        alignItems: 'center',
+        borderBottomColor: '#E5E5EA',
+        borderBottomWidth: StyleSheet.hairlineWidth,
+        flexDirection: 'row',
+        justifyContent: 'center',
+        minHeight: 52,
+        paddingHorizontal: 20,
+    },
+    firstBackupProgressHeaderTitle: {
+        color: '#1C1C1E',
+        fontSize: 18,
+        fontWeight: '700',
+    },
+    firstBackupCloseButton: {
+        padding: 8,
+        position: 'absolute',
+        right: 12,
+    },
+    firstBackupProgressContent: {
+        alignItems: 'center',
+        flex: 1,
+        paddingHorizontal: 30,
+        paddingTop: 52,
+    },
+    firstBackupCloudCircle: {
+        alignItems: 'center',
+        backgroundColor: '#EAF3FF',
+        borderRadius: 44,
+        height: 88,
+        justifyContent: 'center',
+        marginBottom: 24,
+        width: 88,
+    },
+    firstBackupProgressTitle: {
+        color: '#102A43',
+        fontSize: 27,
+        fontWeight: '800',
+        textAlign: 'center',
+    },
+    firstBackupProgressGuidance: {
+        color: '#486581',
+        fontSize: 16,
+        lineHeight: 23,
+        marginTop: 12,
+        maxWidth: 420,
+        textAlign: 'center',
+    },
+    firstBackupProgressCount: {
+        color: '#1C1C1E',
+        fontSize: 19,
+        fontWeight: '700',
+        marginTop: 36,
+    },
+    firstBackupProgressTrack: {
+        backgroundColor: '#E5E5EA',
+        borderRadius: 5,
+        height: 10,
+        marginTop: 14,
+        maxWidth: 420,
+        overflow: 'hidden',
+        width: '100%',
+    },
+    firstBackupProgressFill: {
+        backgroundColor: '#007AFF',
+        borderRadius: 5,
+        height: '100%',
+    },
+    firstBackupProgressPercent: {
+        color: '#6B7280',
+        fontSize: 13,
+        marginTop: 8,
+    },
+    firstBackupChecklist: {
+        alignSelf: 'stretch',
+        backgroundColor: '#F7F9FC',
+        borderRadius: 14,
+        marginTop: 30,
+        maxWidth: 420,
+        padding: 18,
+        width: '100%',
+    },
+    firstBackupChecklistItem: {
+        color: '#334E68',
+        fontSize: 15,
+        lineHeight: 28,
+    },
+    firstBackupPrimaryButton: {
+        backgroundColor: '#007AFF',
+        borderRadius: 12,
+        marginTop: 28,
+        paddingHorizontal: 28,
+        paddingVertical: 14,
+    },
+    firstBackupPrimaryButtonText: {
+        color: '#FFFFFF',
+        fontSize: 16,
+        fontWeight: '700',
+    },
+    firstBackupReassurance: {
+        color: '#6B7280',
+        fontSize: 13,
+        lineHeight: 18,
+        marginTop: 24,
+        maxWidth: 420,
+        textAlign: 'center',
+    },
+    limitedAccessBannerContainer: {
+        marginHorizontal: 15,
+        marginTop: 10,
+        marginBottom: 5,
+    },
+    limitedAccessBanner: {
+        backgroundColor: '#FFF4E5',
+        borderColor: '#F5C26B',
+        borderWidth: 1,
+        padding: 12,
+        borderRadius: 12,
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
+    limitedAccessBannerTitle: {
+        fontSize: 15,
+        fontWeight: '700',
+        color: '#7A3E00',
+        marginBottom: 2,
+    },
+    limitedAccessBannerText: {
+        fontSize: 13,
+        lineHeight: 18,
+        color: '#7A4B16',
+        paddingRight: 8,
+    },
+    limitedAccessBannerButton: {
+        backgroundColor: '#B45309',
+        paddingHorizontal: 12,
+        paddingVertical: 7,
+        borderRadius: 16,
+        marginLeft: 8,
+    },
+    limitedAccessBannerButtonText: {
+        color: '#fff',
+        fontSize: 13,
+        fontWeight: '700',
     },
     row: {
         flexDirection: 'row',

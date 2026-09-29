@@ -1,11 +1,16 @@
 import React from 'react';
 import renderer, { act } from 'react-test-renderer';
-import { View, TextInput, TouchableOpacity, ScrollView } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, ScrollView } from 'react-native';
 
 // Mock Expo and Native modules
 jest.mock('expo-haptics', () => ({
   selectionAsync: jest.fn(),
   notificationAsync: jest.fn(),
+}));
+
+jest.mock('expo-keep-awake', () => ({
+  activateKeepAwakeAsync: jest.fn().mockResolvedValue(undefined),
+  deactivateKeepAwake: jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.mock('expo-image', () => {
@@ -99,7 +104,11 @@ jest.mock('../../services/MediaService', () => ({
   __esModule: true,
   default: {
     getLocalAssets: jest.fn().mockResolvedValue([]),
+    getPermissionStatus: jest.fn().mockResolvedValue({ granted: true, accessPrivileges: 'all' }),
     requestPermissions: jest.fn().mockResolvedValue(true),
+    getAccessibleAssetCount: jest.fn().mockResolvedValue(0),
+    presentLimitedLibraryPicker: jest.fn().mockResolvedValue(true),
+    addLibraryChangeListener: jest.fn().mockReturnValue({ remove: jest.fn() }),
     getAllAssets: jest.fn().mockResolvedValue([]),
   }
 }));
@@ -134,6 +143,7 @@ jest.mock('../../services/AssetDBService', () => ({
     getRemoteAssets: jest.fn().mockResolvedValue([]),
     getOnThisDayAssets: jest.fn().mockResolvedValue([]),
     insertLocalAssets: jest.fn().mockResolvedValue(null),
+    pruneDeletedLocalAssets: jest.fn().mockResolvedValue([]),
   }
 }));
 jest.mock('../../services/AutoBackupManager', () => ({
@@ -144,6 +154,14 @@ jest.mock('../../services/AutoBackupManager', () => ({
     syncQueueWithGallery: jest.fn(),
   }
 }));
+jest.mock('../../services/FirstBackupService', () => ({
+  __esModule: true,
+  FIRST_BACKUP_CHANGED_EVENT: 'firstBackupGuideChanged',
+  default: {
+    isPending: jest.fn().mockResolvedValue(false),
+    complete: jest.fn().mockResolvedValue(undefined),
+  },
+}));
 jest.mock('../../services/AIService', () => ({
   __esModule: true,
   default: {
@@ -153,6 +171,162 @@ jest.mock('../../services/AIService', () => ({
 
 import HomeScreen from '../HomeScreen';
 const { performance: nodePerf } = require('perf_hooks');
+const MediaService = require('../../services/MediaService').default;
+const FirstBackupService = require('../../services/FirstBackupService').default;
+const KeepAwake = require('expo-keep-awake');
+
+const flushPromises = async () => {
+  for (let i = 0; i < 10; i++) {
+    await Promise.resolve();
+  }
+};
+
+describe('HomeScreen first backup guidance', () => {
+  afterEach(() => {
+    FirstBackupService.isPending.mockResolvedValue(false);
+  });
+
+  test('shows the ritual card and live foreground progress until the first backup completes', async () => {
+    FirstBackupService.isPending.mockResolvedValue(true);
+    let component;
+    await act(async () => {
+      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn() }} />);
+      await flushPromises();
+    });
+
+    expect(component.root.findAllByType(Text).some(node =>
+      [].concat(node.props.children).join('').includes('Tonight: ① connect to Wi-Fi')
+    )).toBe(true);
+
+    await act(async () => {
+      const { DeviceEventEmitter } = require('react-native');
+      DeviceEventEmitter.emit('backupState', {
+        isBackingUp: true,
+        isPaused: false,
+        pendingCount: 8,
+        completedCount: 2,
+        totalCount: 10,
+        activeAssetIds: [],
+        activeUploads: {},
+        uploadStats: {},
+      });
+      await flushPromises();
+    });
+
+    expect(component.root.findAllByType(Text).some(node => node.props.children === 'Keep Lomorage open')).toBe(true);
+    expect(component.root.findAllByType(Text).some(node =>
+      [].concat(node.props.children).join('') === '2 of 10 uploaded'
+    )).toBe(true);
+    expect(KeepAwake.activateKeepAwakeAsync).toHaveBeenCalledWith('lomorage-first-backup');
+
+    await act(async () => {
+      const { DeviceEventEmitter } = require('react-native');
+      DeviceEventEmitter.emit('backupState', {
+        isBackingUp: false,
+        isPaused: false,
+        pendingCount: 0,
+        completedCount: 10,
+        totalCount: 10,
+        activeAssetIds: [],
+        activeUploads: {},
+        uploadStats: {},
+      });
+      await flushPromises();
+    });
+
+    expect(FirstBackupService.complete).toHaveBeenCalledTimes(1);
+    expect(KeepAwake.deactivateKeepAwake).toHaveBeenCalledWith('lomorage-first-backup');
+    act(() => component.unmount());
+  });
+});
+
+describe('HomeScreen limited photo access', () => {
+  let libraryChangeListener;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.clearAllMocks();
+    MediaService.getPermissionStatus.mockResolvedValue({ granted: true, accessPrivileges: 'limited' });
+    MediaService.requestPermissions.mockResolvedValue(true);
+    MediaService.getAccessibleAssetCount.mockResolvedValue(3);
+    MediaService.presentLimitedLibraryPicker.mockResolvedValue(true);
+    MediaService.addLibraryChangeListener.mockImplementation(listener => {
+      libraryChangeListener = listener;
+      return { remove: jest.fn() };
+    });
+  });
+
+  afterEach(() => {
+    MediaService.getPermissionStatus.mockResolvedValue({ granted: true, accessPrivileges: 'all' });
+    jest.useRealTimers();
+  });
+
+  test('warns about visible assets and opens the limited-library picker', async () => {
+    let component;
+    await act(async () => {
+      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn() }} />);
+      await flushPromises();
+    });
+
+    const warning = component.root.findAllByType(Text).find(node =>
+      [].concat(node.props.children).join('') ===
+      'Lomorage can only see 3 selected items. Only those will be backed up.'
+    );
+    expect(warning).toBeDefined();
+
+    const selectMore = component.root.findAllByType(TouchableOpacity).find(
+      node => node.findAllByType(Text).some(text => text.props.children === 'Select More')
+    );
+    expect(selectMore).toBeDefined();
+    const initialLoadCount = MediaService.getAllAssets.mock.calls.length;
+
+    await act(async () => {
+      await selectMore.props.onPress();
+      await flushPromises();
+    });
+
+    expect(MediaService.presentLimitedLibraryPicker).toHaveBeenCalledTimes(1);
+    expect(MediaService.getAllAssets).toHaveBeenCalledTimes(initialLoadCount);
+
+    await act(async () => {
+      libraryChangeListener({ hasIncrementalChanges: false });
+      await flushPromises();
+    });
+
+    expect(MediaService.getAllAssets.mock.calls.length).toBeGreaterThan(initialLoadCount);
+    act(() => component.unmount());
+  });
+
+  test('queues a selection-change reload behind an active scan', async () => {
+    let finishFirstScan;
+    MediaService.getAllAssets
+      .mockImplementationOnce(() => new Promise(resolve => {
+        finishFirstScan = resolve;
+      }))
+      .mockResolvedValue([]);
+
+    let component;
+    await act(async () => {
+      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn() }} />);
+      await flushPromises();
+    });
+
+    expect(MediaService.getAllAssets).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      libraryChangeListener({ hasIncrementalChanges: false });
+    });
+    expect(MediaService.getAllAssets).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      finishFirstScan([]);
+      await flushPromises();
+    });
+
+    expect(MediaService.getAllAssets).toHaveBeenCalledTimes(2);
+    act(() => component.unmount());
+  });
+});
 
 describe('HomeScreen Performance Tests', () => {
   let mockNavigation;

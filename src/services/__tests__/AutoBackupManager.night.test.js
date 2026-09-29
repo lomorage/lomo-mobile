@@ -75,6 +75,11 @@ jest.mock('../UploadService', () => ({
   uploadAsset: jest.fn(),
 }));
 
+jest.mock('../../../modules/expo-background-keepalive', () => ({
+  startKeepAlive: jest.fn(),
+  stopKeepAlive: jest.fn(),
+}));
+
 describe('AutoBackupManager Scheduling and Constraints', () => {
   const mockAssets = [
     { id: '1', status: 'local', hash: 'h1', uri: 'file:///1.jpg' }

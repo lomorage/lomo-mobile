@@ -52,5 +52,7 @@ module.exports = {
   getAssetsAsync,
   getPermissionsAsync: async () => granted,
   requestPermissionsAsync: async () => granted,
+  presentPermissionsPickerAsync: async () => {},
+  addListener: () => ({ remove: () => {} }),
   __assets: assets,
 };

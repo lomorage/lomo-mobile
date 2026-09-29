@@ -19,7 +19,8 @@
       "appleTeamId": "3GRDMJ5JMM",
       "infoPlist": {
         "UIBackgroundModes": [
-          "fetch"
+          "fetch",
+          "audio"
         ],
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true,

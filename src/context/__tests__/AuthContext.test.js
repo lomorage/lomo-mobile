@@ -9,7 +9,15 @@ jest.mock('../../services/AuthService', () => ({
   setOnSessionExpired: jest.fn(),
 }));
 
+jest.mock('../../services/FirstBackupService', () => ({
+  __esModule: true,
+  default: {
+    beginIfNeeded: jest.fn().mockResolvedValue(true),
+  },
+}));
+
 const AuthService = require('../../services/AuthService');
+const FirstBackupService = require('../../services/FirstBackupService').default;
 import { AuthProvider, useAuth } from '../AuthContext';
 
 let latestAuth;
@@ -65,6 +73,7 @@ describe('login / register / logout', () => {
       await latestAuth.login('http://server', 'user', 'pass');
     });
     expect(AuthService.login).toHaveBeenCalledWith('http://server', 'user', 'pass', null);
+    expect(FirstBackupService.beginIfNeeded).toHaveBeenCalledTimes(1);
     expect(latestAuth.isAuthenticated).toBe(true);
   });
 
@@ -82,6 +91,7 @@ describe('login / register / logout', () => {
     await act(async () => {
       await latestAuth.register('http://server', 'user', 'pass', '/home/user');
     });
+    expect(FirstBackupService.beginIfNeeded).toHaveBeenCalledTimes(1);
     expect(latestAuth.isAuthenticated).toBe(true);
   });
 
@@ -90,6 +100,7 @@ describe('login / register / logout', () => {
     await act(async () => {
       await latestAuth.register('http://server', 'user', 'pass', '/home/user', false);
     });
+    expect(FirstBackupService.beginIfNeeded).not.toHaveBeenCalled();
     expect(latestAuth.isAuthenticated).toBe(false);
   });
 

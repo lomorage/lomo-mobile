@@ -10,6 +10,7 @@ import UploadService from './UploadService';
 import GalleryStore from '../store/GalleryStore';
 import TaskSchedulerService from './TaskSchedulerService';
 import { startKeepAlive, stopKeepAlive } from '../../modules/expo-background-keepalive';
+import FirstBackupService, { FIRST_BACKUP_CHANGED_EVENT } from './FirstBackupService';
 
 export const BACKGROUND_BACKUP_TASK = 'LOMO_BACKUP_TASK';
 export const BACKGROUND_LOCATION_TASK = 'LOMO_LOCATION_TASK';
@@ -35,6 +36,7 @@ class AutoBackupManager {
         this.chargingOnlyBackup = false;
         this.nightBackupOnly = false;
         this.iosBackgroundKeepAlive = false;
+        this.firstBackupPending = false;
         this.consecutiveErrors = 0;
         this.retryCount = 0;       // for exponential backoff
         this.retryMessage = null;  // user-friendly retry message
@@ -79,6 +81,10 @@ class AutoBackupManager {
                 }
             }
             this.updateNotification();
+          });
+
+          DeviceEventEmitter.addListener(FIRST_BACKUP_CHANGED_EVENT, ({ pending }) => {
+              this.firstBackupPending = pending === true;
           });
 
           // Plug-in auto-wake listener: Resume backup when charger connects
@@ -291,6 +297,8 @@ class AutoBackupManager {
             const savedIosKeepAlive = await SecureStore.getItemAsync('lomorage_ios_background_keep_alive');
             if (savedIosKeepAlive !== null) this.iosBackgroundKeepAlive = savedIosKeepAlive === 'true';
 
+            this.firstBackupPending = await FirstBackupService.isPending();
+
             if (registerTask) {
                 if (this.autoBackupEnabled) {
                     await this.registerBackgroundTask();
@@ -368,7 +376,9 @@ class AutoBackupManager {
         this.isBackingUp = true;
         this.completedSessionCount = 0;
         this.emitState();
-        if (this.iosBackgroundKeepAlive) {
+        // Give the initial library upload the best chance to continue through a brief
+        // app switch. iOS still controls the final background execution window.
+        if (this.iosBackgroundKeepAlive || this.firstBackupPending) {
             startKeepAlive();
         }
 

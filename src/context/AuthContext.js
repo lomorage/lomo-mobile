@@ -1,5 +1,6 @@
 import React, { createContext, useState, useContext, useEffect } from 'react';
 import AuthService from '../services/AuthService';
+import FirstBackupService from '../services/FirstBackupService';
 
 const AuthContext = createContext();
 
@@ -37,12 +38,18 @@ export const AuthProvider = ({ children }) => {
 
   const login = async (server, username, password, serverName = null) => {
     await AuthService.login(server, username, password, serverName);
+    await FirstBackupService.beginIfNeeded().catch((error) => {
+      console.warn('[AuthContext] Failed to initialize first-backup guidance:', error);
+    });
     setIsAuthenticated(true);
   };
 
   const register = async (server, username, password, homedir, autoLogin = true) => {
     await AuthService.register(server, username, password, homedir, "", autoLogin);
     if (autoLogin) {
+      await FirstBackupService.beginIfNeeded().catch((error) => {
+        console.warn('[AuthContext] Failed to initialize first-backup guidance:', error);
+      });
       setIsAuthenticated(true);
     }
   };

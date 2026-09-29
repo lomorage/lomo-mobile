@@ -33,6 +33,29 @@ class MediaService {
     return MediaLibrary.getPermissionsAsync();
   }
 
+  async getAccessibleAssetCount() {
+    const result = await MediaLibrary.getAssetsAsync({
+      first: 1,
+      mediaType: [MediaLibrary.MediaType.photo, MediaLibrary.MediaType.video],
+    });
+    return result.totalCount ?? result.assets?.length ?? 0;
+  }
+
+  async presentLimitedLibraryPicker() {
+    if (Platform.OS !== 'ios' || typeof MediaLibrary.presentPermissionsPickerAsync !== 'function') {
+      return false;
+    }
+    await MediaLibrary.presentPermissionsPickerAsync();
+    return true;
+  }
+
+  addLibraryChangeListener(listener) {
+    if (Platform.OS !== 'ios' || typeof MediaLibrary.addListener !== 'function') {
+      return { remove: () => {} };
+    }
+    return MediaLibrary.addListener(listener);
+  }
+
   async requestPermissions() {
     console.log('Checking permissions for', Platform.OS, Platform.Version);
     const existing = await MediaLibrary.getPermissionsAsync();
