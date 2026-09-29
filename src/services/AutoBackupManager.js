@@ -24,7 +24,7 @@ const STALE_BACKUP_REMINDER_ID = 'LOMO_BACKUP_STALE_REMINDER';
 const STALE_BACKUP_REMINDER_DELAY_SECONDS = 8 * 60 * 60; // 8 hours
 
 class AutoBackupManager {
-    constructor() {
+    constructor({ backgroundTask = false } = {}) {
         this.isBackingUp = false;
         this.queue = [];
         this.currentIndex = 0;
@@ -44,9 +44,8 @@ class AutoBackupManager {
         this.uploadStats = {}; // Map of assetId -> { startTime, totalBytes, speed }
         this.completedSessionCount = 0;
 
-        this.initSettings();
-        
-        DeviceEventEmitter.addListener('settingsChanged', (settings) => {
+        if (!backgroundTask) {
+          DeviceEventEmitter.addListener('settingsChanged', (settings) => {
             let reRegisterNeeded = false;
             if (settings.autoBackupEnabled !== undefined) {
                 this.autoBackupEnabled = settings.autoBackupEnabled;
@@ -80,10 +79,10 @@ class AutoBackupManager {
                 }
             }
             this.updateNotification();
-        });
+          });
 
-        // Plug-in auto-wake listener: Resume backup when charger connects
-        try {
+          // Plug-in auto-wake listener: Resume backup when charger connects
+          try {
             Battery.addBatteryStateListener(({ batteryState }) => {
                 const isCharging = 
                     batteryState === Battery.BatteryState.CHARGING || 
@@ -93,15 +92,13 @@ class AutoBackupManager {
                     this.resume();
                 }
             });
-        } catch (e) {
+          } catch (e) {
             console.warn('[AutoBackupManager] Failed to add battery state listener:', e);
+          }
+
+          // HomeScreen handles foreground queue syncing after the deep sync.
         }
 
-        // Note: We no longer listen to AppState changes here for queue syncing.
-        // HomeScreen manages foregrounding and will call syncQueueWithGallery() 
-        // ONLY after the efficient Merkle Tree deep-sync is complete.
-
-        this.updateNotification();
     }
 
     async updateNotification() {
@@ -277,7 +274,7 @@ class AutoBackupManager {
         }
     }
 
-    async initSettings() {
+    async initSettings({ registerTask = true } = {}) {
         try {
             const savedAutoBackup = await SecureStore.getItemAsync('lomorage_auto_backup');
             if (savedAutoBackup !== null) this.autoBackupEnabled = savedAutoBackup === 'true';
@@ -294,10 +291,12 @@ class AutoBackupManager {
             const savedIosKeepAlive = await SecureStore.getItemAsync('lomorage_ios_background_keep_alive');
             if (savedIosKeepAlive !== null) this.iosBackgroundKeepAlive = savedIosKeepAlive === 'true';
 
-            if (this.autoBackupEnabled) {
-                await this.registerBackgroundTask();
-            } else {
-                await this.unregisterBackgroundTask();
+            if (registerTask) {
+                if (this.autoBackupEnabled) {
+                    await this.registerBackgroundTask();
+                } else {
+                    await this.unregisterBackgroundTask();
+                }
             }
         } catch(e) {
             console.error('[AutoBackupManager] initSettings failed:', e);
@@ -703,8 +702,8 @@ TaskManager.defineTask(BACKGROUND_BACKUP_TASK, async () => {
     }
 
     try {
-        const manager = new AutoBackupManager();
-        await manager.initSettings();
+        const manager = new AutoBackupManager({ backgroundTask: true });
+        await manager.initSettings({ registerTask: false });
         
         if (!manager.autoBackupEnabled || manager.isPaused) {
             console.log('[BackgroundTask] Auto-backup disabled or paused, skipping.');
@@ -748,7 +747,9 @@ TaskManager.defineTask(BACKGROUND_BACKUP_TASK, async () => {
                 // Using the DB-derived 'uploaded' flag directly!
                 const isSynced = cached?.uploaded === true;
                 if (!isSynced) {
-                    pending.push(asset);
+                    // MediaLibrary assets do not carry the GalleryStore status field.
+                    // _uploadSingle only accepts assets explicitly marked local.
+                    pending.push({ ...asset, status: 'local' });
                 }
             }
             
@@ -770,7 +771,10 @@ TaskManager.defineTask(BACKGROUND_BACKUP_TASK, async () => {
             console.log(`[BackgroundTask] Found ${pending.length} pending assets. Starting background upload...`);
             manager.queue = pending;
             await manager.startBackup();
-            console.log('[BackgroundTask] Background upload finished.');
+            const remainingCount = manager.isPaused
+                ? Math.max(0, manager.queue.length - manager.currentIndex) + manager.activeAssetIds.size
+                : 0;
+            console.log(`[BackgroundTask] Upload run ended. requested=${pending.length}, uploaded=${manager.completedSessionCount}, remaining=${remainingCount}, paused=${manager.isPaused}${manager.pauseReason ? `, reason=${manager.pauseReason}` : ''}`);
             
             // Send iOS local notification upon background sync completion
             if (Platform.OS === 'ios') {

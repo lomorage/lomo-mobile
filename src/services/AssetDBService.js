@@ -419,7 +419,7 @@ class AssetDBService {
     // SQLite INTEGER truncates floats, so we floor it explicitly to keep the stored
     // value consistent with what we'll compare against on the next launch.
     await this.db.runAsync(
-      'UPDATE MediaAsset SET hash = ?, hashModificationTime = ? WHERE id = ?',
+      'UPDATE MediaAsset SET hash = ?, hashModificationTime = ?, uploaded = 0 WHERE id = ?',
       [hash, Math.floor(modificationTime), id]
     );
   }

@@ -16,6 +16,7 @@ export default function App() {
   useEffect(() => {
     const initApp = async () => {
       try {
+        await AutoBackupManager.initSettings();
         await AssetDBService.init();
         
         // Start background prewarming of AI vector cache

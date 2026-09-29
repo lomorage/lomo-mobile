@@ -241,7 +241,9 @@ class UploadService {
             }
             if (!hash) throw new Error('Failed to calculate file integrity hash.');
 
-            // Save hash to cache so it's instantly available for heuristic checks on next load
+            // Save the hash for retry and comparison, but keep it pending until the
+            // server confirms the asset. Marking it uploaded here can hide a failed
+            // upload from the next background scan.
             try {
                 const SyncService = require('./SyncService').default;
                 await SyncService.loadLocalHashCache();
@@ -249,14 +251,31 @@ class UploadService {
                     hash,
                     modificationTime: asset.modificationTime,
                     filename: info.filename || 'unknown',
-                    uploaded: true
+                    uploaded: false
                 };
                 const AssetDBService = require('./AssetDBService').default;
                 await AssetDBService.updateAssetHash(asset.id, hash, asset.modificationTime);
-                await AssetDBService.markAssetUploaded(asset.id);
             } catch (cacheErr) {
                 console.warn('[UploadService] Failed to save hash to cache:', cacheErr.message);
             }
+
+            const markUploaded = async () => {
+                try {
+                    const SyncService = require('./SyncService').default;
+                    const AssetDBService = require('./AssetDBService').default;
+                    const cached = SyncService.localHashCache[asset.id] || {};
+                    SyncService.localHashCache[asset.id] = {
+                        ...cached,
+                        hash,
+                        modificationTime: asset.modificationTime,
+                        filename: info.filename || cached.filename || 'unknown',
+                        uploaded: true
+                    };
+                    await AssetDBService.markAssetUploaded(asset.id);
+                } catch (cacheErr) {
+                    console.warn('[UploadService] Failed to mark confirmed upload in cache:', cacheErr.message);
+                }
+            };
 
             // 3. Get accurate file size from disk (needed for Content-Range header)
             let fileSizeBytes = 0;
@@ -281,6 +300,7 @@ class UploadService {
             const status = await this.checkUploadStatus(hash);
             if (status.exists) {
                 console.log(`[UploadService] Asset ${hash} already on server, skipping.`);
+                await markUploaded();
                 if (tempFileToClean) await FileSystem.deleteAsync(tempFileToClean, { idempotent: true }).catch(()=>{});
                 return { success: true, duplicate: true, hash };
             }
@@ -305,6 +325,7 @@ class UploadService {
                     onProgress,
                 });
                 if (resumeResult) {
+                    if (resumeResult.success) await markUploaded();
                     if (tempFileToClean) await FileSystem.deleteAsync(tempFileToClean, { idempotent: true }).catch(()=>{});
                     return resumeResult;
                 }
@@ -356,6 +377,8 @@ class UploadService {
             this.activeTasks.delete(asset.id);
             
             if (response.status === 200 || response.status === 201 || response.status === 409) {
+                await markUploaded();
+                console.log(`[UploadService] Full upload completed for ${hash} (HTTP ${response.status}).`);
                 if (tempFileToClean) await FileSystem.deleteAsync(tempFileToClean, { idempotent: true }).catch(()=>{});
                 return { success: true, hash };
             } else {
@@ -373,6 +396,7 @@ class UploadService {
                 } catch (e) {}
                 if (isDuplicate) {
                     console.warn(`[UploadService] Concurrent duplicate detected for ${hash}, treating as success.`);
+                    await markUploaded();
                     if (tempFileToClean) await FileSystem.deleteAsync(tempFileToClean, { idempotent: true }).catch(()=>{});
                     return { success: true, hash, duplicate: true };
                 }

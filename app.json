@@ -115,6 +115,7 @@
       "expo-task-manager",
       "expo-background-task",
       "expo-sqlite",
+      "./plugins/withAdaptiveIconInset",
       "./plugins/withWorkManagerForeground",
       "./plugins/withVideoCacheGradle",
       "./plugins/withIosXcode26BuildFixes"
