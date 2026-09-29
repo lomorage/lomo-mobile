@@ -824,7 +824,13 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     }
     if (data) {
         console.log('[LocationTask] Background location wake-up triggered.');
-        const manager = require('./AutoBackupManager').default;
+        const foregroundManager = require('./AutoBackupManager').default;
+        if (foregroundManager?.isBackingUp) {
+            console.log('[LocationTask] Foreground backup is active, skipping location task.');
+            return;
+        }
+        const manager = new AutoBackupManager({ backgroundTask: true });
+        await manager.initSettings({ registerTask: false });
         if (!manager || !manager.autoBackupEnabled || manager.isPaused) {
             return;
         }
@@ -877,7 +883,7 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
                     if (excludedSet.has(asset.id)) continue;
                     const cached = SyncService.localHashCache[asset.id];
                     if (cached?.uploaded !== true) {
-                        pending.push(asset);
+                        pending.push({ ...asset, status: 'local' });
                     }
                 }
                 
@@ -895,7 +901,10 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
                 console.log(`[LocationTask] Found ${pending.length} pending assets. Starting background uploads...`);
                 manager.queue = pending;
                 await manager.startBackup();
-                console.log('[LocationTask] Background upload finished.');
+                const remainingCount = manager.isPaused
+                    ? Math.max(0, manager.queue.length - manager.currentIndex) + manager.activeAssetIds.size
+                    : 0;
+                console.log(`[LocationTask] Upload run ended. requested=${pending.length}, uploaded=${manager.completedSessionCount}, remaining=${remainingCount}, paused=${manager.isPaused}${manager.pauseReason ? `, reason=${manager.pauseReason}` : ''}`);
             } else {
                 console.log('[LocationTask] Woke up successfully via geofencing, but no new assets found to upload.');
             }
