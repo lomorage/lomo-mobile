@@ -1,6 +1,7 @@
 import AutoBackupManager from '../AutoBackupManager';
 import GalleryStore from '../../store/GalleryStore';
 import UploadService from '../UploadService';
+import FirstBackupService from '../FirstBackupService';
 import { startKeepAlive } from '../../../modules/expo-background-keepalive';
 
 // Mock dependencies
@@ -89,6 +90,10 @@ describe('AutoBackupManager', () => {
     GalleryStore.setAssets([]);
   });
 
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
   test('successfully processes queue, skipping already synced/non-local assets without hanging', async () => {
     const assets = [
       { id: '1', status: 'synced', hash: 'h1' }, // Should be skipped
@@ -118,6 +123,18 @@ describe('AutoBackupManager', () => {
 
     await AutoBackupManager.startBackup();
 
+    expect(startKeepAlive).toHaveBeenCalledTimes(1);
+  });
+
+  test('refreshes the persisted first-backup flag before a session starts', async () => {
+    const asset = { id: 'first', status: 'local', hash: 'first-hash' };
+    UploadService.uploadAsset.mockResolvedValue({ success: true, hash: 'first-hash' });
+    jest.spyOn(FirstBackupService, 'isPending').mockResolvedValue(true);
+    AutoBackupManager.queue = [asset];
+
+    await AutoBackupManager.startBackup();
+
+    expect(FirstBackupService.isPending).toHaveBeenCalled();
     expect(startKeepAlive).toHaveBeenCalledTimes(1);
   });
 });

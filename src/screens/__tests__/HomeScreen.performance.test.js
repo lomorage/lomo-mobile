@@ -78,6 +78,8 @@ jest.mock('expo-file-system/legacy', () => ({
   getFreeDiskStorageAsync: jest.fn().mockResolvedValue(1024 * 1024 * 1024 * 10), // 10 GB
 }));
 
+let mockExcludedAlbums = [];
+
 // Mock SettingsContext
 jest.mock('../../context/SettingsContext', () => ({
   useSettings: () => ({
@@ -89,7 +91,7 @@ jest.mock('../../context/SettingsContext', () => ({
     adaptiveConcurrencyEnabled: true,
     hashConcurrency: 2,
     uploadConcurrency: 3,
-    excludedAlbums: [],
+    excludedAlbums: mockExcludedAlbums,
     remoteAIProcessingEnabled: true,
     searchThreshold: 0.25,
     aiWifiOnly: true,
@@ -116,6 +118,7 @@ jest.mock('../../services/SyncService', () => ({
   __esModule: true,
   default: {
     subscribe: jest.fn().mockReturnValue(jest.fn()),
+    localHashCache: {},
     loadLocalHashCache: jest.fn().mockResolvedValue({}),
     syncLocalGPS: jest.fn().mockResolvedValue(null),
     fetchRemoteOverview: jest.fn().mockResolvedValue({}),
@@ -172,6 +175,7 @@ jest.mock('../../services/AIService', () => ({
 import HomeScreen from '../HomeScreen';
 const { performance: nodePerf } = require('perf_hooks');
 const MediaService = require('../../services/MediaService').default;
+const SyncService = require('../../services/SyncService').default;
 const FirstBackupService = require('../../services/FirstBackupService').default;
 const KeepAwake = require('expo-keep-awake');
 
@@ -182,12 +186,20 @@ const flushPromises = async () => {
 };
 
 describe('HomeScreen first backup guidance', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    MediaService.getAllAssets.mockResolvedValue([]);
+    SyncService.localHashCache = {};
+  });
+
   afterEach(() => {
     FirstBackupService.isPending.mockResolvedValue(false);
+    require('../../services/AutoBackupManager').default.syncQueueWithGallery.mockImplementation(() => {});
   });
 
   test('shows the ritual card and live foreground progress until the first backup completes', async () => {
     FirstBackupService.isPending.mockResolvedValue(true);
+    MediaService.getAllAssets.mockResolvedValue([{ id: 'new-photo', mediaType: 'photo', creationTime: Date.now() }]);
     let component;
     await act(async () => {
       component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn() }} />);
@@ -238,6 +250,95 @@ describe('HomeScreen first backup guidance', () => {
     expect(KeepAwake.deactivateKeepAwake).toHaveBeenCalledWith('lomorage-first-backup');
     act(() => component.unmount());
   });
+
+  test('finishes guidance only after an empty library scan has synchronized its queue', async () => {
+    FirstBackupService.isPending.mockResolvedValue(true);
+    let finishScan;
+    MediaService.getAllAssets.mockImplementationOnce(() => new Promise(resolve => {
+      finishScan = resolve;
+    }));
+
+    let component;
+    await act(async () => {
+      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn() }} />);
+      await flushPromises();
+    });
+    expect(FirstBackupService.complete).not.toHaveBeenCalled();
+
+    await act(async () => {
+      finishScan([]);
+      await flushPromises();
+    });
+
+    expect(FirstBackupService.complete).toHaveBeenCalledTimes(1);
+    const queueSync = require('../../services/AutoBackupManager').default.syncQueueWithGallery;
+    expect(queueSync.mock.invocationCallOrder[queueSync.mock.invocationCallOrder.length - 1])
+      .toBeLessThan(FirstBackupService.complete.mock.invocationCallOrder[0]);
+    act(() => component.unmount());
+  });
+
+  test('keeps guidance pending after a scan finds photos to upload', async () => {
+    FirstBackupService.isPending.mockResolvedValue(true);
+    MediaService.getAllAssets.mockResolvedValue([{ id: 'new-photo', mediaType: 'photo', creationTime: Date.now() }]);
+
+    let component;
+    await act(async () => {
+      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn() }} />);
+      await flushPromises();
+    });
+
+    expect(FirstBackupService.complete).not.toHaveBeenCalled();
+    act(() => component.unmount());
+  });
+
+  test('waits for an active scan even if an earlier upload session finishes', async () => {
+    FirstBackupService.isPending.mockResolvedValue(true);
+    let finishScan;
+    MediaService.getAllAssets.mockImplementationOnce(() => new Promise(resolve => {
+      finishScan = resolve;
+    }));
+
+    let component;
+    await act(async () => {
+      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn() }} />);
+      await flushPromises();
+    });
+
+    const { DeviceEventEmitter } = require('react-native');
+    require('../../services/AutoBackupManager').default.syncQueueWithGallery.mockImplementation(() => {
+      DeviceEventEmitter.emit('backupState', {
+        isBackingUp: true, isPaused: false, pendingCount: 1, totalCount: 2,
+      });
+    });
+    await act(async () => {
+      DeviceEventEmitter.emit('backupState', {
+        isBackingUp: true, isPaused: false, pendingCount: 1, totalCount: 1,
+      });
+      await flushPromises();
+    });
+    await act(async () => {
+      DeviceEventEmitter.emit('backupState', {
+        isBackingUp: false, isPaused: false, pendingCount: 0, totalCount: 1,
+      });
+      await flushPromises();
+    });
+    expect(FirstBackupService.complete).not.toHaveBeenCalled();
+
+    await act(async () => {
+      finishScan([{ id: 'new-photo', mediaType: 'photo', creationTime: Date.now() }]);
+      await flushPromises();
+    });
+    expect(FirstBackupService.complete).not.toHaveBeenCalled();
+
+    await act(async () => {
+      DeviceEventEmitter.emit('backupState', {
+        isBackingUp: false, isPaused: false, pendingCount: 0, totalCount: 2,
+      });
+      await flushPromises();
+    });
+    expect(FirstBackupService.complete).toHaveBeenCalledTimes(1);
+    act(() => component.unmount());
+  });
 });
 
 describe('HomeScreen limited photo access', () => {
@@ -246,6 +347,7 @@ describe('HomeScreen limited photo access', () => {
   beforeEach(() => {
     jest.useFakeTimers();
     jest.clearAllMocks();
+    mockExcludedAlbums = [];
     MediaService.getPermissionStatus.mockResolvedValue({ granted: true, accessPrivileges: 'limited' });
     MediaService.requestPermissions.mockResolvedValue(true);
     MediaService.getAccessibleAssetCount.mockResolvedValue(3);
@@ -258,6 +360,7 @@ describe('HomeScreen limited photo access', () => {
 
   afterEach(() => {
     MediaService.getPermissionStatus.mockResolvedValue({ granted: true, accessPrivileges: 'all' });
+    mockExcludedAlbums = [];
     jest.useRealTimers();
   });
 
@@ -324,6 +427,80 @@ describe('HomeScreen limited photo access', () => {
     });
 
     expect(MediaService.getAllAssets).toHaveBeenCalledTimes(2);
+    act(() => component.unmount());
+  });
+
+  test('uses updated album exclusions for a queued scan', async () => {
+    let finishFirstScan;
+    MediaService.getAllAssets
+      .mockImplementationOnce(() => new Promise(resolve => {
+        finishFirstScan = resolve;
+      }))
+      .mockResolvedValue([]);
+
+    const navigation = { navigate: jest.fn() };
+    let component;
+    await act(async () => {
+      component = renderer.create(<HomeScreen navigation={navigation} />);
+      await flushPromises();
+    });
+
+    mockExcludedAlbums = ['Private'];
+    await act(async () => {
+      component.update(<HomeScreen navigation={navigation} />);
+      await flushPromises();
+    });
+    await act(async () => {
+      libraryChangeListener({ hasIncrementalChanges: false });
+      await flushPromises();
+    });
+    expect(MediaService.getAllAssets).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      finishFirstScan([]);
+      await flushPromises();
+    });
+
+    expect(MediaService.getAllAssets).toHaveBeenCalledTimes(2);
+    expect(MediaService.getAllAssets.mock.calls[0][2]).toEqual([]);
+    expect(MediaService.getAllAssets.mock.calls[1][2]).toEqual(['Private']);
+    act(() => component.unmount());
+  });
+
+  test('drains a new selection change received during the queued scan', async () => {
+    const pendingScans = [];
+    MediaService.getAllAssets.mockImplementation(() => new Promise(resolve => {
+      pendingScans.push(resolve);
+    }));
+
+    let component;
+    await act(async () => {
+      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn() }} />);
+      await flushPromises();
+    });
+
+    act(() => libraryChangeListener({ hasIncrementalChanges: false }));
+    expect(MediaService.getAllAssets).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      pendingScans[0]([]);
+      await flushPromises();
+    });
+    expect(MediaService.getAllAssets).toHaveBeenCalledTimes(2);
+
+    act(() => libraryChangeListener({ hasIncrementalChanges: false }));
+    expect(MediaService.getAllAssets).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      pendingScans[1]([]);
+      await flushPromises();
+    });
+    expect(MediaService.getAllAssets).toHaveBeenCalledTimes(3);
+
+    await act(async () => {
+      pendingScans[2]([]);
+      await flushPromises();
+    });
     act(() => component.unmount());
   });
 });

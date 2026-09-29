@@ -376,6 +376,13 @@ class AutoBackupManager {
         this.isBackingUp = true;
         this.completedSessionCount = 0;
         this.emitState();
+        if (Platform.OS === 'ios') {
+            try {
+                this.firstBackupPending = (await FirstBackupService.isPending()) || this.firstBackupPending;
+            } catch (error) {
+                console.warn('[AutoBackupManager] Failed to refresh first-backup state:', error);
+            }
+        }
         // Give the initial library upload the best chance to continue through a brief
         // app switch. iOS still controls the final background execution window.
         if (this.iosBackgroundKeepAlive || this.firstBackupPending) {

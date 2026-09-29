@@ -311,7 +311,7 @@ export default function HomeScreen({ navigation, route }) {
     const [isBottomSheetVisible, setBottomSheetVisible] = useState(false);
     const [firstBackupPending, setFirstBackupPending] = useState(false);
     const [firstBackupProgressVisible, setFirstBackupProgressVisible] = useState(false);
-    const [initialLibraryScanCompleted, setInitialLibraryScanCompleted] = useState(false);
+    const [firstBackupScanResult, setFirstBackupScanResult] = useState(null);
     const [freeUpSpaceInfo, setFreeUpSpaceInfo] = useState({ visible: false, count: 0, loading: false });
     const [error, setError] = useState(null);
     const [permissionStatus, setPermissionStatus] = useState('granted');
@@ -371,16 +371,16 @@ export default function HomeScreen({ navigation, route }) {
             setFirstBackupProgressVisible(true);
         }
 
-        const firstBackupFinished = firstBackupStarted.current &&
+        const firstBackupFinished = firstBackupScanResult !== null &&
+            firstBackupStarted.current &&
             backupState.totalCount > 0 &&
             backupState.pendingCount === 0 &&
             !backupState.isBackingUp &&
             !backupState.isPaused;
-        const noUploadsNeeded = initialLibraryScanCompleted &&
+        const noUploadsNeeded = firstBackupScanResult === true &&
             backupState.pendingCount === 0 &&
             !backupState.isBackingUp &&
-            !backupState.isPaused &&
-            !GalleryStore.getAssets().some(asset => asset.status === 'local');
+            !backupState.isPaused;
 
         if ((firstBackupFinished || noUploadsNeeded) && !firstBackupCompleting.current) {
             firstBackupCompleting.current = true;
@@ -392,7 +392,7 @@ export default function HomeScreen({ navigation, route }) {
                 console.warn('[HomeScreen] Failed to complete first-backup guidance:', error);
             });
         }
-    }, [backupState.isBackingUp, backupState.isPaused, backupState.pendingCount, backupState.totalCount, firstBackupPending, initialLibraryScanCompleted]);
+    }, [backupState.isBackingUp, backupState.isPaused, backupState.pendingCount, backupState.totalCount, firstBackupPending, firstBackupScanResult]);
 
     useEffect(() => {
         if (!firstBackupPending || !firstBackupProgressVisible) return undefined;
@@ -873,6 +873,7 @@ export default function HomeScreen({ navigation, route }) {
             AutoBackupManager.syncQueueWithGallery();
             MetricsTracker.end('HomeScreen_mergeAndSetAssets', `(Assets: ${finalCombined.length}, finalize: ${finalize})`);
         }
+        return finalCombined;
     }, []);
 
     const formatDateHeader = (timestamp) => {
@@ -1256,7 +1257,8 @@ export default function HomeScreen({ navigation, route }) {
             setLoading(true);
         }
         setError(null);
-        let libraryScanCompleted = false;
+        let completedScanHasNoUploads = null;
+        let syncSucceeded = false;
         try {
             if (!skipPriming) {
                 // Check without triggering the OS dialog, so a first-time user sees an
@@ -1379,7 +1381,7 @@ export default function HomeScreen({ navigation, route }) {
                 // No user-facing progress here on purpose — this is a local hash/diff pass,
                 // not something a photo count would meaningfully describe to the user.
                 const diff = await SyncService.sync(cumulativeLocalAssets, () => {});
-                libraryScanCompleted = true;
+                syncSucceeded = true;
 
                 if (!isMounted.current) return;
 
@@ -1394,8 +1396,10 @@ export default function HomeScreen({ navigation, route }) {
             } finally {
                 if (isMounted.current) {
                     // One final explicit UI refresh to ensure any out-of-sync states are caught and to start backup queue
-                    mergeAndSetAssets(cumulativeLocalAssets, true);
-                    if (libraryScanCompleted) setInitialLibraryScanCompleted(true);
+                    const mergedAssets = mergeAndSetAssets(cumulativeLocalAssets, true);
+                    if (syncSucceeded) {
+                        completedScanHasNoUploads = mergedAssets.every(asset => asset.status !== 'local');
+                    }
                     setSyncing(false);
                     setSyncProgress(null);
                     setShowScanHint(false);
@@ -1446,6 +1450,7 @@ export default function HomeScreen({ navigation, route }) {
         } finally {
             if (isMounted.current) setLoading(false);
         }
+        return completedScanHasNoUploads;
     }, [excludedAlbums, mergeAndSetAssets]);
 
     const performLoadAndSyncRef = useRef(performLoadAndSync);
@@ -1458,20 +1463,37 @@ export default function HomeScreen({ navigation, route }) {
             return loadAndSyncInFlightRef.current;
         }
 
+        let inFlight;
         const runQueuedLoads = async () => {
             let nextSkipPriming = skipPriming;
-            do {
-                loadAndSyncQueuedRef.current = false;
-                queuedSkipPrimingRef.current = false;
-                await performLoadAndSyncRef.current(nextSkipPriming);
-                nextSkipPriming = queuedSkipPrimingRef.current;
-            } while (loadAndSyncQueuedRef.current);
+            try {
+                while (true) {
+                    loadAndSyncQueuedRef.current = false;
+                    queuedSkipPrimingRef.current = false;
+                    const noUploadsNeeded = await performLoadAndSyncRef.current(nextSkipPriming);
+                    if (loadAndSyncQueuedRef.current) {
+                        nextSkipPriming = queuedSkipPrimingRef.current;
+                        continue;
+                    }
+
+                    if (loadAndSyncInFlightRef.current === inFlight) {
+                        loadAndSyncInFlightRef.current = null;
+                    }
+                    if (noUploadsNeeded !== null && isMounted.current) {
+                        setFirstBackupScanResult(noUploadsNeeded);
+                    }
+                    return;
+                }
+            } finally {
+                if (loadAndSyncInFlightRef.current === inFlight) {
+                    loadAndSyncInFlightRef.current = null;
+                }
+            }
         };
 
-        const inFlight = runQueuedLoads().finally(() => {
-            loadAndSyncInFlightRef.current = null;
-        });
+        inFlight = runQueuedLoads();
         loadAndSyncInFlightRef.current = inFlight;
+        setFirstBackupScanResult(null);
         return inFlight;
     }, []);
 
