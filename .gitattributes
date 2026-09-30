@@ -1,3 +1,5 @@
-# Shell scripts must keep LF endings, or sh fails on Windows checkouts (core.autocrlf)
-.githooks/* text eol=lf
-*.sh text eol=lf
+# LF everywhere regardless of core.autocrlf, so sh scripts and git hooks work on
+# Windows checkouts. Batch files are the exception: cmd.exe needs CRLF.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
