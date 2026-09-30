@@ -1,4 +1,13 @@
 #!/bin/sh
 # Same checks as CI's lint-and-test job, so a red PR is caught before the push.
 # Skip once with: git push --no-verify
-npm run lint && npm test -- --ci
+
+# A push that only deletes refs sends no code, so there is nothing to check.
+pushes_code=
+while read -r local_ref _; do
+  [ "$local_ref" != "(delete)" ] && pushes_code=1
+done
+[ -z "$pushes_code" ] && exit 0
+
+# Errors only: lint warnings and the tests' console output drown out failures.
+npm run --silent lint -- --quiet && npm test --silent -- --ci --silent

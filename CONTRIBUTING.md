@@ -23,7 +23,8 @@ gh pr merge --auto --squash   # merges by itself once CI is green
 
 `npm install` points git at `.githooks/`. The `pre-push` hook runs the same
 checks as the `lint-and-test` job (`npm run lint && npm test -- --ci`), so a
-red pull request is caught before the push. It takes about 20 seconds.
+red pull request is caught before the push. It takes about 20 seconds. It
+prints errors only, and is skipped when a push only deletes branches.
 
 It does not run the integration tests. To run them locally, see
 `integration/README.md`.

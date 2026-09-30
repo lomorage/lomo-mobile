@@ -73,3 +73,8 @@ fastlane/play-store-credentials.json
 
 # integration test logs (lomod output per test file)
 integration/.artifacts/
+
+# local agent tooling
+.claude/
+.agents/skills/
+skills-lock.json
