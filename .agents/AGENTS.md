@@ -23,3 +23,6 @@ for (let i = 0; i < assets.length; i += chunkSize) {
   }
 }
 ```
+
+## Branches and Pull Requests
+- **NEVER** push to `master` directly; it is rejected by a repository ruleset. Commit on a branch and open a pull request. See `CONTRIBUTING.md`.

@@ -1,0 +1,4 @@
+#!/bin/sh
+# Same checks as CI's lint-and-test job, so a red PR is caught before the push.
+# Skip once with: git push --no-verify
+npm run lint && npm test -- --ci

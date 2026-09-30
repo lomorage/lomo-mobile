@@ -540,6 +540,8 @@ To achieve absolute parity, resilience, and App Store/Play Store compliance acro
 
 ## Testing
 
+Changes reach `master` through pull requests gated by CI; see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 The project uses Jest for unit testing.
 ```bash
 npm test
