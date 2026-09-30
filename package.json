@@ -10,6 +10,7 @@
     "test": "jest",
     "lint": "eslint .",
     "postinstall": "patch-package",
+    "prepare": "node scripts/install-git-hooks.js",
     "release:android": "bundle exec fastlane android deploy",
     "release:android:production": "bundle exec fastlane android deploy track:production release_status:completed",
     "test:integration": "jest -c integration/jest.config.js"
