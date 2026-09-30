@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "lomo-mobile",
+    "name": "lomomobile",
     "slug": "lomo-mobile",
-    "version": "1.0.149",
+    "version": "1.0.150",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -13,7 +13,7 @@
       "backgroundColor": "#0c1b33"
     },
     "ios": {
-      "buildNumber": "21",
+      "buildNumber": "22",
       "supportsTablet": true,
       "bundleIdentifier": "com.wtao.lomo",
       "appleTeamId": "3GRDMJ5JMM",
@@ -58,7 +58,7 @@
         "android.permission.POST_NOTIFICATIONS"
       ],
       "package": "com.wtao.lomo",
-      "versionCode": 1000149,
+      "versionCode": 1000150,
       "intentFilters": [
         {
           "action": "VIEW",
