@@ -19,6 +19,21 @@ gh pr create --fill
 gh pr merge --auto --squash   # merges by itself once CI is green
 ```
 
+The remote branch is deleted automatically when the pull request merges.
+
+## Branches by default, worktrees for parallel work
+
+Work on a branch in your main checkout. That checkout already has
+`node_modules` and the generated `android/` and `ios/` projects, which are slow
+to recreate.
+
+Use `git worktree` only when two changes must be in progress at once and the
+main checkout cannot be switched, for example it has uncommitted work or a
+native build is using it. A new worktree has none of the installed or
+generated files, so run `npm install` in it before pushing; the pre-push hook
+needs it. Keep worktrees outside the repository directory and remove them when
+the branch merges (`git worktree remove <path>`).
+
 ## Pre-push hook
 
 `npm install` points git at `.githooks/`. The `pre-push` hook runs the same
