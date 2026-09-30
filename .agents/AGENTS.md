@@ -26,3 +26,4 @@ for (let i = 0; i < assets.length; i += chunkSize) {
 
 ## Branches and Pull Requests
 - **NEVER** push to `master` directly; it is rejected by a repository ruleset. Commit on a branch and open a pull request. See `CONTRIBUTING.md`.
+- Work on a branch in the main checkout by default. Use `git worktree` only when the main checkout has uncommitted work or is busy with a build, and keep the worktree outside the repository directory.
