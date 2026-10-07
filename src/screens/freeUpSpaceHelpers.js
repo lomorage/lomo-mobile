@@ -8,11 +8,12 @@ const REASON_TEXT = {
     [UNSAFE_REASONS.MODIFIED_SINCE_BACKUP]: 'changed since they were backed up',
     [UNSAFE_REASONS.MISSING_LOCALLY]: 'no longer on this phone',
     [UNSAFE_REASONS.MISSING_ON_SERVER]: 'not found on your Lomorage computer — they will be backed up again',
-    [UNSAFE_REASONS.FILE_MISSING]: 'missing from your Lomorage computer — they will be backed up again',
+    [UNSAFE_REASONS.FILE_MISSING]: 'missing from your Lomorage computer',
     [UNSAFE_REASONS.LINKED_ONLY]: 'only in a folder on your computer, not in your Lomorage library',
     [UNSAFE_REASONS.DAMAGED]: 'failed the last check on your Lomorage computer',
     [UNSAFE_REASONS.STORAGE_UNAVAILABLE]: "couldn't be checked — the drive with your photos isn't available on your Lomorage computer",
     [UNSAFE_REASONS.SERVER_UNREACHABLE]: "couldn't be checked — your Lomorage computer isn't reachable",
+    [UNSAFE_REASONS.UNCONFIRMED]: "couldn't be confirmed by your Lomorage computer",
 };
 
 /**

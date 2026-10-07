@@ -73,7 +73,7 @@ describe('checking backups before freeing up space', () => {
     expect(result).toEqual({ safe: [photo.id, video.id], unsafe: [], weakEvidence: false });
   });
 
-  it('an asset whose file vanished from the computer is kept and queued for re-upload', async () => {
+  it('an asset whose file vanished from the computer stays on the phone', async () => {
     const videoFile = findMasterFile(server.baseDir, '.mp4');
     expect(videoFile).toBeTruthy();
     fs.rmSync(videoFile);
@@ -83,7 +83,8 @@ describe('checking backups before freeing up space', () => {
     expect(result.safe).toEqual([photo.id]);
     expect(result.unsafe).toEqual([{ id: video.id, reason: UNSAFE_REASONS.FILE_MISSING }]);
     const [row] = await AssetDBService.getBackupRowsByIds([video.id]);
-    expect(row.uploaded).toBe(0);
+    // The server still lists the hash, so a re-upload would be refused (409); don't pretend.
+    expect(row.uploaded).toBe(1);
   });
 
   it('an asset deleted on the server is kept on the phone', async () => {

@@ -9,6 +9,7 @@ jest.mock('../../services/BackupSafetyService', () => ({
     DAMAGED: 'damaged',
     STORAGE_UNAVAILABLE: 'storage_unavailable',
     SERVER_UNREACHABLE: 'server_unreachable',
+    UNCONFIRMED: 'unconfirmed',
   },
 }));
 
@@ -57,12 +58,18 @@ test('older server: does not claim the files were confirmed and suggests updatin
 
 test('every reason has user-facing text without technical jargon', () => {
   const reasons = ['not_backed_up', 'modified_since_backup', 'missing_locally', 'missing_on_server',
-    'file_missing', 'linked_only', 'damaged', 'storage_unavailable', 'server_unreachable'];
+    'file_missing', 'linked_only', 'damaged', 'storage_unavailable', 'server_unreachable', 'unconfirmed'];
   for (const reason of reasons) {
     const { message } = buildDeleteConfirmation({ safe: [], unsafe: [{ id: 'a', reason }] }, items, formatSize);
     expect(message).not.toContain(reason);
     expect(message).not.toMatch(/server|NAS|hash|HEAD/i);
   }
+});
+
+test('a file missing from the computer is not promised a re-upload', () => {
+  const { message } = buildDeleteConfirmation({ safe: [], unsafe: [{ id: 'a', reason: 'file_missing' }] }, items, formatSize);
+  expect(message).toContain('missing from your Lomorage computer');
+  expect(message).not.toMatch(/backed up again/);
 });
 
 test('verification goes stale after the max age', () => {

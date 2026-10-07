@@ -69,7 +69,7 @@ test('asset missing on the phone is reported, not deleted', async () => {
   expect(result.unsafe).toEqual([{ id: 'a', reason: UNSAFE_REASONS.MISSING_LOCALLY }]);
 });
 
-test('each server status maps to a reason; only not_found and file_missing queue a re-upload', async () => {
+test('each server status maps to a reason; only not_found queues a re-upload', async () => {
   const ids = ['ok', 'nf', 'fm', 'ln', 'bd', 'un', 'weird'];
   AssetDBService.getBackupRowsByIds.mockResolvedValue(ids.map(id => row(id)));
   serverReplies({
@@ -84,16 +84,16 @@ test('each server status maps to a reason; only not_found and file_missing queue
     { id: 'ln', reason: UNSAFE_REASONS.LINKED_ONLY },
     { id: 'bd', reason: UNSAFE_REASONS.DAMAGED },
     { id: 'un', reason: UNSAFE_REASONS.STORAGE_UNAVAILABLE },
-    { id: 'weird', reason: UNSAFE_REASONS.SERVER_UNREACHABLE },
+    { id: 'weird', reason: UNSAFE_REASONS.UNCONFIRMED },
   ]);
-  expect(AssetDBService.markAssetNotUploaded.mock.calls.map(c => c[0]).sort()).toEqual(['fm', 'nf']);
+  expect(AssetDBService.markAssetNotUploaded.mock.calls.map(c => c[0])).toEqual(['nf']);
 });
 
 test('hash missing from the server reply is not treated as safe', async () => {
   AssetDBService.getBackupRowsByIds.mockResolvedValue([row('a')]);
   axios.post.mockResolvedValue({ data: { assets: [] } });
   const result = await BackupSafetyService.checkBeforeDelete(['a']);
-  expect(result.unsafe).toEqual([{ id: 'a', reason: UNSAFE_REASONS.SERVER_UNREACHABLE }]);
+  expect(result.unsafe).toEqual([{ id: 'a', reason: UNSAFE_REASONS.UNCONFIRMED }]);
 });
 
 test('server hash matching is case-insensitive', async () => {
