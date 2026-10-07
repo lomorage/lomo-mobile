@@ -6,8 +6,8 @@ test('summarizes photos and videos, treating anything not video as a photo', () 
     { mediaType: 'video', total: 10, backedUp: 4, backedUpBytes: 40000, unknownSize: 1 },
     { mediaType: null, total: 2, backedUp: 2, backedUpBytes: 20, unknownSize: 0 },
   ]);
-  expect(summary.photos).toEqual({ total: 102, backedUp: 92, bytes: 9020, unknownSize: 0 });
-  expect(summary.videos).toEqual({ total: 10, backedUp: 4, bytes: 40000, unknownSize: 1 });
+  expect(summary.photos).toEqual({ total: 102, backedUp: 92, bytes: 9020, unknownSize: 0, excluded: 0 });
+  expect(summary.videos).toEqual({ total: 10, backedUp: 4, bytes: 40000, unknownSize: 1, excluded: 0 });
   expect(summary.total).toBe(112);
   expect(summary.backedUp).toBe(96);
   expect(summary.notBackedUp).toBe(16);
@@ -15,8 +15,18 @@ test('summarizes photos and videos, treating anything not video as a photo', () 
   expect(summary.sizeIsPartial).toBe(true);
 });
 
+test('photos in albums excluded from backup are skipped, not "not backed up yet"', () => {
+  const summary = summarizeBackup([
+    { mediaType: 'photo', total: 100, backedUp: 60, backedUpBytes: 600, unknownSize: 0, excluded: 30 },
+    { mediaType: 'video', total: 5, backedUp: 5, backedUpBytes: 500, unknownSize: 0, excluded: 0 },
+  ]);
+  expect(summary.skipped).toBe(30);
+  expect(summary.notBackedUp).toBe(10);
+  expect(summary.photos.excluded).toBe(30);
+});
+
 test('empty library', () => {
-  expect(summarizeBackup([])).toMatchObject({ total: 0, backedUp: 0, notBackedUp: 0, backedUpBytes: 0, sizeIsPartial: false });
+  expect(summarizeBackup([])).toMatchObject({ total: 0, backedUp: 0, skipped: 0, notBackedUp: 0, backedUpBytes: 0, sizeIsPartial: false });
 });
 
 test('describes counts in plain words', () => {

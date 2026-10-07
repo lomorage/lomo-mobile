@@ -1338,6 +1338,12 @@ export default function HomeScreen({ navigation, route }) {
                 SyncService.syncLocalGPS().catch(err => {
                     console.error('[HomeScreen] Failed to sync local GPS:', err);
                 });
+                // Photos still on the device but in albums excluded from backup: Backup Status
+                // and Free Up Space count them apart from "not backed up yet".
+                const includedIds = new Set(cumulativeLocalAssets.map(asset => asset.id));
+                AssetDBService.setBackupExcludedIds([...rawDeviceLocalIds].filter(id => !includedIds.has(id))).catch(err => {
+                    console.warn('[HomeScreen] Failed to record backup-excluded assets:', err);
+                });
                 // Clean up local rows for photos deleted from the device outside the app.
                 // Uses the unfiltered device id set, so excluded (not deleted) photos are untouched.
                 AssetDBService.pruneDeletedLocalAssets(rawDeviceLocalIds).then((prunedIds) => {

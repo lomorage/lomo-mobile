@@ -41,9 +41,11 @@ export default function BackupSummaryScreen({ navigation }) {
             const nothingCheckable = items.length > 0 && verification.safe.length === 0
                 && verification.unsafe.every(({ reason }) => CANNOT_CHECK.has(reason));
             setUnreachable(nothingCheckable);
+            const backup = summarizeBackup(summaryRows);
             const summary = {
                 ...summarizeVerification(items, verification),
-                notBackedUp: summarizeBackup(summaryRows).notBackedUp,
+                notBackedUp: backup.notBackedUp,
+                skipped: backup.skipped,
             };
             setResult(summary);
             if (summary.safeCount > 0 && summary.unconfirmedCount === 0 && summary.notBackedUp === 0) {
@@ -118,6 +120,11 @@ export default function BackupSummaryScreen({ navigation }) {
                 {result.notBackedUp > 0 && (
                     <Text style={styles.note}>
                         {result.notBackedUp.toLocaleString('en-US')} still to back up — they stay on this phone until then.
+                    </Text>
+                )}
+                {result.skipped > 0 && (
+                    <Text style={styles.note}>
+                        {`${result.skipped.toLocaleString('en-US')} in albums you don't back up — they stay on this phone.`}
                     </Text>
                 )}
                 {result.unconfirmedCount > 0 && (

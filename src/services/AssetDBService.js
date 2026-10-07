@@ -286,6 +286,19 @@ class AssetDBService {
         console.log('[AssetDBService] Database migrated to version 14 (Added fileSize).');
       }
 
+      if (currentVersion < 15) {
+        // Version 15: local assets in albums the user excluded from backup (Selective Backup),
+        // so "not backed up yet" doesn't count photos the user chose not to back up.
+        try {
+          await db.execAsync('ALTER TABLE MediaAsset ADD COLUMN backupExcluded INTEGER DEFAULT 0;');
+        } catch (e) {
+          console.warn('[AssetDBService] Failed to migrate database to version 15:', e.message);
+        }
+        await db.execAsync('PRAGMA user_version = 15');
+        currentVersion = 15;
+        console.log('[AssetDBService] Database migrated to version 15 (Added backupExcluded).');
+      }
+
       // Smooth migration: if local_hash_cache_v2.json exists, migrate it to SQLite
       await this.migrateLocalHashCache(db);
 
@@ -447,13 +460,15 @@ class AssetDBService {
 
   // Local assets that are backed up and could be removed from the phone (subject to
   // BackupSafetyService's checks at delete time).
+  // mediaType 'video' or 'photo'; like summarizeBackup, anything that isn't a video (including
+  // rows from before mediaType was recorded) counts as a photo.
   async getFreeUpSpaceCandidates(mediaType) {
     if (!this.db) return [];
+    const typeFilter = mediaType === 'video' ? "mediaType = 'video'" : "(mediaType IS NULL OR mediaType <> 'video')";
     return await this.db.getAllAsync(
       `SELECT id, hash, mediaType, createTime, filename, fileSize FROM MediaAsset
-       WHERE isLocal = 1 AND uploaded = 1 AND hash IS NOT NULL AND mediaType = ?
-       ORDER BY createTime ASC`,
-      [mediaType]
+       WHERE isLocal = 1 AND uploaded = 1 AND hash IS NOT NULL AND ${typeFilter}
+       ORDER BY createTime ASC`
     );
   }
 
@@ -466,7 +481,8 @@ class AssetDBService {
               COUNT(*) AS total,
               SUM(CASE WHEN uploaded = 1 AND hash IS NOT NULL THEN 1 ELSE 0 END) AS backedUp,
               SUM(CASE WHEN uploaded = 1 AND hash IS NOT NULL THEN COALESCE(fileSize, 0) ELSE 0 END) AS backedUpBytes,
-              SUM(CASE WHEN uploaded = 1 AND hash IS NOT NULL AND fileSize IS NULL THEN 1 ELSE 0 END) AS unknownSize
+              SUM(CASE WHEN uploaded = 1 AND hash IS NOT NULL AND fileSize IS NULL THEN 1 ELSE 0 END) AS unknownSize,
+              SUM(CASE WHEN backupExcluded = 1 AND NOT (uploaded = 1 AND hash IS NOT NULL) THEN 1 ELSE 0 END) AS excluded
        FROM MediaAsset WHERE isLocal = 1 GROUP BY mediaType`
     );
   }
@@ -480,6 +496,19 @@ class AssetDBService {
       await this.db.runAsync(
         `UPDATE MediaAsset SET fileSize = CASE id ${cases} END WHERE id IN (${chunk.map(() => '?').join(',')})`,
         [...params, ...chunk.map(({ id }) => id)]
+      );
+    }
+  }
+
+  // Flags exactly `ids` as being in albums excluded from backup (and clears everyone else).
+  async setBackupExcludedIds(ids) {
+    if (!this.db) return;
+    await this.db.runAsync('UPDATE MediaAsset SET backupExcluded = 0 WHERE backupExcluded = 1');
+    for (let i = 0; i < ids.length; i += 500) {
+      const chunk = ids.slice(i, i + 500);
+      await this.db.runAsync(
+        `UPDATE MediaAsset SET backupExcluded = 1 WHERE isLocal = 1 AND id IN (${chunk.map(() => '?').join(',')})`,
+        chunk
       );
     }
   }

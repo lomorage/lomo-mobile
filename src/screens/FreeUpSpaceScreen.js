@@ -261,6 +261,11 @@ export default function FreeUpSpaceScreen({ navigation }) {
                             {summary.notBackedUp.toLocaleString('en-US')} not backed up yet — they stay on this phone.
                         </Text>
                     )}
+                    {summary.skipped > 0 && (
+                        <Text style={styles.summaryNote}>
+                            {`${summary.skipped.toLocaleString('en-US')} in albums you don't back up — they stay on this phone.`}
+                        </Text>
+                    )}
                 </View>
             )}
 

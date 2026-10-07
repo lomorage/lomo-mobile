@@ -109,4 +109,22 @@ describe('checking backups before freeing up space', () => {
 
     expect(result.unsafe).toEqual([{ id: photo.id, reason: UNSAFE_REASONS.MISSING_ON_SERVER }]);
   });
+  it('counts photos in excluded albums apart, and treats rows without a media type as photos', async () => {
+    const skipped = addToCameraRoll('photo-2003-11-23.jpg', { creationTime: Date.UTC(2003, 10, 23, 12) });
+    await AssetDBService.insertLocalAssets([skipped]);
+    await AssetDBService.setBackupExcludedIds([skipped.id]);
+    await AssetDBService.db.runAsync(
+      "INSERT INTO MediaAsset (id, isLocal, hash, uploaded, mediaType) VALUES ('legacy-1', 1, 'legacyhash', 1, NULL)"
+    );
+
+    const byType = Object.fromEntries((await AssetDBService.getBackupSummaryRows()).map(r => [r.mediaType, r]));
+    expect(byType.photo.excluded).toBe(1);
+    const photoIds = (await AssetDBService.getFreeUpSpaceCandidates('photo')).map(r => r.id);
+    expect(photoIds).toContain('legacy-1');
+    expect(photoIds).not.toContain(skipped.id);
+
+    await AssetDBService.setBackupExcludedIds([]);
+    const after = Object.fromEntries((await AssetDBService.getBackupSummaryRows()).map(r => [r.mediaType, r]));
+    expect(after.photo.excluded).toBe(0);
+  });
 });
