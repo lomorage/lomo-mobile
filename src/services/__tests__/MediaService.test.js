@@ -14,12 +14,14 @@ jest.mock('../../../modules/expo-lomo-hasher', () => ({
 jest.mock('../AuthService', () => ({
   getServerUrl: jest.fn(),
   getToken: jest.fn(),
+  supportsWebpPreview: jest.fn(),
 }));
 
 describe('MediaService.getPreviewUrl', () => {
   beforeEach(() => {
     AuthService.getServerUrl.mockReturnValue('http://mock-server');
     AuthService.getToken.mockReturnValue('mock-token');
+    AuthService.supportsWebpPreview.mockReturnValue(true);
   });
 
   afterEach(() => {
@@ -31,25 +33,27 @@ describe('MediaService.getPreviewUrl', () => {
     expect(MediaService.getPreviewUrl(undefined, 'video')).toBeNull();
   });
 
-  it('should request width=320 for image thumbnail (avoid dynamic transcode)', () => {
+  it('requests the pre-generated 320px WebP for an image thumbnail', () => {
+    const url = MediaService.getPreviewUrl('hash123', 'image');
+    expect(url).toBe('http://mock-server/preview/hash123?width=320&height=-1&icodec=webp&token=mock-token');
+  });
+
+  it('requests the pre-generated 640px WebP for a large image preview', () => {
+    const url = MediaService.getPreviewUrl('hash123', 'image', true);
+    expect(url).toBe('http://mock-server/preview/hash123?width=640&height=-1&icodec=webp&token=mock-token');
+  });
+
+  it('uses the image preview sizes for a video thumbnail (480 is the mp4 preview, not an image)', () => {
+    expect(MediaService.getPreviewUrl('hash456', 'video'))
+      .toBe('http://mock-server/preview/hash456?width=320&height=-1&icodec=webp&token=mock-token');
+    expect(MediaService.getPreviewUrl('hash456', 'video', true))
+      .toBe('http://mock-server/preview/hash456?width=640&height=-1&icodec=webp&token=mock-token');
+  });
+
+  it('omits icodec (server default JPEG) when the server pre-generates JPEG', () => {
+    AuthService.supportsWebpPreview.mockReturnValue(false);
     const url = MediaService.getPreviewUrl('hash123', 'image');
     expect(url).toBe('http://mock-server/preview/hash123?width=320&height=-1&token=mock-token');
-  });
-
-  it('should request width=640 for large image preview (avoid dynamic transcode)', () => {
-    const url = MediaService.getPreviewUrl('hash123', 'image', true);
-    expect(url).toBe('http://mock-server/preview/hash123?width=640&height=-1&token=mock-token');
-  });
-
-  it('should request width=480 for video thumbnail (avoid dynamic transcode)', () => {
-    const url = MediaService.getPreviewUrl('hash456', 'video');
-    expect(url).toBe('http://mock-server/preview/hash456?width=480&height=-1&token=mock-token');
-  });
-
-  it('should request width=480 for video even if isLarge is true', () => {
-    // Videos only have 480 pre-generated, so it should not request 640
-    const url = MediaService.getPreviewUrl('hash456', 'video', true);
-    expect(url).toBe('http://mock-server/preview/hash456?width=480&height=-1&token=mock-token');
   });
 });
 

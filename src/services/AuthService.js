@@ -15,6 +15,7 @@ const REMOTE_SERVER_KEY = 'lomo_remote_server_url';
 const LOCAL_SERVER_KEY = 'lomo_local_server_url';
 const USERNAME_KEY = 'lomo_username';
 const SERVER_NAME_KEY = 'lomo_server_name';
+const WEBP_PREVIEW_KEY = 'lomo_webp_preview';
 
 const SALT_POSTFIX = '@lomorage.lomoware';
 
@@ -94,6 +95,9 @@ class AuthService {
     this.remoteUrl = null;
     this.localUrl = null;
     this.serverName = null;
+    // Whether the server pre-generates previews as WebP (its /system WebpPreview flag).
+    // Persisted so preview URLs are stable across launches and hit the image cache.
+    this.webpPreview = false;
     this.isProbing = false;
     this.isShowingProbeAlert = false;
     this._isShowingSessionAlert = false;
@@ -159,6 +163,7 @@ class AuthService {
       this.remoteUrl = await SecureStore.getItemAsync(REMOTE_SERVER_KEY);
       this.localUrl = await SecureStore.getItemAsync(LOCAL_SERVER_KEY);
       this.serverName = await SecureStore.getItemAsync(SERVER_NAME_KEY);
+      this.webpPreview = (await SecureStore.getItemAsync(WEBP_PREVIEW_KEY)) === '1';
       
       if (this.isAuthenticated()) {
           this.determineBestConnection();
@@ -222,6 +227,7 @@ class AuthService {
              clearTimeout(timeoutId);
              if (response.status === 200) {
                  await this.updateServerUrl(this.localUrl);
+                 await this.applySystemInfo(await response.json().catch(() => null));
                  return true;
              }
           } catch(e) {}
@@ -240,12 +246,46 @@ class AuthService {
              clearTimeout(timeoutId);
              if (response.status === 200) {
                  await this.updateServerUrl(this.remoteUrl);
+                 await this.applySystemInfo(await response.json().catch(() => null));
                  return true;
              }
           } catch(e) {}
       }
       
       return false;
+  }
+
+  supportsWebpPreview() {
+    return this.webpPreview;
+  }
+
+  /**
+   * Records capabilities from a /system response. The server pre-generates previews in one
+   * codec only (WebP unless lomod runs with --use-jpg); requesting the other one makes it
+   * transcode the original on demand, which is slow and memory-hungry on a Raspberry Pi.
+   */
+  async applySystemInfo(info) {
+    if (!info || typeof info !== 'object') return;
+    const webp = info.WebpPreview === true;
+    if (webp === this.webpPreview) return;
+    this.webpPreview = webp;
+    try {
+      await SecureStore.setItemAsync(WEBP_PREVIEW_KEY, webp ? '1' : '0');
+    } catch (e) {
+      console.warn('[AuthService] Failed to persist preview codec', e);
+    }
+  }
+
+  async refreshSystemInfo() {
+    if (!this.serverUrl) return;
+    try {
+      const response = await axios.get(`${this.serverUrl}/system`, { timeout: 5000, skipQueue: true });
+      if (response.status === 200) {
+        await this.applySystemInfo(response.data);
+      }
+    } catch (e) {
+      console.log('[AuthService] Failed to fetch /system:', e.message);
+    }
   }
 
   getServerName() {
@@ -418,6 +458,7 @@ class AuthService {
         if (this.serverName) {
             await SecureStore.setItemAsync(SERVER_NAME_KEY, this.serverName);
         }
+        await this.refreshSystemInfo();
         
         return true;
       } else {
@@ -472,6 +513,9 @@ class AuthService {
       const response = await axios.get(`${this.serverUrl}/system`, {
          headers: this.token ? { 'Authorization': `token=${this.token}` } : {}
       });
+      if (response.status === 200) {
+         await this.applySystemInfo(response.data);
+      }
       if (response.status === 200 && response.data && response.data.LomodVersion) {
          return response.data.LomodVersion;
       }
