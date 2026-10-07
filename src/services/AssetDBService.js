@@ -432,6 +432,31 @@ class AssetDBService {
     );
   }
 
+  async markAssetNotUploaded(id) {
+    if (!this.db) return;
+    await this.db.runAsync(
+      'UPDATE MediaAsset SET uploaded = 0 WHERE id = ?',
+      [id]
+    );
+  }
+
+  // Backup bookkeeping for a set of local assets, chunked to stay under SQLite's
+  // bound-parameter limit.
+  async getBackupRowsByIds(ids) {
+    if (!this.db || !ids || ids.length === 0) return [];
+    const rows = [];
+    for (let i = 0; i < ids.length; i += 500) {
+      const chunk = ids.slice(i, i + 500);
+      const placeholders = chunk.map(() => '?').join(',');
+      const part = await this.db.getAllAsync(
+        `SELECT id, hash, hashModificationTime, uploaded FROM MediaAsset WHERE isLocal = 1 AND id IN (${placeholders})`,
+        chunk
+      );
+      rows.push(...part);
+    }
+    return rows;
+  }
+
   async syncUploadedStatus() {
     if (!this.db) return;
     return await MetricsTracker.measure('AssetDBService_syncUploadedStatus', async () => {
