@@ -45,7 +45,7 @@ class UploadService {
             console.log(`[UploadService] checkUploadStatus: HEAD ${serverUrl}/asset/${hash.toLowerCase()}`);
             const response = await axios.head(`${serverUrl}/asset/${hash.toLowerCase()}`, {
                 headers: { 'Authorization': `token=${token}` },
-                timeout: 60000, // 60s: Lomorage backend does full-file SHA1 hashing on every HEAD, which can take > 5s for large videos on ARM NAS
+                timeout: 60000, // 60s: for a partially uploaded asset the backend SHA1-hashes the partial file to report resume state, which can take > 5s for large videos on ARM NAS (a complete asset is just a DB lookup)
                 skipAutoProbe: true
             });
             

@@ -5,6 +5,8 @@ import { Image } from 'expo-image';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { ChevronLeft, Trash2, CheckCircle2, Circle, X } from 'lucide-react-native';
 import AssetDBService from '../services/AssetDBService';
+import BackupSafetyService from '../services/BackupSafetyService';
+import { buildDeleteConfirmation, isVerificationStale } from './freeUpSpaceHelpers';
 import MediaService from '../services/MediaService';
 import GalleryStore from '../store/GalleryStore';
 import { formatBytesLog } from '../utils/formatters';
@@ -73,43 +75,67 @@ export default function FreeUpSpaceScreen({ navigation }) {
         return total;
     }, [selectedIds, videos]);
 
-    const handleDelete = () => {
+    const deleteVerified = async (idsToDelete) => {
+        setIsDeleting(true);
+        try {
+            // Delete natively
+            await MediaService.deleteLocalAssets(idsToDelete);
+
+            // Immediately remove from SQLite tracking
+            const db = AssetDBService.db;
+            if (db) {
+                for (const id of idsToDelete) {
+                    await db.runAsync('UPDATE MediaAsset SET isLocal = 0 WHERE id = ?', [id]);
+                }
+            }
+
+            // Remove from local state
+            const deleted = new Set(idsToDelete);
+            setVideos(prev => prev.filter(v => !deleted.has(v.id)));
+            setSelectedIds(new Set());
+
+            Alert.alert("Success", "Successfully freed up space!");
+        } catch (e) {
+            Alert.alert("Error", e.message || "Failed to delete files.");
+        } finally {
+            setIsDeleting(false);
+        }
+    };
+
+    const handleDelete = async () => {
         if (selectedIds.size === 0) return;
-        
+
+        // Re-confirm with the server right now, not from cached flags, before
+        // anything irreplaceable leaves the phone.
+        setIsDeleting(true);
+        let check;
+        try {
+            check = await BackupSafetyService.checkBeforeDelete(Array.from(selectedIds));
+        } catch (e) {
+            console.error('[FreeUpSpaceScreen] Safety check failed:', e);
+            Alert.alert("Couldn't Verify Backup", "Nothing was deleted. Please make sure your Lomorage computer is on and try again.");
+            return;
+        } finally {
+            setIsDeleting(false);
+        }
+        const verifiedAt = Date.now();
+
+        const { message, deletable } = buildDeleteConfirmation(check, videos, formatSize);
+        if (deletable.length === 0) {
+            Alert.alert("Not Safe to Delete Yet", message);
+            return;
+        }
+
         Alert.alert(
             "Delete from Device",
-            `Are you sure you want to delete ${selectedIds.size} videos? They are securely backed up on your Lomorage server.\n\nThis will free up ${formatSize(totalSelectedSize)}.`,
+            message,
             [
                 { text: "Cancel", style: "cancel" },
-                { 
-                    text: "Delete", 
+                {
+                    text: "Delete",
                     style: "destructive",
-                    onPress: async () => {
-                        setIsDeleting(true);
-                        try {
-                            const idsToDelete = Array.from(selectedIds);
-                            // Delete natively
-                            await MediaService.deleteLocalAssets(idsToDelete);
-                            
-                            // Immediately remove from SQLite tracking
-                            const db = AssetDBService.db;
-                            if (db) {
-                                for (const id of idsToDelete) {
-                                    await db.runAsync('UPDATE MediaAsset SET isLocal = 0 WHERE id = ?', [id]);
-                                }
-                            }
-                            
-                            // Remove from local state
-                            setVideos(prev => prev.filter(v => !selectedIds.has(v.id)));
-                            setSelectedIds(new Set());
-                            
-                            Alert.alert("Success", "Successfully freed up space!");
-                        } catch (e) {
-                            Alert.alert("Error", e.message || "Failed to delete files.");
-                        } finally {
-                            setIsDeleting(false);
-                        }
-                    }
+                    // The dialog may have sat open while things changed on the computer.
+                    onPress: () => (isVerificationStale(verifiedAt) ? handleDelete() : deleteVerified(deletable)),
                 }
             ]
         );
