@@ -275,7 +275,7 @@ export default function AssetDetailScreen({ route, navigation }) {
     const { initialIndex, source = 'gallery' } = route.params;
     const [assets, setAssets] = useState(GalleryStore.getAssets(source));
     
-    const { debugMode } = useSettings();
+    const { debugMode, liteMode } = useSettings();
     const [useOriginalVideo, setUseOriginalVideo] = useState(false);
     const [isUploading, setIsUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(0);
@@ -1370,7 +1370,7 @@ export default function AssetDetailScreen({ route, navigation }) {
                             <Share color="#007AFF" size={24} />
                         )}
                     </TouchableOpacity>
-                    {currentAsset.mediaType !== 'video' && (
+                    {currentAsset.mediaType !== 'video' && !liteMode && (
                                                         <TouchableOpacity 
                                                             onPress={handleExtractText} 
                                                             onLongPress={handleForceExtractText}
