@@ -18,6 +18,7 @@ import ThumbnailLoadTracker from '../services/ThumbnailLoadTracker';
 import MetricsTracker from '../utils/MetricsTracker';
 import { formatBytes, formatBytesLog, formatSpeed } from '../utils/formatters';
 import { describeCounts, summarizeBackup } from '../utils/backupSummary';
+import { logMetric, logSinceAppStartOnce } from '../utils/scaleMetrics';
 import { isVideoExtension } from '../utils/mediaType';
 import { isLivePhoto } from '../utils/livePhoto';
 import { isNotFoundImageError } from '../utils/imageErrors';
@@ -1356,6 +1357,7 @@ export default function HomeScreen({ navigation, route }) {
             // The spinner is dismissed immediately! Opening screen time is under 1 second.
             mergeAndSetAssets(cumulativeLocalAssets, false);
             setLoading(false);
+            logSinceAppStartOnce('time_to_view', { assets: cumulativeLocalAssets.length });
             setSyncing(true);
             setSyncProgress({ message: 'Checking your library…' });
             setShowScanHint(false);
@@ -1383,8 +1385,13 @@ export default function HomeScreen({ navigation, route }) {
                 console.log('[HomeScreen] Starting SyncService.sync...');
                 // No user-facing progress here on purpose — this is a local hash/diff pass,
                 // not something a photo count would meaningfully describe to the user.
+                const scanStartedAt = Date.now();
                 const diff = await SyncService.sync(cumulativeLocalAssets, () => {});
                 syncSucceeded = true;
+                logMetric('scan', Date.now() - scanStartedAt, {
+                    assets: cumulativeLocalAssets.length,
+                    toUpload: diff?.uploadAssets?.length,
+                });
 
                 if (!isMounted.current) return;
 

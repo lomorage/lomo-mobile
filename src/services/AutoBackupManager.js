@@ -11,6 +11,7 @@ import GalleryStore from '../store/GalleryStore';
 import TaskSchedulerService from './TaskSchedulerService';
 import { startKeepAlive, stopKeepAlive } from '../../modules/expo-background-keepalive';
 import FirstBackupService, { FIRST_BACKUP_CHANGED_EVENT } from './FirstBackupService';
+import { logMetric, logSincePairedOnce } from '../utils/scaleMetrics';
 
 export const BACKGROUND_BACKUP_TASK = 'LOMO_BACKUP_TASK';
 export const BACKGROUND_LOCATION_TASK = 'LOMO_LOCATION_TASK';
@@ -375,6 +376,8 @@ class AutoBackupManager {
         if (this.isBackingUp || this.queue.length === 0 || this.isPaused) return;
         this.isBackingUp = true;
         this.completedSessionCount = 0;
+        this.sessionStartedAt = Date.now();
+        this.sessionFirstUploadLogged = false;
         this.emitState();
         if (Platform.OS === 'ios') {
             try {
@@ -466,6 +469,15 @@ class AutoBackupManager {
 
             // If we finished the sequence but the gallery still has local items (added during backup), restart.
             const remaining = GalleryStore.getAssets().filter(a => a.status === 'local');
+            logMetric('backup_session', Date.now() - this.sessionStartedAt, {
+                uploaded: this.completedSessionCount,
+                queued: this.queue.length,
+                paused: this.isPaused ? 1 : 0,
+                remaining: remaining.length,
+            });
+            if (!this.isPaused && remaining.length === 0) {
+                logSincePairedOnce('time_to_full_backup', { uploaded: this.completedSessionCount });
+            }
             if (remaining.length > 0 && !this.isPaused) {
                 this.syncQueueWithGallery();
             } else if (!this.isPaused) {
@@ -571,6 +583,11 @@ class AutoBackupManager {
                 DeviceEventEmitter.emit('assetUpdated', updatedAsset);
                 this.consecutiveErrors = 0; // Reset on success
                 this.completedSessionCount++;
+                if (!this.sessionFirstUploadLogged) {
+                    this.sessionFirstUploadLogged = true;
+                    logMetric('backup_session_first_upload', Date.now() - this.sessionStartedAt, { mediaType: asset.mediaType });
+                    logSincePairedOnce('time_to_first_backup', { mediaType: asset.mediaType });
+                }
 
                 if (this.currentAssetId === asset.id) {
                     this.currentAssetId = null; // Let another active worker grab the spotlight

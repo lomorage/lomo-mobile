@@ -5,6 +5,7 @@ import AssetDBService from '../services/AssetDBService';
 import BackupSafetyService, { UNSAFE_REASONS } from '../services/BackupSafetyService';
 import { describeCounts, summarizeBackup, summarizeVerification } from '../utils/backupSummary';
 import { formatBytesLog } from '../utils/formatters';
+import { logSincePairedOnce } from '../utils/scaleMetrics';
 
 const CANNOT_CHECK = new Set([UNSAFE_REASONS.SERVER_UNREACHABLE, UNSAFE_REASONS.STORAGE_UNAVAILABLE]);
 
@@ -40,10 +41,17 @@ export default function BackupSummaryScreen({ navigation }) {
             const nothingCheckable = items.length > 0 && verification.safe.length === 0
                 && verification.unsafe.every(({ reason }) => CANNOT_CHECK.has(reason));
             setUnreachable(nothingCheckable);
-            setResult({
+            const summary = {
                 ...summarizeVerification(items, verification),
                 notBackedUp: summarizeBackup(summaryRows).notBackedUp,
-            });
+            };
+            setResult(summary);
+            if (summary.safeCount > 0 && summary.unconfirmedCount === 0 && summary.notBackedUp === 0) {
+                // Time to Safe: pairing -> everything on the phone confirmed safe at home.
+                logSincePairedOnce('time_to_safe', {
+                    photos: summary.safePhotos, videos: summary.safeVideos, bytes: summary.safeBytes,
+                });
+            }
         } catch (e) {
             console.error('[BackupSummaryScreen] Check failed:', e);
             if (mounted.current) setUnreachable(true);
