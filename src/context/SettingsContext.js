@@ -1,5 +1,6 @@
 import React, { createContext, useState, useContext, useEffect } from 'react';
 import * as SecureStore from 'expo-secure-store';
+import { LITE_MODE_KEY } from '../services/liteMode';
 
 const SettingsContext = createContext({});
 
@@ -18,6 +19,7 @@ export function SettingsProvider({ children }) {
     const [aiWifiOnly, setAIWifiOnly] = useState(true);
     const [aiChargingOnly, setAIChargingOnly] = useState(true);
     const [aiEnabled, setAiEnabled] = useState(true);
+    const [liteMode, setLiteMode] = useState(false);
     const [faceDryRun, setFaceDryRun] = useState(true);
     // True while an existing (pre-fix) install still needs the one-time
     // "face clustering is now on — index your library?" prompt answered.
@@ -93,6 +95,7 @@ export function SettingsProvider({ children }) {
             if (savedAiEnabled !== null) {
                 setAiEnabled(savedAiEnabled === 'true');
             }
+            setLiteMode((await SecureStore.getItemAsync(LITE_MODE_KEY)) === 'true');
             const savedFaceDryRun = await SecureStore.getItemAsync('lomorage_face_dry_run');
             if (savedFaceDryRun !== null) {
                 setFaceDryRun(savedFaceDryRun === 'true');
@@ -297,6 +300,29 @@ export function SettingsProvider({ children }) {
         }
     };
 
+    // Lite mode keeps the AI choice untouched and just stops AI work while it's on.
+    const toggleLiteMode = async () => {
+        try {
+            const newValue = !liteMode;
+            await SecureStore.setItemAsync(LITE_MODE_KEY, newValue.toString());
+            setLiteMode(newValue);
+            const AIService = require('../services/AIService').default;
+            if (newValue) {
+                AIService.unregisterBackgroundSync();
+            } else if (aiEnabled) {
+                (async () => {
+                    await AIService.processLocalEmbeddings(30);
+                    await AIService.syncEmbeddings();
+                })().catch(e => console.warn('[SettingsContext] AI sync failed:', e.message));
+                if (remoteAIProcessingEnabled) {
+                    AIService.registerBackgroundSync();
+                }
+            }
+        } catch (error) {
+            console.error('Error saving Lite mode setting:', error);
+        }
+    };
+
     const updateFaceDryRun = async (value) => {
         try {
             await SecureStore.setItemAsync('lomorage_face_dry_run', value.toString());
@@ -382,8 +408,11 @@ export function SettingsProvider({ children }) {
             toggleAIWifiOnly,
             aiChargingOnly,
             toggleAIChargingOnly,
-            aiEnabled,
+            // Effective value: AI features are off while Lite mode is on.
+            aiEnabled: aiEnabled && !liteMode,
             toggleAIEnabled,
+            liteMode,
+            toggleLiteMode,
             faceDryRun,
             updateFaceDryRun,
             faceDryRunMigrationNeeded,

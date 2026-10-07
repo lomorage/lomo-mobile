@@ -7,11 +7,13 @@ import { Folder, Users, Image as ImageIcon, Plus, Copy } from 'lucide-react-nati
 import RemoteAlbumService from '../services/RemoteAlbumService';
 import NetworkQueue from '../services/NetworkQueue';
 import { buildImageDataUri } from '../utils/base64Image';
+import { useSettings } from '../context/SettingsContext';
 
 const { width } = Dimensions.get('window');
 const SPACING = 16;
 
 export default function AlbumsScreen() {
+    const { liteMode } = useSettings();
     const [collection, setCollection] = useState(null);
     const [loading, setLoading] = useState(true);
     const [promptState, setPromptState] = useState({ visible: false, action: 'create', albumId: null, text: '' });
@@ -215,16 +217,19 @@ export default function AlbumsScreen() {
     };
 
     const rawItems = collection ? collection.getItems() : [];
-    const items = [
-        {
-            key: 'smart-duplicates',
-            type: 'smart-album',
-            data: {
-                name: 'Duplicates Cleanup',
-            }
-        },
-        ...rawItems
-    ];
+    // Lite mode hides the AI-built entries: duplicate cleanup and People (the Faces folder).
+    const items = liteMode
+        ? rawItems.filter(item => !(item.type === 'folder' && item.data?.name === 'Faces'))
+        : [
+            {
+                key: 'smart-duplicates',
+                type: 'smart-album',
+                data: {
+                    name: 'Duplicates Cleanup',
+                }
+            },
+            ...rawItems
+        ];
 
     return (
         <View style={styles.container}>

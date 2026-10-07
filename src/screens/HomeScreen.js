@@ -335,7 +335,7 @@ export default function HomeScreen({ navigation, route }) {
     // remote thumbnails (which read getServerUrl() once at render time) know to retry.
     const [serverEpoch, setServerEpoch] = useState(0);
     
-    const { debugMode, excludedAlbums, aiEnabled, autoBackupEnabled } = useSettings();
+    const { debugMode, excludedAlbums, aiEnabled, autoBackupEnabled, liteMode } = useSettings();
     const [showAiTip, setShowAiTip] = useState(false);
     const [showBatteryTip, setShowBatteryTip] = useState(false);
     const [debugLogs, setDebugLogs] = useState([]);
@@ -2117,13 +2117,17 @@ export default function HomeScreen({ navigation, route }) {
                             </TouchableOpacity>
                         )}
 
-                        <TouchableOpacity onPress={() => setIsSearching(true)} style={{ marginRight: 15, padding: 4 }}>
-                            <Search size={24} color="#333" />
-                        </TouchableOpacity>
+                        {!liteMode && (
+                            <TouchableOpacity onPress={() => setIsSearching(true)} style={{ marginRight: 15, padding: 4 }}>
+                                <Search size={24} color="#333" />
+                            </TouchableOpacity>
+                        )}
 
-                        <TouchableOpacity onPress={() => navigation.navigate('PhotoMap')} style={{ marginRight: 15, padding: 4 }}>
-                            <MapPin size={24} color="#333" />
-                        </TouchableOpacity>
+                        {!liteMode && (
+                            <TouchableOpacity onPress={() => navigation.navigate('PhotoMap')} style={{ marginRight: 15, padding: 4 }}>
+                                <MapPin size={24} color="#333" />
+                            </TouchableOpacity>
+                        )}
 
                         <TouchableOpacity onPress={() => navigation.navigate('Settings')} style={styles.settingsButton}>
                             <SettingsIcon size={24} color="#333" />
@@ -2442,7 +2446,7 @@ export default function HomeScreen({ navigation, route }) {
             </Modal>
 
             {/* AI Processing Pill — Google Photos style, non-intrusive. Tap to see what's happening and why. */}
-            {aiStatus && (
+            {aiStatus && !liteMode && (
                 <Animated.View style={[styles.aiPill, { opacity: aiPillOpacity }]} pointerEvents="auto">
                     <TouchableOpacity
                         onPress={() => navigation.navigate('Settings', { scrollToSection: 'ai' })}
