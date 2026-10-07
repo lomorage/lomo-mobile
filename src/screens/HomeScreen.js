@@ -16,7 +16,8 @@ import { useSettings } from '../context/SettingsContext';
 import GalleryStore from '../store/GalleryStore';
 import ThumbnailLoadTracker from '../services/ThumbnailLoadTracker';
 import MetricsTracker from '../utils/MetricsTracker';
-import { formatBytes, formatSpeed } from '../utils/formatters';
+import { formatBytes, formatBytesLog, formatSpeed } from '../utils/formatters';
+import { describeCounts, summarizeBackup } from '../utils/backupSummary';
 import { isVideoExtension } from '../utils/mediaType';
 import { isLivePhoto } from '../utils/livePhoto';
 import { isNotFoundImageError } from '../utils/imageErrors';
@@ -153,7 +154,7 @@ const SwipeableBanner = ({ info, onPress, onDismiss, styles }) => {
                 >
                     <View style={styles.smartBannerContent}>
                         <Text style={styles.smartBannerTitle}>Free Up Space</Text>
-                        <Text style={styles.smartBannerText}>Phone storage is low. Found {info.count} large backed-up videos to clean. Swipe to dismiss.</Text>
+                        <Text style={styles.smartBannerText}>Phone storage is low. {info.description} {info.count === 1 ? 'is' : 'are'} backed up{info.bytes ? ` — free up ${formatBytesLog(info.bytes, { decimals: 1 })}` : ''}. Swipe to dismiss.</Text>
                     </View>
                     <View style={styles.smartBannerButton}>
                         <Text style={styles.smartBannerButtonText}>Clean</Text>
@@ -1430,9 +1431,15 @@ export default function HomeScreen({ navigation, route }) {
                                 return; // still has plenty of space
                             }
 
-                            const largeFiles = await AssetDBService.getSafelyBackedUpVideos();
-                            if (isMounted.current && largeFiles && largeFiles.length > 0) {
-                                setFreeUpSpaceInfo({ visible: true, count: largeFiles.length, loading: false });
+                            const backup = summarizeBackup(await AssetDBService.getBackupSummaryRows());
+                            if (isMounted.current && backup.backedUp > 0) {
+                                setFreeUpSpaceInfo({
+                                    visible: true,
+                                    count: backup.backedUp,
+                                    bytes: backup.backedUpBytes,
+                                    description: describeCounts(backup.photos.backedUp, backup.videos.backedUp),
+                                    loading: false,
+                                });
                             } else if (isMounted.current) {
                                 setFreeUpSpaceInfo({ visible: false, count: 0, loading: false });
                             }

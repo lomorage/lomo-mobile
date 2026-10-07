@@ -271,7 +271,7 @@ class UploadService {
                         filename: info.filename || cached.filename || 'unknown',
                         uploaded: true
                     };
-                    await AssetDBService.markAssetUploaded(asset.id);
+                    await AssetDBService.markAssetUploaded(asset.id, fileSizeBytes);
                 } catch (cacheErr) {
                     console.warn('[UploadService] Failed to mark confirmed upload in cache:', cacheErr.message);
                 }

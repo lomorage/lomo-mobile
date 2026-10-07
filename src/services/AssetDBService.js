@@ -273,6 +273,19 @@ class AssetDBService {
         console.log('[AssetDBService] Database migrated to version 13 (Repaired remote createTime).');
       }
 
+      if (currentVersion < 14) {
+        // Version 14: original file size of local assets, recorded on upload, so Free Up Space
+        // can show what can be freed without asking the OS for every file.
+        try {
+          await db.execAsync('ALTER TABLE MediaAsset ADD COLUMN fileSize INTEGER;');
+        } catch (e) {
+          console.warn('[AssetDBService] Failed to migrate database to version 14:', e.message);
+        }
+        await db.execAsync('PRAGMA user_version = 14');
+        currentVersion = 14;
+        console.log('[AssetDBService] Database migrated to version 14 (Added fileSize).');
+      }
+
       // Smooth migration: if local_hash_cache_v2.json exists, migrate it to SQLite
       await this.migrateLocalHashCache(db);
 
@@ -424,12 +437,63 @@ class AssetDBService {
     );
   }
 
-  async markAssetUploaded(id) {
+  async markAssetUploaded(id, fileSize) {
     if (!this.db) return;
     await this.db.runAsync(
-      'UPDATE MediaAsset SET uploaded = 1 WHERE id = ?',
-      [id]
+      'UPDATE MediaAsset SET uploaded = 1, fileSize = COALESCE(?, fileSize) WHERE id = ?',
+      [fileSize > 0 ? fileSize : null, id]
     );
+  }
+
+  // Local assets that are backed up and could be removed from the phone (subject to
+  // BackupSafetyService's checks at delete time).
+  async getFreeUpSpaceCandidates(mediaType) {
+    if (!this.db) return [];
+    return await this.db.getAllAsync(
+      `SELECT id, hash, mediaType, createTime, filename, fileSize FROM MediaAsset
+       WHERE isLocal = 1 AND uploaded = 1 AND hash IS NOT NULL AND mediaType = ?
+       ORDER BY createTime ASC`,
+      [mediaType]
+    );
+  }
+
+  // Per media type: local count, backed-up count, known bytes of backed-up items, and how
+  // many backed-up items have no recorded size yet.
+  async getBackupSummaryRows() {
+    if (!this.db) return [];
+    return await this.db.getAllAsync(
+      `SELECT mediaType,
+              COUNT(*) AS total,
+              SUM(CASE WHEN uploaded = 1 AND hash IS NOT NULL THEN 1 ELSE 0 END) AS backedUp,
+              SUM(CASE WHEN uploaded = 1 AND hash IS NOT NULL THEN COALESCE(fileSize, 0) ELSE 0 END) AS backedUpBytes,
+              SUM(CASE WHEN uploaded = 1 AND hash IS NOT NULL AND fileSize IS NULL THEN 1 ELSE 0 END) AS unknownSize
+       FROM MediaAsset WHERE isLocal = 1 GROUP BY mediaType`
+    );
+  }
+
+  async setAssetFileSizes(sizes) {
+    if (!this.db || !sizes || sizes.length === 0) return;
+    for (let i = 0; i < sizes.length; i += 200) {
+      const chunk = sizes.slice(i, i + 200);
+      const cases = chunk.map(() => 'WHEN ? THEN ?').join(' ');
+      const params = chunk.flatMap(({ id, size }) => [id, size]);
+      await this.db.runAsync(
+        `UPDATE MediaAsset SET fileSize = CASE id ${cases} END WHERE id IN (${chunk.map(() => '?').join(',')})`,
+        [...params, ...chunk.map(({ id }) => id)]
+      );
+    }
+  }
+
+  // After the originals were deleted from the phone; the rows stay as remote assets.
+  async markAssetsRemovedLocally(ids) {
+    if (!this.db || !ids || ids.length === 0) return;
+    for (let i = 0; i < ids.length; i += 500) {
+      const chunk = ids.slice(i, i + 500);
+      await this.db.runAsync(
+        `UPDATE MediaAsset SET isLocal = 0 WHERE id IN (${chunk.map(() => '?').join(',')})`,
+        chunk
+      );
+    }
   }
 
   async markAssetNotUploaded(id) {
@@ -958,25 +1022,6 @@ class AssetDBService {
   }
 
   // Get safely backed up local videos for Large File Cleanup
-  async getSafelyBackedUpVideos() {
-    if (!this.db) return [];
-    try {
-      const query = `
-        SELECT id, isLocal, hash, mediaType, createTime, filename 
-        FROM MediaAsset 
-        WHERE isLocal = 1 
-          AND mediaType = 'video'
-          AND uploaded = 1
-        ORDER BY createTime DESC
-      `;
-      const rows = await this.db.getAllAsync(query);
-      return rows;
-    } catch (e) {
-      console.error('[AssetDBService] Failed to get safely backed up videos:', e);
-      return [];
-    }
-  }
-
   // Get all remote assets from SQLite database for rendering in the gallery
   async getRemoteAssets() {
     if (!this.db) return [];

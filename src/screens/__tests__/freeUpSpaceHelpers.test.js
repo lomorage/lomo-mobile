@@ -15,7 +15,11 @@ jest.mock('../../services/BackupSafetyService', () => ({
 import { buildDeleteConfirmation, isVerificationStale, VERIFY_MAX_AGE_MS } from '../freeUpSpaceHelpers';
 
 const formatSize = (bytes) => `${bytes}B`;
-const items = [{ id: 'a', sizeBytes: 100 }, { id: 'b', sizeBytes: 50 }, { id: 'c', sizeBytes: 7 }];
+const items = [
+  { id: 'a', sizeBytes: 100, mediaType: 'video' },
+  { id: 'b', sizeBytes: 50, mediaType: 'video' },
+  { id: 'c', sizeBytes: 7, mediaType: 'photo' },
+];
 
 test('all safe: only safe items are deletable and size counts only them', () => {
   const { message, deletable } = buildDeleteConfirmation({ safe: ['a', 'b'], unsafe: [], weakEvidence: false }, items, formatSize);
@@ -24,6 +28,12 @@ test('all safe: only safe items are deletable and size counts only them', () => 
   expect(message).toContain('150B');
   expect(message).not.toContain('stay on this phone');
   expect(message).not.toContain('older version');
+});
+
+test('photos and videos are counted separately', () => {
+  const { message } = buildDeleteConfirmation({ safe: ['a', 'c'], unsafe: [] }, items, formatSize);
+  expect(message).toContain('1 photo and 1 video are confirmed safe');
+  expect(message).toContain('107B');
 });
 
 test('mixed: explains what stays on the phone, grouped by reason', () => {

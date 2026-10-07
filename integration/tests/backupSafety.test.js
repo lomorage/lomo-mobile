@@ -67,6 +67,16 @@ describe('checking backups before freeing up space', () => {
     ]);
   });
 
+  it('records each upload\'s size, so Free Up Space can total what can be freed', async () => {
+    const [videoRow] = await AssetDBService.getFreeUpSpaceCandidates('video');
+    expect(videoRow).toMatchObject({ id: video.id, hash: videoHash, fileSize: fs.statSync(fixturePath('video-2013-08-08.mp4')).size });
+
+    const rows = await AssetDBService.getBackupSummaryRows();
+    const byType = Object.fromEntries(rows.map(r => [r.mediaType, r]));
+    expect(byType.photo).toMatchObject({ total: 1, backedUp: 1, unknownSize: 0 });
+    expect(byType.video).toMatchObject({ total: 1, backedUp: 1, unknownSize: 0 });
+  });
+
   it('backed-up, unchanged assets are safe to delete', async () => {
     const result = await BackupSafetyService.checkBeforeDelete([photo.id, video.id]);
 
