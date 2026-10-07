@@ -54,3 +54,27 @@ export function buildDeleteConfirmation({ safe, unsafe, weakEvidence }, items, f
 export function isVerificationStale(verifiedAt, now = Date.now()) {
     return now - verifiedAt > VERIFY_MAX_AGE_MS;
 }
+
+// Android passes every id to the system delete request in one binder transaction (~1 MB
+// limit), and each request is one confirmation dialog; iOS takes any number in one prompt.
+export const ANDROID_DELETE_CHUNK = 1000;
+
+/**
+ * Deletes ids in chunks, calling onChunkDeleted(chunk) after each one that succeeded, so
+ * a cancel or error part-way still records what really left the phone.
+ * @returns {Promise<{ deleted: string[], error: Error | null }>}
+ */
+export async function deleteInChunks(ids, deleteChunk, onChunkDeleted, chunkSize) {
+    const deleted = [];
+    for (let i = 0; i < ids.length; i += chunkSize) {
+        const chunk = ids.slice(i, i + chunkSize);
+        try {
+            await deleteChunk(chunk);
+        } catch (error) {
+            return { deleted, error };
+        }
+        deleted.push(...chunk);
+        await onChunkDeleted(chunk);
+    }
+    return { deleted, error: null };
+}

@@ -13,7 +13,7 @@ jest.mock('../../services/BackupSafetyService', () => ({
   },
 }));
 
-import { buildDeleteConfirmation, isVerificationStale, VERIFY_MAX_AGE_MS } from '../freeUpSpaceHelpers';
+import { buildDeleteConfirmation, deleteInChunks, isVerificationStale, VERIFY_MAX_AGE_MS } from '../freeUpSpaceHelpers';
 
 const formatSize = (bytes) => `${bytes}B`;
 const items = [
@@ -85,4 +85,27 @@ test('a file missing from the computer is not promised a re-upload', () => {
 test('verification goes stale after the max age', () => {
   expect(isVerificationStale(0, VERIFY_MAX_AGE_MS)).toBe(false);
   expect(isVerificationStale(0, VERIFY_MAX_AGE_MS + 1)).toBe(true);
+});
+
+describe('deleteInChunks', () => {
+  const ids = ['1', '2', '3', '4', '5'];
+
+  test('deletes everything in chunks and records each chunk', async () => {
+    const deleteChunk = jest.fn(async () => {});
+    const recorded = [];
+    const result = await deleteInChunks(ids, deleteChunk, async (chunk) => recorded.push(chunk), 2);
+    expect(deleteChunk.mock.calls.map(c => c[0])).toEqual([['1', '2'], ['3', '4'], ['5']]);
+    expect(recorded).toEqual([['1', '2'], ['3', '4'], ['5']]);
+    expect(result).toEqual({ deleted: ids, error: null });
+  });
+
+  test('stops at a cancelled chunk and reports only what was really deleted', async () => {
+    const cancelled = new Error('User cancelled');
+    const deleteChunk = jest.fn(async (chunk) => { if (chunk[0] === '3') throw cancelled; });
+    const recorded = [];
+    const result = await deleteInChunks(ids, deleteChunk, async (chunk) => recorded.push(chunk), 2);
+    expect(recorded).toEqual([['1', '2']]);
+    expect(result).toEqual({ deleted: ['1', '2'], error: cancelled });
+    expect(deleteChunk).toHaveBeenCalledTimes(2);
+  });
 });

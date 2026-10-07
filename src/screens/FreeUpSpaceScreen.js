@@ -6,7 +6,7 @@ import { useVideoPlayer, VideoView } from 'expo-video';
 import { ChevronLeft, Trash2, CheckCircle2, Circle, X } from 'lucide-react-native';
 import AssetDBService from '../services/AssetDBService';
 import BackupSafetyService from '../services/BackupSafetyService';
-import { buildDeleteConfirmation, isVerificationStale } from './freeUpSpaceHelpers';
+import { ANDROID_DELETE_CHUNK, buildDeleteConfirmation, deleteInChunks, isVerificationStale } from './freeUpSpaceHelpers';
 import MediaService from '../services/MediaService';
 import { describeCounts, summarizeBackup } from '../utils/backupSummary';
 import { formatBytesLog } from '../utils/formatters';
@@ -39,6 +39,7 @@ export default function FreeUpSpaceScreen({ navigation }) {
     const [loading, setLoading] = useState(true);
     const [selectedIds, setSelectedIds] = useState(new Set());
     const [isDeleting, setIsDeleting] = useState(false);
+    const [verifyProgress, setVerifyProgress] = useState(null); // { done, total } while checking
     const [previewVideoUri, setPreviewVideoUri] = useState(null);
     const mounted = useRef(true);
 
@@ -135,18 +136,28 @@ export default function FreeUpSpaceScreen({ navigation }) {
     const deleteVerified = async (idsToDelete) => {
         setIsDeleting(true);
         try {
-            await MediaService.deleteLocalAssets(idsToDelete);
-            await AssetDBService.markAssetsRemovedLocally(idsToDelete);
+            const { deleted, error } = await deleteInChunks(
+                idsToDelete,
+                (chunk) => MediaService.deleteLocalAssets(chunk),
+                (chunk) => AssetDBService.markAssetsRemovedLocally(chunk),
+                Platform.OS === 'android' ? ANDROID_DELETE_CHUNK : idsToDelete.length,
+            );
 
-            const deleted = new Set(idsToDelete);
+            const gone = new Set(deleted);
             setItemsByType(prev => ({
-                video: prev.video.filter(item => !deleted.has(item.id)),
-                photo: prev.photo.filter(item => !deleted.has(item.id)),
+                video: prev.video.filter(item => !gone.has(item.id)),
+                photo: prev.photo.filter(item => !gone.has(item.id)),
             }));
-            setSelectedIds(new Set());
+            setSelectedIds(prev => new Set([...prev].filter(id => !gone.has(id))));
             loadSummary();
 
-            Alert.alert("Success", "Successfully freed up space!");
+            if (!error) {
+                Alert.alert("Success", "Successfully freed up space!");
+            } else if (deleted.length > 0) {
+                Alert.alert("Partly Done", `${deleted.length.toLocaleString('en-US')} removed from this phone. The rest were not deleted: ${error.message || 'cancelled'}`);
+            } else {
+                Alert.alert("Error", error.message || "Failed to delete files.");
+            }
         } catch (e) {
             Alert.alert("Error", e.message || "Failed to delete files.");
         } finally {
@@ -161,14 +172,18 @@ export default function FreeUpSpaceScreen({ navigation }) {
         // anything irreplaceable leaves the phone.
         setIsDeleting(true);
         let check;
+        setVerifyProgress({ done: 0, total: selectedIds.size });
         try {
-            check = await BackupSafetyService.checkBeforeDelete(Array.from(selectedIds));
+            check = await BackupSafetyService.checkAll(Array.from(selectedIds), (done, total) => {
+                if (mounted.current) setVerifyProgress({ done, total });
+            });
         } catch (e) {
             console.error('[FreeUpSpaceScreen] Safety check failed:', e);
             Alert.alert("Couldn't Verify Backup", "Nothing was deleted. Please make sure your Lomorage computer is on and try again.");
             return;
         } finally {
             setIsDeleting(false);
+            setVerifyProgress(null);
         }
         const verifiedAt = Date.now();
 
@@ -294,8 +309,16 @@ export default function FreeUpSpaceScreen({ navigation }) {
 
             <View style={styles.footer}>
                 <View style={styles.footerInfo}>
-                    <Text style={styles.footerText}>Selected: {selectedIds.size.toLocaleString('en-US')}</Text>
-                    <Text style={styles.footerSize}>{formatSize(totalSelectedSize)}</Text>
+                    {verifyProgress ? (
+                        <Text style={styles.footerText}>
+                            Checking with your Lomorage computer… {verifyProgress.done.toLocaleString('en-US')} of {verifyProgress.total.toLocaleString('en-US')}
+                        </Text>
+                    ) : (
+                        <>
+                            <Text style={styles.footerText}>Selected: {selectedIds.size.toLocaleString('en-US')}</Text>
+                            <Text style={styles.footerSize}>{formatSize(totalSelectedSize)}</Text>
+                        </>
+                    )}
                 </View>
                 <TouchableOpacity
                     style={[styles.deleteButton, selectedIds.size === 0 && styles.deleteButtonDisabled]}
