@@ -388,6 +388,8 @@ export default function HomeScreen({ navigation, route }) {
             FirstBackupService.complete().then(() => {
                 setFirstBackupPending(false);
                 setFirstBackupProgressVisible(false);
+                // The first backup's real finish line: show what's now safe and what can be freed.
+                navigation.navigate('BackupSummary');
             }).catch((error) => {
                 firstBackupCompleting.current = false;
                 console.warn('[HomeScreen] Failed to complete first-backup guidance:', error);

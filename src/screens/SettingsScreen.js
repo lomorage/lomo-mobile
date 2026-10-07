@@ -535,13 +535,24 @@ export default function SettingsScreen({ navigation, route }) {
                     </View>
                 </TouchableOpacity>
 
+                <TouchableOpacity
+                    style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8 }]}
+                    onPress={() => navigation.navigate('BackupSummary')}
+                >
+                    <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabel}>Backup Status</Text>
+                        <Text style={styles.settingDescription}>Check that your photos are safe on your Lomorage computer.</Text>
+                    </View>
+                    <ChevronRight color="#888" size={20} />
+                </TouchableOpacity>
+
                 <TouchableOpacity 
                     style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8 }]}
                     onPress={() => navigation.navigate('FreeUpSpace')}
                 >
                     <View style={styles.settingTextContainer}>
-                        <Text style={styles.settingLabel}>Free Up Space (Large Files)</Text>
-                        <Text style={styles.settingDescription}>Review and delete large videos that are safely backed up.</Text>
+                        <Text style={styles.settingLabel}>Free Up Space</Text>
+                        <Text style={styles.settingDescription}>Remove photos and videos from this phone that are safely backed up.</Text>
                     </View>
                     <ChevronRight color="#888" size={20} />
                 </TouchableOpacity>

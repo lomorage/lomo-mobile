@@ -1,4 +1,4 @@
-import { countByMediaType, describeCounts, summarizeBackup } from '../backupSummary';
+import { countByMediaType, describeCounts, summarizeBackup, summarizeVerification } from '../backupSummary';
 
 test('summarizes photos and videos, treating anything not video as a photo', () => {
   const summary = summarizeBackup([
@@ -28,4 +28,20 @@ test('describes counts in plain words', () => {
 
 test('counts items by media type', () => {
   expect(countByMediaType([{ mediaType: 'video' }, { mediaType: 'photo' }, {}])).toEqual({ photos: 2, videos: 1 });
+});
+
+test('summarizes a library verification: only confirmed items count as safe', () => {
+  const items = [
+    { id: 'p1', mediaType: 'photo', sizeBytes: 100 },
+    { id: 'p2', mediaType: 'photo', sizeBytes: 0 },
+    { id: 'v1', mediaType: 'video', sizeBytes: 1000 },
+    { id: 'v2', mediaType: 'video', sizeBytes: 5000 },
+  ];
+  const result = summarizeVerification(items, {
+    safe: ['p1', 'p2', 'v1'], unsafe: [{ id: 'v2', reason: 'file_missing' }], weakEvidence: false,
+  });
+  expect(result).toEqual({
+    safePhotos: 2, safeVideos: 1, safeCount: 3, safeBytes: 1100, sizeIsPartial: true,
+    unconfirmedCount: 1, weakEvidence: false,
+  });
 });

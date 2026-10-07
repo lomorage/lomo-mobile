@@ -83,6 +83,22 @@ class BackupSafetyService {
     return { safe, unsafe, weakEvidence };
   }
 
+  /**
+   * checkBeforeDelete for a whole library, VERIFY_BATCH_SIZE at a time, reporting
+   * onProgress(checked, total) after each batch.
+   */
+  async checkAll(ids, onProgress) {
+    const result = { safe: [], unsafe: [], weakEvidence: false };
+    for (let i = 0; i < ids.length; i += VERIFY_BATCH_SIZE) {
+      const part = await this.checkBeforeDelete(ids.slice(i, i + VERIFY_BATCH_SIZE));
+      result.safe.push(...part.safe);
+      result.unsafe.push(...part.unsafe);
+      result.weakEvidence = result.weakEvidence || part.weakEvidence;
+      if (onProgress) onProgress(Math.min(i + VERIFY_BATCH_SIZE, ids.length), ids.length);
+    }
+    return result;
+  }
+
   // Returns null when the phone side is fine, otherwise one of UNSAFE_REASONS.
   async _checkLocal(id, row) {
     if (!row || !row.hash || row.uploaded !== 1) return UNSAFE_REASONS.NOT_BACKED_UP;

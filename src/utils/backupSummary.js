@@ -46,3 +46,20 @@ export function countByMediaType(items) {
   }
   return { photos, videos };
 }
+
+// What the "photos are safe" screen shows after BackupSafetyService.checkAll over `items`
+// (backed-up local assets with mediaType and sizeBytes).
+export function summarizeVerification(items, { safe, unsafe, weakEvidence }) {
+  const safeSet = new Set(safe);
+  const safeItems = items.filter(item => safeSet.has(item.id));
+  const { photos, videos } = countByMediaType(safeItems);
+  return {
+    safePhotos: photos,
+    safeVideos: videos,
+    safeCount: safeItems.length,
+    safeBytes: safeItems.reduce((sum, item) => sum + (item.sizeBytes || 0), 0),
+    sizeIsPartial: safeItems.some(item => !item.sizeBytes),
+    unconfirmedCount: unsafe.length,
+    weakEvidence: !!weakEvidence,
+  };
+}
