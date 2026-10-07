@@ -9,19 +9,17 @@ import AuthService from './AuthService';
 
 class MediaService {
   /**
-   * Generates a preview URL strictly adhering to the lomorage backend's pre-generated dimensions 
-   * to avoid expensive server-side dynamic transcoding.
+   * Generates a preview URL that matches a preview the lomorage backend has already
+   * pre-generated, so the server never has to transcode the original on demand. Both the
+   * size and the codec must match: the server pre-generates image previews at 75/320/640px
+   * wide (for videos too, from a frame), in WebP unless /system reports WebpPreview=false.
    */
   getPreviewUrl(hash, mediaType, isLarge = false) {
     if (!hash) return null;
-    let width = 320; // Default small image preview
-    if (mediaType === 'video') {
-      width = 480; // Default video preview
-    } else if (isLarge) {
-      width = 640; // Max image preview
-    }
+    const width = isLarge ? 640 : 320;
+    const codec = AuthService.supportsWebpPreview() ? '&icodec=webp' : '';
     const token = AuthService.getToken();
-    return `${AuthService.getServerUrl()}/preview/${hash}?width=${width}&height=-1&token=${token}`;
+    return `${AuthService.getServerUrl()}/preview/${hash}?width=${width}&height=-1${codec}&token=${token}`;
   }
 
 
