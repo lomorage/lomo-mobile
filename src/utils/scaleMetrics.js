@@ -9,6 +9,7 @@ import * as SecureStore from 'expo-secure-store';
 // are logged once per pairing.
 
 const PAIRED_AT_KEY = 'lomorage_metric_paired_at';
+const PAIRING_ID_KEY = 'lomorage_metric_pairing_id';
 const LOGGED_KEY_PREFIX = 'lomorage_metric_logged_';
 const JOURNEY_METRICS = ['time_to_first_backup', 'time_to_full_backup', 'time_to_safe'];
 
@@ -38,9 +39,12 @@ export function logSinceAppStartOnce(name, extra, now = Date.now()) {
   logMetric(name, now - appStartedAt, extra);
 }
 
-// A new pairing (login/register) restarts the journey timings.
-export async function markPaired(now = Date.now()) {
+// Pairing with a server/account restarts the journey timings. Logging in again to the same
+// one (e.g. after the session expired) does not.
+export async function markPaired(pairingId, now = Date.now()) {
   try {
+    if ((await SecureStore.getItemAsync(PAIRING_ID_KEY)) === pairingId) return;
+    await SecureStore.setItemAsync(PAIRING_ID_KEY, pairingId);
     await SecureStore.setItemAsync(PAIRED_AT_KEY, String(now));
     await Promise.all(JOURNEY_METRICS.map(name => SecureStore.deleteItemAsync(LOGGED_KEY_PREFIX + name)));
   } catch (e) {

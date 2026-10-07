@@ -41,12 +41,16 @@ test('journey metrics are measured from pairing, survive restarts, and log once 
   await logSincePairedOnce('time_to_first_backup', {}, 5000);
   expect(logs).toEqual([]); // not paired yet
 
-  await markPaired(1000);
+  await markPaired('nas|alice', 1000);
   await logSincePairedOnce('time_to_first_backup', { photos: 3 }, 61000);
   await logSincePairedOnce('time_to_first_backup', { photos: 4 }, 99000);
   expect(logs).toEqual(['[ScaleMetric] name=time_to_first_backup ms=60000 photos=3']);
 
-  await markPaired(200000); // pairing again restarts the journey
+  await markPaired('nas|alice', 150000); // logging in again to the same account: no restart
+  await logSincePairedOnce('time_to_first_backup', {}, 160000);
+  expect(logs).toHaveLength(1);
+
+  await markPaired('pc|alice', 200000); // a different computer restarts the journey
   await logSincePairedOnce('time_to_first_backup', {}, 230000);
   expect(logs[1]).toBe('[ScaleMetric] name=time_to_first_backup ms=30000');
 });
