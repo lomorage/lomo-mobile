@@ -16,7 +16,9 @@ import { useSettings } from '../context/SettingsContext';
 import GalleryStore from '../store/GalleryStore';
 import ThumbnailLoadTracker from '../services/ThumbnailLoadTracker';
 import MetricsTracker from '../utils/MetricsTracker';
-import { formatBytes, formatSpeed } from '../utils/formatters';
+import { formatBytes, formatBytesLog, formatSpeed } from '../utils/formatters';
+import { describeCounts, summarizeBackup } from '../utils/backupSummary';
+import { logMetric, logSinceAppStartOnce } from '../utils/scaleMetrics';
 import { isVideoExtension } from '../utils/mediaType';
 import { isLivePhoto } from '../utils/livePhoto';
 import { isNotFoundImageError } from '../utils/imageErrors';
@@ -153,7 +155,7 @@ const SwipeableBanner = ({ info, onPress, onDismiss, styles }) => {
                 >
                     <View style={styles.smartBannerContent}>
                         <Text style={styles.smartBannerTitle}>Free Up Space</Text>
-                        <Text style={styles.smartBannerText}>Phone storage is low. Found {info.count} large backed-up videos to clean. Swipe to dismiss.</Text>
+                        <Text style={styles.smartBannerText}>Phone storage is low. {info.description} {info.count === 1 ? 'is' : 'are'} backed up{info.bytes ? ` — free up ${formatBytesLog(info.bytes, { decimals: 1 })}` : ''}. Swipe to dismiss.</Text>
                     </View>
                     <View style={styles.smartBannerButton}>
                         <Text style={styles.smartBannerButtonText}>Clean</Text>
@@ -334,7 +336,7 @@ export default function HomeScreen({ navigation, route }) {
     // remote thumbnails (which read getServerUrl() once at render time) know to retry.
     const [serverEpoch, setServerEpoch] = useState(0);
     
-    const { debugMode, excludedAlbums, aiEnabled, autoBackupEnabled } = useSettings();
+    const { debugMode, excludedAlbums, aiEnabled, autoBackupEnabled, liteMode } = useSettings();
     const [showAiTip, setShowAiTip] = useState(false);
     const [showBatteryTip, setShowBatteryTip] = useState(false);
     const [debugLogs, setDebugLogs] = useState([]);
@@ -387,6 +389,8 @@ export default function HomeScreen({ navigation, route }) {
             FirstBackupService.complete().then(() => {
                 setFirstBackupPending(false);
                 setFirstBackupProgressVisible(false);
+                // The first backup's real finish line: show what's now safe and what can be freed.
+                navigation.navigate('BackupSummary');
             }).catch((error) => {
                 firstBackupCompleting.current = false;
                 console.warn('[HomeScreen] Failed to complete first-backup guidance:', error);
@@ -1334,6 +1338,12 @@ export default function HomeScreen({ navigation, route }) {
                 SyncService.syncLocalGPS().catch(err => {
                     console.error('[HomeScreen] Failed to sync local GPS:', err);
                 });
+                // Photos still on the device but in albums excluded from backup: Backup Status
+                // and Free Up Space count them apart from "not backed up yet".
+                const includedIds = new Set(cumulativeLocalAssets.map(asset => asset.id));
+                AssetDBService.setBackupExcludedIds([...rawDeviceLocalIds].filter(id => !includedIds.has(id))).catch(err => {
+                    console.warn('[HomeScreen] Failed to record backup-excluded assets:', err);
+                });
                 // Clean up local rows for photos deleted from the device outside the app.
                 // Uses the unfiltered device id set, so excluded (not deleted) photos are untouched.
                 AssetDBService.pruneDeletedLocalAssets(rawDeviceLocalIds).then((prunedIds) => {
@@ -1353,6 +1363,7 @@ export default function HomeScreen({ navigation, route }) {
             // The spinner is dismissed immediately! Opening screen time is under 1 second.
             mergeAndSetAssets(cumulativeLocalAssets, false);
             setLoading(false);
+            logSinceAppStartOnce('time_to_view', { assets: cumulativeLocalAssets.length });
             setSyncing(true);
             setSyncProgress({ message: 'Checking your library…' });
             setShowScanHint(false);
@@ -1380,8 +1391,13 @@ export default function HomeScreen({ navigation, route }) {
                 console.log('[HomeScreen] Starting SyncService.sync...');
                 // No user-facing progress here on purpose — this is a local hash/diff pass,
                 // not something a photo count would meaningfully describe to the user.
+                const scanStartedAt = Date.now();
                 const diff = await SyncService.sync(cumulativeLocalAssets, () => {});
                 syncSucceeded = true;
+                logMetric('scan', Date.now() - scanStartedAt, {
+                    assets: cumulativeLocalAssets.length,
+                    toUpload: diff?.uploadAssets?.length,
+                });
 
                 if (!isMounted.current) return;
 
@@ -1430,9 +1446,15 @@ export default function HomeScreen({ navigation, route }) {
                                 return; // still has plenty of space
                             }
 
-                            const largeFiles = await AssetDBService.getSafelyBackedUpVideos();
-                            if (isMounted.current && largeFiles && largeFiles.length > 0) {
-                                setFreeUpSpaceInfo({ visible: true, count: largeFiles.length, loading: false });
+                            const backup = summarizeBackup(await AssetDBService.getBackupSummaryRows());
+                            if (isMounted.current && backup.backedUp > 0) {
+                                setFreeUpSpaceInfo({
+                                    visible: true,
+                                    count: backup.backedUp,
+                                    bytes: backup.backedUpBytes,
+                                    description: describeCounts(backup.photos.backedUp, backup.videos.backedUp),
+                                    loading: false,
+                                });
                             } else if (isMounted.current) {
                                 setFreeUpSpaceInfo({ visible: false, count: 0, loading: false });
                             }
@@ -2108,13 +2130,17 @@ export default function HomeScreen({ navigation, route }) {
                             </TouchableOpacity>
                         )}
 
-                        <TouchableOpacity onPress={() => setIsSearching(true)} style={{ marginRight: 15, padding: 4 }}>
-                            <Search size={24} color="#333" />
-                        </TouchableOpacity>
+                        {!liteMode && (
+                            <TouchableOpacity onPress={() => setIsSearching(true)} style={{ marginRight: 15, padding: 4 }}>
+                                <Search size={24} color="#333" />
+                            </TouchableOpacity>
+                        )}
 
-                        <TouchableOpacity onPress={() => navigation.navigate('PhotoMap')} style={{ marginRight: 15, padding: 4 }}>
-                            <MapPin size={24} color="#333" />
-                        </TouchableOpacity>
+                        {!liteMode && (
+                            <TouchableOpacity onPress={() => navigation.navigate('PhotoMap')} style={{ marginRight: 15, padding: 4 }}>
+                                <MapPin size={24} color="#333" />
+                            </TouchableOpacity>
+                        )}
 
                         <TouchableOpacity onPress={() => navigation.navigate('Settings')} style={styles.settingsButton}>
                             <SettingsIcon size={24} color="#333" />
@@ -2433,7 +2459,7 @@ export default function HomeScreen({ navigation, route }) {
             </Modal>
 
             {/* AI Processing Pill — Google Photos style, non-intrusive. Tap to see what's happening and why. */}
-            {aiStatus && (
+            {aiStatus && !liteMode && (
                 <Animated.View style={[styles.aiPill, { opacity: aiPillOpacity }]} pointerEvents="auto">
                     <TouchableOpacity
                         onPress={() => navigation.navigate('Settings', { scrollToSection: 'ai' })}

@@ -14,6 +14,7 @@ import ScanLoginScreen from '../screens/ScanLoginScreen';
 import ShowSignInCodeScreen from '../screens/ShowSignInCodeScreen';
 import SettingsScreen from '../screens/SettingsScreen';
 import FreeUpSpaceScreen from '../screens/FreeUpSpaceScreen';
+import BackupSummaryScreen from '../screens/BackupSummaryScreen';
 import PhotoMapScreen from '../screens/PhotoMapScreen';
 import AlbumsScreen from '../screens/AlbumsScreen';
 import FolderDetailScreen from '../screens/FolderDetailScreen';
@@ -221,6 +222,11 @@ function Navigation() {
                             name="FreeUpSpace" 
                             component={FreeUpSpaceScreen} 
                             options={{ headerShown: false }} 
+                        />
+                        <Stack.Screen
+                            name="BackupSummary"
+                            component={BackupSummaryScreen}
+                            options={{ headerShown: false }}
                         />
                         <Stack.Screen 
                             name="PhotoMap" 

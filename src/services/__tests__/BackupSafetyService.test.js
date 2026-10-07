@@ -120,6 +120,18 @@ test('large selections are verified in batches of 500', async () => {
   expect(result.safe).toHaveLength(1201);
 });
 
+test('checkAll verifies a whole library in batches and reports progress', async () => {
+  const ids = Array.from({ length: 1001 }, (_, i) => `id${i}`);
+  AssetDBService.getBackupRowsByIds.mockImplementation(async (batch) => batch.map(id => row(id)));
+  serverReplies({ 'hash-id1000': 'file_missing' });
+  const progress = [];
+  const result = await BackupSafetyService.checkAll(ids, (done, total) => progress.push([done, total]));
+  expect(progress).toEqual([[500, 1001], [1000, 1001], [1001, 1001]]);
+  expect(result.safe).toHaveLength(1000);
+  expect(result.unsafe).toEqual([{ id: 'id1000', reason: UNSAFE_REASONS.FILE_MISSING }]);
+  expect(result.weakEvidence).toBe(false);
+});
+
 describe.each([404, 405])('older server without /assets/verify (HTTP %i)', (httpStatus) => {
   beforeEach(() => {
     axios.post.mockRejectedValue(Object.assign(new Error('Unsupported'), { response: { status: httpStatus } }));

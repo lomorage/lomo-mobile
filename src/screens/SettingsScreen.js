@@ -158,6 +158,8 @@ export default function SettingsScreen({ navigation, route }) {
         toggleAIChargingOnly,
         aiEnabled,
         toggleAIEnabled,
+        liteMode,
+        toggleLiteMode,
         faceDryRun,
         updateFaceDryRun,
         faceDryRunMigrationNeeded,
@@ -459,6 +461,21 @@ export default function SettingsScreen({ navigation, route }) {
 
             <ScrollView ref={scrollViewRef} style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 40 }}>
             <View style={styles.section}>
+                <View style={styles.settingRow}>
+                    <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabel}>Lite Mode</Text>
+                        <Text style={styles.settingDescription}>Just back up, free up space and view your photos. Turns off search, people, map and duplicate cleanup.</Text>
+                    </View>
+                    <Switch
+                        value={liteMode}
+                        onValueChange={toggleLiteMode}
+                        trackColor={{ false: '#d1d1d1', true: '#4CAF50' }}
+                        thumbColor={'#fff'}
+                    />
+                </View>
+            </View>
+
+            <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Backup Strategy</Text>
                 
                 <View style={styles.settingRow}>
@@ -535,13 +552,24 @@ export default function SettingsScreen({ navigation, route }) {
                     </View>
                 </TouchableOpacity>
 
+                <TouchableOpacity
+                    style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8 }]}
+                    onPress={() => navigation.navigate('BackupSummary')}
+                >
+                    <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabel}>Backup Status</Text>
+                        <Text style={styles.settingDescription}>Check that your photos are safe on your Lomorage computer.</Text>
+                    </View>
+                    <ChevronRight color="#888" size={20} />
+                </TouchableOpacity>
+
                 <TouchableOpacity 
                     style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8 }]}
                     onPress={() => navigation.navigate('FreeUpSpace')}
                 >
                     <View style={styles.settingTextContainer}>
-                        <Text style={styles.settingLabel}>Free Up Space (Large Files)</Text>
-                        <Text style={styles.settingDescription}>Review and delete large videos that are safely backed up.</Text>
+                        <Text style={styles.settingLabel}>Free Up Space</Text>
+                        <Text style={styles.settingDescription}>Remove photos and videos from this phone that are safely backed up.</Text>
                     </View>
                     <ChevronRight color="#888" size={20} />
                 </TouchableOpacity>
@@ -597,6 +625,7 @@ export default function SettingsScreen({ navigation, route }) {
 
             </View>
 
+            {!liteMode && (
             <Animated.View
                 onLayout={(e) => { aiSectionYRef.current = e.nativeEvent.layout.y; }}
                 style={[
@@ -763,6 +792,7 @@ export default function SettingsScreen({ navigation, route }) {
                     </>
                 )}
             </Animated.View>
+            )}
 
             <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Developer</Text>

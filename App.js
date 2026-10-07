@@ -1,6 +1,8 @@
 import 'react-native-gesture-handler';
 import Logger from './src/utils/logger';
 Logger.init();
+import { markAppStart } from './src/utils/scaleMetrics';
+markAppStart();
 import React, { useEffect } from 'react';
 import { View, DeviceEventEmitter } from 'react-native';
 import { StatusBar } from 'expo-status-bar';

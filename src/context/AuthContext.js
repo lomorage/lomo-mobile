@@ -1,6 +1,7 @@
 import React, { createContext, useState, useContext, useEffect } from 'react';
 import AuthService from '../services/AuthService';
 import FirstBackupService from '../services/FirstBackupService';
+import { markPaired } from '../utils/scaleMetrics';
 
 const AuthContext = createContext();
 
@@ -38,6 +39,7 @@ export const AuthProvider = ({ children }) => {
 
   const login = async (server, username, password, serverName = null) => {
     await AuthService.login(server, username, password, serverName);
+    await markPaired(`${server}|${username}`);
     await FirstBackupService.beginIfNeeded().catch((error) => {
       console.warn('[AuthContext] Failed to initialize first-backup guidance:', error);
     });
@@ -47,6 +49,7 @@ export const AuthProvider = ({ children }) => {
   const register = async (server, username, password, homedir, autoLogin = true) => {
     await AuthService.register(server, username, password, homedir, "", autoLogin);
     if (autoLogin) {
+      await markPaired(`${server}|${username}`);
       await FirstBackupService.beginIfNeeded().catch((error) => {
         console.warn('[AuthContext] Failed to initialize first-backup guidance:', error);
       });

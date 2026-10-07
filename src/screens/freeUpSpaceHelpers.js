@@ -1,4 +1,5 @@
 import { UNSAFE_REASONS } from '../services/BackupSafetyService';
+import { countByMediaType, describeCounts } from '../utils/backupSummary';
 
 // A verification older than this is redone before deleting (the computer may have changed).
 export const VERIFY_MAX_AGE_MS = 5 * 60 * 1000;
@@ -36,8 +37,9 @@ export function buildDeleteConfirmation({ safe, unsafe, weakEvidence }, items, f
     const lines = [];
     if (safe.length > 0) {
         const one = safe.length === 1;
+        const { photos, videos } = countByMediaType(items.filter(item => safeSet.has(item.id)));
         const where = weakEvidence ? 'backed up to' : 'confirmed safe on';
-        lines.push(`${safe.length} ${one ? 'video is' : 'videos are'} ${where} your Lomorage computer. Deleting ${one ? 'it' : 'them'} from this phone will free up ${formatSize(safeBytes)}.`);
+        lines.push(`${describeCounts(photos, videos)} ${one ? 'is' : 'are'} ${where} your Lomorage computer. Deleting ${one ? 'it' : 'them'} from this phone will free up ${formatSize(safeBytes)}.`);
         if (weakEvidence) {
             lines.push("Your Lomorage computer is running an older version, so we couldn't confirm the files themselves are intact. Updating it is recommended.");
         }
@@ -51,4 +53,28 @@ export function buildDeleteConfirmation({ safe, unsafe, weakEvidence }, items, f
 
 export function isVerificationStale(verifiedAt, now = Date.now()) {
     return now - verifiedAt > VERIFY_MAX_AGE_MS;
+}
+
+// Android passes every id to the system delete request in one binder transaction (~1 MB
+// limit), and each request is one confirmation dialog; iOS takes any number in one prompt.
+export const ANDROID_DELETE_CHUNK = 1000;
+
+/**
+ * Deletes ids in chunks, calling onChunkDeleted(chunk) after each one that succeeded, so
+ * a cancel or error part-way still records what really left the phone.
+ * @returns {Promise<{ deleted: string[], error: Error | null }>}
+ */
+export async function deleteInChunks(ids, deleteChunk, onChunkDeleted, chunkSize) {
+    const deleted = [];
+    for (let i = 0; i < ids.length; i += chunkSize) {
+        const chunk = ids.slice(i, i + chunkSize);
+        try {
+            await deleteChunk(chunk);
+        } catch (error) {
+            return { deleted, error };
+        }
+        deleted.push(...chunk);
+        await onChunkDeleted(chunk);
+    }
+    return { deleted, error: null };
 }

@@ -67,6 +67,16 @@ describe('checking backups before freeing up space', () => {
     ]);
   });
 
+  it('records each upload\'s size, so Free Up Space can total what can be freed', async () => {
+    const [videoRow] = await AssetDBService.getFreeUpSpaceCandidates('video');
+    expect(videoRow).toMatchObject({ id: video.id, hash: videoHash, fileSize: fs.statSync(fixturePath('video-2013-08-08.mp4')).size });
+
+    const rows = await AssetDBService.getBackupSummaryRows();
+    const byType = Object.fromEntries(rows.map(r => [r.mediaType, r]));
+    expect(byType.photo).toMatchObject({ total: 1, backedUp: 1, unknownSize: 0 });
+    expect(byType.video).toMatchObject({ total: 1, backedUp: 1, unknownSize: 0 });
+  });
+
   it('backed-up, unchanged assets are safe to delete', async () => {
     const result = await BackupSafetyService.checkBeforeDelete([photo.id, video.id]);
 
@@ -98,5 +108,23 @@ describe('checking backups before freeing up space', () => {
     const result = await BackupSafetyService.checkBeforeDelete([photo.id]);
 
     expect(result.unsafe).toEqual([{ id: photo.id, reason: UNSAFE_REASONS.MISSING_ON_SERVER }]);
+  });
+  it('counts photos in excluded albums apart, and treats rows without a media type as photos', async () => {
+    const skipped = addToCameraRoll('photo-2003-11-23.jpg', { creationTime: Date.UTC(2003, 10, 23, 12) });
+    await AssetDBService.insertLocalAssets([skipped]);
+    await AssetDBService.setBackupExcludedIds([skipped.id]);
+    await AssetDBService.db.runAsync(
+      "INSERT INTO MediaAsset (id, isLocal, hash, uploaded, mediaType) VALUES ('legacy-1', 1, 'legacyhash', 1, NULL)"
+    );
+
+    const byType = Object.fromEntries((await AssetDBService.getBackupSummaryRows()).map(r => [r.mediaType, r]));
+    expect(byType.photo.excluded).toBe(1);
+    const photoIds = (await AssetDBService.getFreeUpSpaceCandidates('photo')).map(r => r.id);
+    expect(photoIds).toContain('legacy-1');
+    expect(photoIds).not.toContain(skipped.id);
+
+    await AssetDBService.setBackupExcludedIds([]);
+    const after = Object.fromEntries((await AssetDBService.getBackupSummaryRows()).map(r => [r.mediaType, r]));
+    expect(after.photo.excluded).toBe(0);
   });
 });

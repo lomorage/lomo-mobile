@@ -32,6 +32,7 @@ const SERVER_STATUS_REASONS = {
 
 const VERIFY_BATCH_SIZE = 500; // lomod's per-request limit
 const HEAD_CHECK_CONCURRENCY = 4;
+const LOCAL_CHECK_CONCURRENCY = 8; // MediaLibrary lookups for large selections
 
 /**
  * Last line of defence before deleting local originals.
@@ -51,13 +52,22 @@ class BackupSafetyService {
     const rows = await AssetDBService.getBackupRowsByIds(ids);
     const rowById = new Map(rows.map(row => [row.id, row]));
 
+    const localReasons = new Array(ids.length);
+    let next = 0;
+    const worker = async () => {
+      while (next < ids.length) {
+        const i = next++;
+        localReasons[i] = await this._checkLocal(ids[i], rowById.get(ids[i]));
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(LOCAL_CHECK_CONCURRENCY, ids.length) }, worker));
+
     const unsafe = [];
     const candidates = [];
-    for (const id of ids) {
-      const reason = await this._checkLocal(id, rowById.get(id));
-      if (reason) unsafe.push({ id, reason });
+    ids.forEach((id, i) => {
+      if (localReasons[i]) unsafe.push({ id, reason: localReasons[i] });
       else candidates.push({ id, hash: rowById.get(id).hash });
-    }
+    });
 
     const { reasons, weakEvidence } = await this._checkServer(candidates);
     const safe = [];
@@ -74,6 +84,22 @@ class BackupSafetyService {
     const order = new Map(ids.map((id, i) => [id, i]));
     unsafe.sort((a, b) => order.get(a.id) - order.get(b.id));
     return { safe, unsafe, weakEvidence };
+  }
+
+  /**
+   * checkBeforeDelete for a whole library, VERIFY_BATCH_SIZE at a time, reporting
+   * onProgress(checked, total) after each batch.
+   */
+  async checkAll(ids, onProgress) {
+    const result = { safe: [], unsafe: [], weakEvidence: false };
+    for (let i = 0; i < ids.length; i += VERIFY_BATCH_SIZE) {
+      const part = await this.checkBeforeDelete(ids.slice(i, i + VERIFY_BATCH_SIZE));
+      result.safe.push(...part.safe);
+      result.unsafe.push(...part.unsafe);
+      result.weakEvidence = result.weakEvidence || part.weakEvidence;
+      if (onProgress) onProgress(Math.min(i + VERIFY_BATCH_SIZE, ids.length), ids.length);
+    }
+    return result;
   }
 
   // Returns null when the phone side is fine, otherwise one of UNSAFE_REASONS.

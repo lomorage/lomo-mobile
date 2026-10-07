@@ -15,6 +15,7 @@ import MediaService from './MediaService';
 import TaskSchedulerService from './TaskSchedulerService';
 import NetworkQueue from './NetworkQueue';
 import ThumbnailLoadTracker from './ThumbnailLoadTracker';
+import { isAiAllowed } from './liteMode';
 import { recognizeText } from '@infinitered/react-native-mlkit-text-recognition';
 import { RNMLKitFaceDetector } from '@infinitered/react-native-mlkit-face-detection';
 import { pinyin } from 'pinyin-pro';
@@ -1103,10 +1104,9 @@ class AIService {
     // Run one-time repair for the CLIP version-reset bug (see repairClipVersionResetBug)
     await this.repairClipVersionResetBug();
 
-    const savedAiEnabled = await SecureStore.getItemAsync('lomorage_ai_enabled');
-    const aiEnabled = savedAiEnabled !== 'false';
+    const aiEnabled = await isAiAllowed();
     if (!aiEnabled && !force) {
-      console.log('[AIService] Skip background local indexing: AI features disabled.');
+      console.log('[AIService] Skip background local indexing: AI features disabled or Lite mode.');
       return;
     }
 
@@ -1180,7 +1180,7 @@ class AIService {
         await TaskSchedulerService.waitUntilIdle();
 
         // Double check AI enabled switch inside loop to halt immediately if turned off
-        const currentAiEnabled = (await SecureStore.getItemAsync('lomorage_ai_enabled')) !== 'false';
+        const currentAiEnabled = await isAiAllowed();
         if (!currentAiEnabled && !force) {
           console.log('[AIService] AI disabled during processing. Halting.');
           hasMore = false;
@@ -1614,10 +1614,9 @@ class AIService {
   // 2. Synchronize embeddings with lomo-backend
   async syncEmbeddings(force = false) {
     if (this.isSyncing) return;
-    const savedAiEnabled = await SecureStore.getItemAsync('lomorage_ai_enabled');
-    const aiEnabled = savedAiEnabled !== 'false';
+    const aiEnabled = await isAiAllowed();
     if (!aiEnabled && !force) {
-      console.log('[AIService] Skip embeddings sync: AI features disabled.');
+      console.log('[AIService] Skip embeddings sync: AI features disabled or Lite mode.');
       return;
     }
     this.isSyncing = true;
@@ -3389,9 +3388,8 @@ TaskManager.defineTask(BACKGROUND_AI_SYNC_TASK, async () => {
         // This background window previously only ever ran syncEmbeddings() (upload/download
         // metadata) — the user's own new local photos never got analyzed unless the app was
         // open in the foreground. Analyze local photos first, same order as the foreground flow.
-        const savedAiEnabled = await SecureStore.getItemAsync('lomorage_ai_enabled');
-        if (savedAiEnabled === 'false') {
-            console.log('[Background AI Sync Task] Local AI features disabled. Skipping local analysis.');
+        if (!(await isAiAllowed())) {
+            console.log('[Background AI Sync Task] Local AI features disabled or Lite mode. Skipping local analysis.');
         } else {
             await AIServiceInstance.processLocalEmbeddings(30, true);
         }
