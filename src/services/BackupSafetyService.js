@@ -14,10 +14,13 @@ export const UNSAFE_REASONS = {
   DAMAGED: 'damaged',
   STORAGE_UNAVAILABLE: 'storage_unavailable',
   SERVER_UNREACHABLE: 'server_unreachable',
+  UNCONFIRMED: 'unconfirmed', // the server answered, but not with anything we recognize
 };
 
-// Server statuses (lomod common/check/store.go) the next backup should fix by re-uploading.
-const REUPLOAD_STATUSES = new Set(['not_found', 'file_missing']);
+// Server statuses (lomod common/check/store.go) the next backup fixes by re-uploading. Only
+// not_found: for file_missing the server still lists the hash, so sync marks it uploaded
+// again and lomod would answer a re-upload with 409 -- it stays on the phone instead.
+const REUPLOAD_STATUSES = new Set(['not_found']);
 
 const SERVER_STATUS_REASONS = {
   not_found: UNSAFE_REASONS.MISSING_ON_SERVER,
@@ -135,7 +138,7 @@ class BackupSafetyService {
     for (const { id, hash } of candidates) {
       const status = statusByHash.get(hash.toLowerCase());
       if (status === 'ok') continue;
-      reasons.set(id, SERVER_STATUS_REASONS[status] || UNSAFE_REASONS.SERVER_UNREACHABLE);
+      reasons.set(id, SERVER_STATUS_REASONS[status] || UNSAFE_REASONS.UNCONFIRMED);
       if (REUPLOAD_STATUSES.has(status)) {
         await AssetDBService.markAssetNotUploaded(id).catch(() => {});
       }
