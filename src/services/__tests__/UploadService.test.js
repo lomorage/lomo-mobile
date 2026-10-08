@@ -8,7 +8,8 @@ jest.mock('../AuthService', () => ({
   getServerUrl: jest.fn(() => 'http://localhost:8000'),
   getToken: jest.fn(() => 'test-token'),
 }));
-jest.mock('../../../modules/expo-lomo-hasher', () => ({ sliceFileAsync: jest.fn() }));
+jest.mock('../../../modules/expo-lomo-hasher', () => ({ sliceFileAsync: jest.fn(), sliceFileRangeAsync: jest.fn() }));
+jest.mock('expo-secure-store', () => ({ getItemAsync: jest.fn(async () => null), setItemAsync: jest.fn() }));
 
 const axios = require('axios');
 const AuthService = require('../AuthService');
@@ -151,5 +152,32 @@ describe('uploadAsset de-duplication', () => {
     expect(UploadService.cancelledTasks.has('asset1')).toBe(false);
 
     executeSpy.mockRestore();
+  });
+});
+
+describe('remembered piece sizes', () => {
+  const SecureStore = require('expo-secure-store');
+
+  beforeEach(() => {
+    UploadService.chunkedServers = null;
+  });
+
+  test('concurrent first lookups share one SecureStore read and one map', async () => {
+    SecureStore.getItemAsync.mockResolvedValueOnce(JSON.stringify({ 'https://a': 1234 }));
+
+    const sizes = await Promise.all([
+      UploadService.getChunkSize('https://a'),
+      UploadService.getChunkSize('https://b'),
+      UploadService._rememberChunkSize('https://c', 99),
+    ]);
+
+    expect(sizes.slice(0, 2)).toEqual([1234, 0]);
+    expect(SecureStore.getItemAsync).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(SecureStore.setItemAsync.mock.calls[0][1])).toEqual({ 'https://a': 1234, 'https://c': 99 });
+  });
+
+  test('a corrupt stored value starts over empty', async () => {
+    SecureStore.getItemAsync.mockResolvedValueOnce('{not json');
+    await expect(UploadService.getChunkSize('https://a')).resolves.toBe(0);
   });
 });
