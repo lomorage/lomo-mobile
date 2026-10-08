@@ -202,7 +202,7 @@ describe('HomeScreen first backup guidance', () => {
     MediaService.getAllAssets.mockResolvedValue([{ id: 'new-photo', mediaType: 'photo', creationTime: Date.now() }]);
     let component;
     await act(async () => {
-      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn() }} />);
+      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn(), addListener: jest.fn(() => () => {}) }} />);
       await flushPromises();
     });
 
@@ -260,7 +260,7 @@ describe('HomeScreen first backup guidance', () => {
 
     let component;
     await act(async () => {
-      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn() }} />);
+      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn(), addListener: jest.fn(() => () => {}) }} />);
       await flushPromises();
     });
     expect(FirstBackupService.complete).not.toHaveBeenCalled();
@@ -283,7 +283,7 @@ describe('HomeScreen first backup guidance', () => {
 
     let component;
     await act(async () => {
-      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn() }} />);
+      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn(), addListener: jest.fn(() => () => {}) }} />);
       await flushPromises();
     });
 
@@ -300,7 +300,7 @@ describe('HomeScreen first backup guidance', () => {
 
     let component;
     await act(async () => {
-      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn() }} />);
+      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn(), addListener: jest.fn(() => () => {}) }} />);
       await flushPromises();
     });
 
@@ -367,7 +367,7 @@ describe('HomeScreen limited photo access', () => {
   test('warns about visible assets and opens the limited-library picker', async () => {
     let component;
     await act(async () => {
-      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn() }} />);
+      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn(), addListener: jest.fn(() => () => {}) }} />);
       await flushPromises();
     });
 
@@ -410,7 +410,7 @@ describe('HomeScreen limited photo access', () => {
 
     let component;
     await act(async () => {
-      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn() }} />);
+      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn(), addListener: jest.fn(() => () => {}) }} />);
       await flushPromises();
     });
 
@@ -438,7 +438,7 @@ describe('HomeScreen limited photo access', () => {
       }))
       .mockResolvedValue([]);
 
-    const navigation = { navigate: jest.fn() };
+    const navigation = { navigate: jest.fn(), addListener: jest.fn(() => () => {}) };
     let component;
     await act(async () => {
       component = renderer.create(<HomeScreen navigation={navigation} />);
@@ -475,7 +475,7 @@ describe('HomeScreen limited photo access', () => {
 
     let component;
     await act(async () => {
-      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn() }} />);
+      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn(), addListener: jest.fn(() => () => {}) }} />);
       await flushPromises();
     });
 
@@ -513,6 +513,7 @@ describe('HomeScreen Performance Tests', () => {
     jest.clearAllMocks();
     mockNavigation = {
       navigate: jest.fn(),
+      addListener: jest.fn(() => () => {}),
     };
   });
 

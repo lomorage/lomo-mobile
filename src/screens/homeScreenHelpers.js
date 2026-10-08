@@ -57,3 +57,21 @@ export const parseTimeTokenExtra = (value) => {
 
     return null;
 };
+
+const LOW_STORAGE_BYTES = 5 * 1024 * 1024 * 1024;
+const BANNER_SNOOZE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * What the "phone storage is low, free up space" banner on Photos shows, or null to hide it.
+ * Never while a backup is still running or waiting: offering to delete "backed-up" items
+ * before the backup visibly finished undermined trust in the usability test.
+ * @param {{ freeBytes: number, backup: object, backupActive: boolean, dismissedAt: number|null, now: number }} input
+ *        backup is summarizeBackup(...) output
+ */
+export function freeSpaceBannerInfo({ freeBytes, backup, backupActive, dismissedAt, now }) {
+    if (backupActive) return null;
+    if (dismissedAt && now - dismissedAt < BANNER_SNOOZE_MS) return null;
+    if (!(freeBytes < LOW_STORAGE_BYTES)) return null;
+    if (!backup || backup.backedUp === 0) return null;
+    return { count: backup.backedUp, bytes: backup.backedUpBytes, photos: backup.photos.backedUp, videos: backup.videos.backedUp };
+}

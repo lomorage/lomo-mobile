@@ -23,7 +23,7 @@ import { isVideoExtension } from '../utils/mediaType';
 import { isLivePhoto } from '../utils/livePhoto';
 import { isNotFoundImageError } from '../utils/imageErrors';
 import { useGatedImageUri } from '../hooks/useImageRetry';
-import { parseTimeTokenExtra } from './homeScreenHelpers';
+import { freeSpaceBannerInfo, parseTimeTokenExtra } from './homeScreenHelpers';
 import * as SecureStore from 'expo-secure-store';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
 import { pinyin } from 'pinyin-pro';
@@ -456,6 +456,7 @@ export default function HomeScreen({ navigation, route }) {
 
 
     const isMounted = useRef(true);
+
     const isProgrammaticSearchRef = useRef(false);
     const appState = useRef(AppState.currentState);
 
@@ -489,6 +490,38 @@ export default function HomeScreen({ navigation, route }) {
     useEffect(() => {
         backupStateRef.current = backupState;
     }, [backupState]);
+
+    // "Phone storage is low" banner. Re-evaluated after a library scan, whenever backup goes
+    // idle, and when Photos comes back into view (e.g. after Free Up Space removed items).
+    const refreshFreeSpaceBanner = useCallback(async () => {
+        try {
+            const { isBackingUp, pendingCount } = backupStateRef.current;
+            const lastDismissed = await SecureStore.getItemAsync('lastBannerDismissed');
+            const info = freeSpaceBannerInfo({
+                freeBytes: await LegacyFileSystem.getFreeDiskStorageAsync(),
+                backup: summarizeBackup(await AssetDBService.getBackupSummaryRows()),
+                backupActive: isBackingUp || pendingCount > 0,
+                dismissedAt: lastDismissed ? parseInt(lastDismissed, 10) : null,
+                now: Date.now(),
+            });
+            if (!isMounted.current) return;
+            setFreeUpSpaceInfo(info
+                ? { visible: true, count: info.count, bytes: info.bytes, description: describeCounts(info.photos, info.videos), loading: false }
+                : { visible: false, count: 0, loading: false });
+        } catch (e) {
+            console.error('[HomeScreen] Error checking free-space banner:', e);
+        }
+    }, []);
+
+    useEffect(() => navigation.addListener('focus', refreshFreeSpaceBanner), [navigation, refreshFreeSpaceBanner]);
+
+    useEffect(() => {
+        if (backupState.isBackingUp || backupState.pendingCount > 0) {
+            setFreeUpSpaceInfo(prev => (prev.visible ? { visible: false, count: 0, loading: false } : prev));
+        } else {
+            refreshFreeSpaceBanner();
+        }
+    }, [backupState.isBackingUp, backupState.pendingCount, refreshFreeSpaceBanner]);
 
     const assetsRef = useRef([]);
     useEffect(() => {
@@ -1427,42 +1460,7 @@ export default function HomeScreen({ navigation, route }) {
                     });
 
                     // Check for large backed-up files and system space
-                    const checkFreeSpaceBanner = async () => {
-                        try {
-                            const lastDismissed = await SecureStore.getItemAsync('lastBannerDismissed');
-                            if (lastDismissed) {
-                                const daysSinceDismiss = (Date.now() - parseInt(lastDismissed, 10)) / (1000 * 60 * 60 * 24);
-                                if (daysSinceDismiss < 7) {
-                                    setFreeUpSpaceInfo({ visible: false, count: 0, loading: false });
-                                    return; // within cooldown
-                                }
-                            }
-                            
-                            // Check system space (< 5GB threshold)
-                            const freeSpaceBytes = await LegacyFileSystem.getFreeDiskStorageAsync();
-                            const freeSpaceGB = freeSpaceBytes / (1024 * 1024 * 1024);
-                            if (freeSpaceGB > 5) {
-                                setFreeUpSpaceInfo({ visible: false, count: 0, loading: false });
-                                return; // still has plenty of space
-                            }
-
-                            const backup = summarizeBackup(await AssetDBService.getBackupSummaryRows());
-                            if (isMounted.current && backup.backedUp > 0) {
-                                setFreeUpSpaceInfo({
-                                    visible: true,
-                                    count: backup.backedUp,
-                                    bytes: backup.backedUpBytes,
-                                    description: describeCounts(backup.photos.backedUp, backup.videos.backedUp),
-                                    loading: false,
-                                });
-                            } else if (isMounted.current) {
-                                setFreeUpSpaceInfo({ visible: false, count: 0, loading: false });
-                            }
-                        } catch (e) {
-                            console.error('[HomeScreen] Error checking large files banner condition:', e);
-                        }
-                    };
-                    checkFreeSpaceBanner();
+                    refreshFreeSpaceBanner();
                 }
             }
 
