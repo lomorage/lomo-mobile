@@ -12,8 +12,11 @@ import { formatBytesLog } from '../utils/formatters';
 import { Send, Folder, X, PlayCircle } from 'lucide-react-native';
 import * as MediaLibrary from 'expo-media-library';
 import { MEDIA_PERMISSIONS } from '../services/MediaService';
+import * as SecureStore from 'expo-secure-store';
 import { Image } from 'expo-image';
 import { useVideoPlayer, VideoView } from 'expo-video';
+
+const DEVELOPER_OPTIONS_KEY = 'lomorage_developer_options';
 
 const aiPct = (num, den) => (den > 0 ? Math.min(100, Math.round((num / den) * 100)) : 0);
 
@@ -184,6 +187,23 @@ export default function SettingsScreen({ navigation, route }) {
     const [serverName, setServerName] = React.useState(AuthService.getServerName());
     const [serverVersion, setServerVersion] = React.useState('Loading...');
     const clientVersion = Constants.expoConfig?.version || '1.0.10';
+
+    // The Developer section is hidden from families until unlocked, like Android's build number.
+    const [developerOptions, setDeveloperOptions] = React.useState(false);
+    const versionTaps = React.useRef(0);
+    React.useEffect(() => {
+        SecureStore.getItemAsync(DEVELOPER_OPTIONS_KEY).then(v => setDeveloperOptions(v === 'true')).catch(() => {});
+    }, []);
+    const showDeveloperOptions = developerOptions || debugMode;
+    const onVersionTap = () => {
+        if (showDeveloperOptions) return;
+        versionTaps.current += 1;
+        if (versionTaps.current >= 7) {
+            setDeveloperOptions(true);
+            SecureStore.setItemAsync(DEVELOPER_OPTIONS_KEY, 'true').catch(() => {});
+            Alert.alert('Developer options', 'Developer options are now shown in Settings.');
+        }
+    };
 
     const [isRemoteModalVisible, setRemoteModalVisible] = React.useState(false);
     const [tempRemoteUrl, setTempRemoteUrl] = React.useState('');
@@ -482,7 +502,7 @@ export default function SettingsScreen({ navigation, route }) {
                 <View style={styles.settingRow}>
                     <View style={styles.settingTextContainer}>
                         <Text style={styles.settingLabel}>Auto-Backup</Text>
-                        <Text style={styles.settingDescription}>Automatically scan and upload your new photos into the cloud.</Text>
+                        <Text style={styles.settingDescription}>Automatically back up new photos and videos to your Lomorage computer.</Text>
                     </View>
                     <Switch
                         value={autoBackupEnabled}
@@ -795,6 +815,7 @@ export default function SettingsScreen({ navigation, route }) {
             </Animated.View>
             )}
 
+            {showDeveloperOptions && (
             <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Developer</Text>
                 <View style={styles.settingRow}>
@@ -1103,6 +1124,7 @@ export default function SettingsScreen({ navigation, route }) {
                     }
                 </TouchableOpacity>
             </View>
+            )}
 
             <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Server Connection</Text>
@@ -1246,12 +1268,13 @@ export default function SettingsScreen({ navigation, route }) {
             <View style={styles.section}>
                 <Text style={styles.sectionTitle}>About</Text>
                 
-                <View style={styles.settingRow}>
+                {/* Tap 7 times to show the Developer section (debug mode, send logs). */}
+                <TouchableOpacity style={styles.settingRow} activeOpacity={1} onPress={onVersionTap}>
                     <View style={styles.settingTextContainer}>
                         <Text style={styles.settingLabel}>Client Version</Text>
                         <Text style={styles.settingDescription}>{clientVersion}</Text>
                     </View>
-                </View>
+                </TouchableOpacity>
                 
                 <View style={styles.settingRow}>
                     <View style={styles.settingTextContainer}>
