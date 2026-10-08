@@ -11,6 +11,7 @@ import AIService from '../services/AIService';
 import { formatBytesLog } from '../utils/formatters';
 import { Send, Folder, X, PlayCircle } from 'lucide-react-native';
 import * as MediaLibrary from 'expo-media-library';
+import { MEDIA_PERMISSIONS } from '../services/MediaService';
 import { Image } from 'expo-image';
 import { useVideoPlayer, VideoView } from 'expo-video';
 
@@ -293,7 +294,7 @@ export default function SettingsScreen({ navigation, route }) {
 
     const loadAlbums = async () => {
         try {
-            const { status } = await MediaLibrary.requestPermissionsAsync();
+            const { status } = await MediaLibrary.requestPermissionsAsync(false, MEDIA_PERMISSIONS);
             if (status === 'granted') {
                 const albums = await MediaLibrary.getAlbumsAsync({ includeSmartAlbums: true });
                 // Filter out albums with 0 assets if possible (getAlbumsAsync doesn't always populate assetCount exactly, but we can sort)

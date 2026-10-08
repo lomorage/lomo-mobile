@@ -7,6 +7,11 @@ import { hashFileAsync, isLivePhotoAsync, prepareLivePhotoBackupAsync, extractVi
 import axios from 'axios';
 import AuthService from './AuthService';
 
+// Lomorage backs up photos and videos only. Without this list expo-media-library asks for and
+// checks music & audio too on Android 13+: a parent who refused that was asked again and again,
+// because "granted" stayed false.
+export const MEDIA_PERMISSIONS = ['photo', 'video'];
+
 class MediaService {
   /**
    * Generates a preview URL that matches a preview the lomorage backend has already
@@ -28,7 +33,7 @@ class MediaService {
    * can decide whether to show an explanation first.
    */
   async getPermissionStatus() {
-    return MediaLibrary.getPermissionsAsync();
+    return MediaLibrary.getPermissionsAsync(false, MEDIA_PERMISSIONS);
   }
 
   async getAccessibleAssetCount() {
@@ -56,7 +61,7 @@ class MediaService {
 
   async requestPermissions() {
     console.log('Checking permissions for', Platform.OS, Platform.Version);
-    const existing = await MediaLibrary.getPermissionsAsync();
+    const existing = await MediaLibrary.getPermissionsAsync(false, MEDIA_PERMISSIONS);
     console.log('Existing permission status:', existing.status, 'granted:', existing.granted);
 
     // On Android, we need to check if we also have the required granular permissions
@@ -84,7 +89,7 @@ class MediaService {
 
     try {
       console.log('Requesting permissions...', Platform.OS, Platform.Version);
-      const { status } = await MediaLibrary.requestPermissionsAsync();
+      const { status } = await MediaLibrary.requestPermissionsAsync(false, MEDIA_PERMISSIONS);
       console.log('Permission request result:', status);
 
       // On Android 13+ (API 33), we need READ_MEDIA_IMAGES/VIDEO
@@ -94,20 +99,18 @@ class MediaService {
           PermissionsAndroid.PERMISSIONS.READ_MEDIA_IMAGES,
           PermissionsAndroid.PERMISSIONS.READ_MEDIA_VIDEO,
           PermissionsAndroid.PERMISSIONS.ACCESS_MEDIA_LOCATION,
-          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
         ]);
       } else if (Platform.OS === 'android' && Platform.Version >= 29) {
         const { PermissionsAndroid } = require('react-native');
         await PermissionsAndroid.requestMultiple([
           PermissionsAndroid.PERMISSIONS.ACCESS_MEDIA_LOCATION,
-          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
         ]);
       }
 
       return status === 'granted';
     } catch (error) {
       console.error('Permission request failed:', error);
-      const final = await MediaLibrary.getPermissionsAsync();
+      const final = await MediaLibrary.getPermissionsAsync(false, MEDIA_PERMISSIONS);
       if (Platform.OS === 'android') {
         const { PermissionsAndroid } = require('react-native');
         const hasLocation = await PermissionsAndroid.check(
