@@ -6,11 +6,13 @@ const server = startTestServer('auth');
 
 describe('account lifecycle against lomod', () => {
   let alice;
+  let diskName; // fetched while the server is still in first-run setup, as RegisterScreen does
 
   it('lists a writable disk on a brand-new server', async () => {
     const disks = await AuthService.getAvailableDisks(server.address);
     expect(disks.length).toBeGreaterThan(0);
     expect(disks[0].name).toBeTruthy();
+    diskName = disks[0].name;
   });
 
   it('registers the first account and logs in with it', async () => {
@@ -32,6 +34,19 @@ describe('account lifecycle against lomod', () => {
 
     await AuthService.login(server.address, alice.username, alice.password);
     expect(AuthService.getToken()).toBeTruthy();
+  });
+
+  it('registering an existing name again with its password just signs in', async () => {
+    // e.g. a second tap on "Register & Log In": the first one already created the account and
+    // signed in, so this request carries that session.
+    await expect(AuthService.register(server.address, alice.username, alice.password, diskName)).resolves.toBe(true);
+    expect(AuthService.getToken()).toBeTruthy();
+  });
+
+  it('registering an existing name with another password explains it in plain words', async () => {
+    const attempt = AuthService.register(server.address, alice.username, 'someone-else-pw', diskName);
+    await expect(attempt).rejects.toThrow('That name is already taken on this computer');
+    await expect(attempt).rejects.not.toThrow(/Requested resource|\{/);
   });
 
   it('rejects a wrong password', async () => {

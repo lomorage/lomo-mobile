@@ -563,19 +563,26 @@ class AuthService {
         throw new Error('Server returned an error during registration');
       }
     } catch (error) {
-      if (error.response?.status === 409) {
-        throw new Error('Username already exists on this server');
+      const data = error.response?.data;
+      const serverText = typeof data === 'string' ? data : data?.text;
+      // lomod answers an existing name with 400 "Requested resource Exist" (older builds: 409).
+      const alreadyExists = error.response?.status === 409 || /Requested resource Exist/i.test(serverText || '');
+      if (alreadyExists) {
+        if (autoLogin) {
+          // Most often this is the same person tapping again after their account was in fact
+          // created; if the password matches, just sign them in.
+          try {
+            return await this.login(trimmedServer, trimmedUsername, trimmedPassword);
+          } catch (loginError) {
+            console.warn('Sign-in after "already exists" failed:', loginError.message);
+          }
+        }
+        throw new Error("That name is already taken on this computer. If it's your account, sign in with its password instead.");
       }
-      
-      let errorMessage = error.message;
-      if (error.response?.data) {
-        errorMessage = typeof error.response.data === 'string' 
-            ? error.response.data 
-            : JSON.stringify(error.response.data);
-      }
+      if (!error.response) throw error; // network / validation errors already read fine
 
-      console.error('Registration error:', errorMessage);
-      throw new Error(errorMessage || 'Failed to create account');
+      console.error('Registration error:', error.response.status, data);
+      throw new Error(serverText ? `Couldn't create the account: ${serverText}` : "Couldn't create the account. Please try again.");
     }
   }
 

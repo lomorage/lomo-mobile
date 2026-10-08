@@ -1168,7 +1168,7 @@ export default function SettingsScreen({ navigation, route }) {
 
                 <TouchableOpacity
                     style={[styles.settingRow, { marginTop: 10 }]}
-                    onPress={() => navigation.navigate('Register', { fromSettings: true })}
+                    onPress={() => navigation.navigate('AddFamilyMember', { fromSettings: true })}
                 >
                     <View style={styles.settingTextContainer}>
                         <Text style={styles.settingLabel}>Create New Account</Text>

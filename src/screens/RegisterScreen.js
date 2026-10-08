@@ -126,8 +126,10 @@ export default function RegisterScreen({ navigation, route }) {
         <>
         <KeyboardAvoidingView
             style={styles.container}
-            behavior="padding"
-            keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 80}
+            // Android already resizes the window for the keyboard (adjustResize); padding on top
+            // of that hid the lower fields and the submit button behind blank space.
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            keyboardVerticalOffset={0}
         >
             <ScrollView 
                 contentContainerStyle={styles.scrollContent}
