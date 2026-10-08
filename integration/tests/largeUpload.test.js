@@ -15,13 +15,16 @@ const MiB = 1024 * KiB;
 
 // Stands in for Cloudflare in front of lomod: a request whose Content-Length is over the limit
 // gets 413 straight away and never reaches lomod; anything else is passed through. Every
-// request is recorded so tests can see how the app split its uploads.
+// request is recorded so tests can see how the app split its uploads; onRequest lets a test
+// act in the middle of an upload.
 function startLimitingProxy(target, limit) {
   const requests = [];
+  let onRequest = null;
   const proxy = http.createServer((req, res) => {
     const length = Number(req.headers['content-length'] || 0);
     const entry = { method: req.method, path: req.url.split('?')[0], length };
     requests.push(entry);
+    if (onRequest) onRequest(entry);
     if (limit && length > limit) {
       entry.status = 413;
       req.resume();
@@ -49,6 +52,7 @@ function startLimitingProxy(target, limit) {
         address: `127.0.0.1:${port}`,
         requests,
         uploads: () => requests.filter((r) => r.method === 'POST' || r.method === 'PATCH'),
+        setOnRequest: (fn) => { onRequest = fn; },
         close: () => new Promise((r) => proxy.close(r)),
       });
     });
@@ -174,6 +178,46 @@ describe('uploading files larger than a proxy allows', () => {
     expect(uploads[0]).toMatchObject({ method: 'PATCH', status: 413 }); // the 2.2 MiB remainder
     expect(uploads.slice(1).every((r) => r.method === 'PATCH' && r.length <= 1 * MiB)).toBe(true);
     await expect(downloadedSha1(hash)).resolves.toBe(hash);
+  });
+
+  it('never raises a learned piece size when a smaller file hits 413', async () => {
+    const tight = await startLimitingProxy(server.url, 300 * KiB);
+    try {
+      await AuthService.updateServerUrl(tight.url);
+      await UploadService._rememberChunkSize(tight.url, 512 * KiB);
+      const file = bigPhoto('mid.jpg', 450 * KiB); // under the learned size, over the new limit
+
+      const result = await UploadService.uploadAsset(addToCameraRoll(file));
+
+      expect(result).toMatchObject({ success: true, hash: sha1(file), chunked: true });
+      // whole file (413), then one 450 KiB piece at the learned 512 KiB (413), then 256 KiB
+      // pieces -- not an extra round at the 1 MiB default
+      expect(tight.uploads().filter((r) => r.status === 413).map((r) => r.length)).toEqual([450 * KiB, 450 * KiB]);
+      await expect(UploadService.getChunkSize(tight.url)).resolves.toBe(256 * KiB);
+    } finally {
+      await tight.close();
+    }
+  });
+
+  it('keeps the learned limit on the server it came from when the connection switches mid-upload', async () => {
+    const tight = await startLimitingProxy(server.url, 600 * KiB);
+    try {
+      await AuthService.updateServerUrl(tight.url);
+      // the phone joins the home Wi-Fi while the upload runs: the app switches to the LAN URL
+      // -- while the whole-file POST is being refused, before the upload switches to pieces
+      tight.setOnRequest((r) => {
+        if (r.method === 'POST' && r.length === 2 * MiB) AuthService.updateServerUrl(direct.url);
+      });
+      const file = bigPhoto('switch.jpg', 2 * MiB);
+
+      const result = await UploadService.uploadAsset(addToCameraRoll(file));
+
+      expect(result).toMatchObject({ success: true, hash: sha1(file), chunked: true });
+      await expect(UploadService.getChunkSize(tight.url)).resolves.toBe(512 * KiB);
+      await expect(UploadService.getChunkSize(direct.url)).resolves.toBe(0);
+    } finally {
+      await tight.close();
+    }
   });
 
   it('halves the piece size when the proxy limit is below it', async () => {

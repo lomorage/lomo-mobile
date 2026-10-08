@@ -28,18 +28,18 @@ class UploadService {
         this.activeTasks = new Map(); // assetId -> task
         this.activePromises = new Map(); // assetId -> promise
         this.cancelledTasks = new Set(); // assetId
-        this.chunkedServers = null; // server URL -> piece size, loaded lazily from SecureStore
+        this.chunkedServers = null; // (promise of) server URL -> piece size, loaded lazily from SecureStore
         // instance fields so integration tests can use small pieces
         this.chunkSize = CHUNK_SIZE;
         this.minChunkSize = MIN_CHUNK_SIZE;
     }
 
-    async _loadChunkedServers() {
-        if (this.chunkedServers) return this.chunkedServers;
-        try {
-            this.chunkedServers = JSON.parse(await SecureStore.getItemAsync(CHUNKED_SERVERS_KEY)) || {};
-        } catch {
-            this.chunkedServers = {};
+    _loadChunkedServers() {
+        // one shared load, so concurrent uploads don't each read and later overwrite the map
+        if (!this.chunkedServers) {
+            this.chunkedServers = SecureStore.getItemAsync(CHUNKED_SERVERS_KEY)
+                .then((json) => JSON.parse(json) || {})
+                .catch(() => ({}));
         }
         return this.chunkedServers;
     }
@@ -109,8 +109,7 @@ class UploadService {
      * the last with 400 "different hash" and keeps the partial file; HEAD then reports its new
      * size. A piece that still gets 413 is retried at half the size.
      */
-    async _chunkedUpload({ assetId, uri, hash, uploadUrl, token, fileSize, chunkSize, startOffset = 0, ifMatch = null, onProgress }) {
-        const serverUrl = AuthService.getServerUrl();
+    async _chunkedUpload({ assetId, uri, hash, serverUrl, uploadUrl, token, fileSize, chunkSize, startOffset = 0, ifMatch = null, onProgress }) {
         const tempChunkDir = FileSystem.cacheDirectory + 'lomorage_chunks/';
         await FileSystem.makeDirectoryAsync(tempChunkDir, { intermediates: true }).catch(()=>{});
         const pieceUri = tempChunkDir + `piece_${String(assetId).replace(/[^a-zA-Z0-9]/g, '')}_${hash}.tmp`;
@@ -447,16 +446,22 @@ class UploadService {
                 return result;
             };
             const uploadInPieces = (chunkSize, startOffset = 0, ifMatch = null) => {
+                if (livePhotoBackup) {
+                    // lomod parses a Live Photo zip as it arrives, so it can't take one in pieces
+                    throw new Error(`This Live Photo (${fileSizeBytes} bytes) is larger than the current connection to the server accepts. Connect to the server's local network to back it up.`);
+                }
                 if (fileSizeBytes === 0) {
                     throw new Error('Cannot upload in pieces because exact local file size could not be determined.');
                 }
                 return this._chunkedUpload({
-                    assetId: asset.id, uri, hash, uploadUrl, token, fileSize: fileSizeBytes,
+                    assetId: asset.id, uri, hash, serverUrl, uploadUrl, token, fileSize: fileSizeBytes,
                     chunkSize, startOffset, ifMatch, onProgress,
                 });
             };
             // A server that rejected a large request before gets large files in pieces right away.
             const knownChunkSize = await this.getChunkSize(serverUrl);
+            // After a 413: pieces no bigger than any size already learned for this server.
+            const chunkSizeAfter413 = knownChunkSize > 0 ? Math.min(knownChunkSize, this.chunkSize) : this.chunkSize;
 
             // 6. Attempt resumable upload if server has partial data (skip for Live Photo zips since recreated zip bytes can differ)
             if (status.resumable && status.receivedBytes > 0 && status.ifMatch && !livePhotoBackup) {
@@ -474,8 +479,8 @@ class UploadService {
                     onProgress,
                 });
                 if (resumeResult.tooLarge) {
-                    await this._rememberChunkSize(serverUrl, this.chunkSize);
-                    return finish({ ...(await uploadInPieces(this.chunkSize, status.receivedBytes, status.ifMatch)), resumed: true });
+                    await this._rememberChunkSize(serverUrl, chunkSizeAfter413);
+                    return finish({ ...(await uploadInPieces(chunkSizeAfter413, status.receivedBytes, status.ifMatch)), resumed: true });
                 }
                 return finish(resumeResult);
             }
@@ -505,8 +510,8 @@ class UploadService {
             if (response.status === 413) {
                 // A proxy (e.g. Cloudflare's 100 MiB limit) refused the whole file; lomod never saw it.
                 console.log(`[UploadService] ${uploadUrl} answered 413 for ${fileSizeBytes} bytes, retrying in pieces.`);
-                await this._rememberChunkSize(serverUrl, this.chunkSize);
-                return finish(await uploadInPieces(this.chunkSize));
+                await this._rememberChunkSize(serverUrl, chunkSizeAfter413);
+                return finish(await uploadInPieces(chunkSizeAfter413));
             }
 
             if (response.status === 200 || response.status === 201 || response.status === 409) {
