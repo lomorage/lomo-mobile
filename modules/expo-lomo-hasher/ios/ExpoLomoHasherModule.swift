@@ -469,6 +469,58 @@ public class ExpoLomoHasherModule: Module {
       }
     }
 
+    // Copies length bytes of sourceUri starting at offset into destUri (fewer at end of file),
+    // for uploading a large file in pieces a size-limited proxy will accept.
+    AsyncFunction("sliceFileRangeAsync") { (sourceUri: String, destUri: String, offset: Int64, length: Int64, promise: Promise) in
+      DispatchQueue.global(qos: .userInitiated).async {
+        do {
+          let parsedSource: URL? = sourceUri.hasPrefix("file://") ? URL(string: sourceUri) : URL(fileURLWithPath: sourceUri)
+          let parsedDest: URL? = destUri.hasPrefix("file://") ? URL(string: destUri) : URL(fileURLWithPath: destUri)
+          guard let sourceUrl = parsedSource, let destUrl = parsedDest else {
+            promise.reject("INVALID_URI", "Invalid URI: \(sourceUri) -> \(destUri)")
+            return
+          }
+          guard offset >= 0, length > 0 else {
+            promise.reject("INVALID_RANGE", "Invalid range offset=\(offset) length=\(length)")
+            return
+          }
+          guard FileManager.default.isReadableFile(atPath: sourceUrl.path) else {
+            promise.reject("ERR_FILE_NOT_READABLE", "Source file not readable: \(sourceUrl.path)")
+            return
+          }
+
+          try FileManager.default.createDirectory(at: destUrl.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: nil)
+          try? FileManager.default.removeItem(at: destUrl)
+          FileManager.default.createFile(atPath: destUrl.path, contents: nil, attributes: nil)
+
+          let sourceHandle = try FileHandle(forReadingFrom: sourceUrl)
+          defer { try? sourceHandle.close() }
+          let destHandle = try FileHandle(forWritingTo: destUrl)
+          defer { try? destHandle.close() }
+
+          try sourceHandle.seek(toOffset: UInt64(offset))
+
+          var remaining = length
+          let bufferSize: Int64 = 1024 * 1024
+          var written: Int64 = 0
+          while remaining > 0 && autoreleasepool(invoking: {
+            let data = sourceHandle.readData(ofLength: Int(min(bufferSize, remaining)))
+            if data.isEmpty {
+              return false
+            }
+            destHandle.write(data)
+            remaining -= Int64(data.count)
+            written += Int64(data.count)
+            return true
+          }) {}
+
+          promise.resolve(written)
+        } catch {
+          promise.reject("SLICE_ERROR", "Failed to slice file: \(error.localizedDescription)")
+        }
+      }
+    }
+
     AsyncFunction("encodeImageEmbeddingAsync") { (imageUriString: String, modelPath: String, promise: Promise) in
       DispatchQueue.global(qos: .userInitiated).async {
         do {

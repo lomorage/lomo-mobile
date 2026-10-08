@@ -8,7 +8,8 @@ jest.mock('../AuthService', () => ({
   getServerUrl: jest.fn(() => 'http://localhost:8000'),
   getToken: jest.fn(() => 'test-token'),
 }));
-jest.mock('../../../modules/expo-lomo-hasher', () => ({ sliceFileAsync: jest.fn() }));
+jest.mock('../../../modules/expo-lomo-hasher', () => ({ sliceFileAsync: jest.fn(), sliceFileRangeAsync: jest.fn() }));
+jest.mock('expo-secure-store', () => ({ getItemAsync: jest.fn(async () => null), setItemAsync: jest.fn() }));
 
 const axios = require('axios');
 const AuthService = require('../AuthService');

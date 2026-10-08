@@ -16,6 +16,7 @@ type ExpoLomoHasherModuleType = {
   extractVideoFromZipAsync(zipUri: string): Promise<string>;
   getLocalLivePhotoVideoUriAsync(uri: string): Promise<string>;
   sliceFileAsync(sourceUri: string, destUri: string, offset: number): Promise<boolean>;
+  sliceFileRangeAsync(sourceUri: string, destUri: string, offset: number, length: number): Promise<number>;
   encodeImageEmbeddingAsync(imageUri: string, modelPath: string): Promise<string>;
   encodeTextEmbeddingAsync(text: string, modelPath: string, vocabPath: string, mergesPath: string): Promise<string>;
   encodeFaceEmbeddingAsync(imageUri: string, boundingBox: any, modelPath: string): Promise<string>;
@@ -46,6 +47,11 @@ export async function getLocalLivePhotoVideoUriAsync(uri: string): Promise<strin
 
 export async function sliceFileAsync(sourceUri: string, destUri: string, offset: number): Promise<boolean> {
   return await ExpoLomoHasher.sliceFileAsync(sourceUri, destUri, offset);
+}
+
+/** Copies length bytes from offset (fewer at end of file); resolves to the bytes written. */
+export async function sliceFileRangeAsync(sourceUri: string, destUri: string, offset: number, length: number): Promise<number> {
+  return await ExpoLomoHasher.sliceFileRangeAsync(sourceUri, destUri, offset, length);
 }
 
 export async function encodeImageEmbeddingAsync(imageUri: string, modelPath: string): Promise<string> {

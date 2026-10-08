@@ -3,13 +3,171 @@ import { Platform } from 'react-native';
 import MediaService from './MediaService';
 import AuthService from './AuthService';
 import axios from 'axios';
-import { sliceFileAsync } from '../../modules/expo-lomo-hasher';
+import * as SecureStore from 'expo-secure-store';
+import { sliceFileAsync, sliceFileRangeAsync } from '../../modules/expo-lomo-hasher';
+
+// Proxies in front of lomod can cap the request body: Cloudflare (demo.lomorage.com style
+// tunnels) answers 413 to anything over 100 MiB, before a byte reaches lomod. Uploads to a
+// server that has answered 413 are sent in pieces of at most this size, using lomod's
+// resume protocol (POST the first piece, then PATCH the rest with the If-Match from HEAD).
+export const CHUNK_SIZE = 90 * 1024 * 1024;
+const MIN_CHUNK_SIZE = 8 * 1024 * 1024;
+const CHUNKED_SERVERS_KEY = 'lomo_chunked_upload_servers';
+
+// lomod error bodies are {"id": "...", "text": "..."}
+function parseErrorText(body) {
+    try {
+        return JSON.parse(body).text || '';
+    } catch {
+        return '';
+    }
+}
 
 class UploadService {
     constructor() {
         this.activeTasks = new Map(); // assetId -> task
         this.activePromises = new Map(); // assetId -> promise
         this.cancelledTasks = new Set(); // assetId
+        this.chunkedServers = null; // server URL -> piece size, loaded lazily from SecureStore
+        // instance fields so integration tests can use small pieces
+        this.chunkSize = CHUNK_SIZE;
+        this.minChunkSize = MIN_CHUNK_SIZE;
+    }
+
+    async _loadChunkedServers() {
+        if (this.chunkedServers) return this.chunkedServers;
+        try {
+            this.chunkedServers = JSON.parse(await SecureStore.getItemAsync(CHUNKED_SERVERS_KEY)) || {};
+        } catch {
+            this.chunkedServers = {};
+        }
+        return this.chunkedServers;
+    }
+
+    /** Piece size to use for serverUrl, or 0 if it has never rejected a request as too large. */
+    async getChunkSize(serverUrl) {
+        const servers = await this._loadChunkedServers();
+        return servers[serverUrl] || 0;
+    }
+
+    async _rememberChunkSize(serverUrl, size) {
+        const servers = await this._loadChunkedServers();
+        if (servers[serverUrl] === size) return;
+        servers[serverUrl] = size;
+        console.log(`[UploadService] ${serverUrl} limits request size; uploading large files in ${size} byte pieces from now on.`);
+        try {
+            await SecureStore.setItemAsync(CHUNKED_SERVERS_KEY, JSON.stringify(servers));
+        } catch (e) {
+            console.warn('[UploadService] Failed to persist chunked upload setting:', e.message);
+        }
+    }
+
+    _sessionType(serverUrl) {
+        // iOS background URL sessions strictly require HTTPS, even with NSAllowsLocalNetworking.
+        // Plain HTTP (LAN server) silently fails with Network Error.
+        // We must fallback to FOREGROUND session on iOS for plain HTTP.
+        const isHttps = serverUrl.toLowerCase().startsWith('https://');
+        return Platform.OS === 'ios' && !isHttps
+            ? (FileSystem.FileSystemSessionType?.FOREGROUND ?? 1)
+            // eslint-disable-next-line import/namespace -- FileSystemUploadSessionType is an older expo-file-system export name kept as a fallback for SDK version differences
+            : (FileSystem.FileSystemSessionType?.BACKGROUND ?? FileSystem.FileSystemUploadSessionType?.BACKGROUND ?? 0);
+    }
+
+    /** Sends fileUri as the whole request body; resolves to the native upload response. */
+    async _send({ assetId, url, fileUri, method, token, headers = {}, onSent }) {
+        const task = FileSystem.createUploadTask(
+            url,
+            fileUri,
+            {
+                httpMethod: method,
+                headers: {
+                    'Authorization': `token=${token}`,
+                    'Content-Type': 'application/octet-stream',
+                    ...headers,
+                },
+                sessionType: this._sessionType(url),
+                uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+                mimeType: 'application/octet-stream',
+            },
+            (progress) => onSent && onSent(progress.totalBytesSent, progress.totalBytesExpectedToSend)
+        );
+        this.activeTasks.set(assetId, task);
+        if (this.cancelledTasks.has(assetId)) {
+            task.cancelAsync().catch(()=>{});
+            throw new Error('Upload cancelled by user');
+        }
+        try {
+            return await task.uploadAsync();
+        } finally {
+            this.activeTasks.delete(assetId);
+        }
+    }
+
+    /**
+     * Uploads uri in pieces of at most chunkSize bytes, starting at startOffset (with ifMatch
+     * from HEAD when the server already holds part of the file). lomod answers every piece but
+     * the last with 400 "different hash" and keeps the partial file; HEAD then reports its new
+     * size. A piece that still gets 413 is retried at half the size.
+     */
+    async _chunkedUpload({ assetId, uri, hash, uploadUrl, token, fileSize, chunkSize, startOffset = 0, ifMatch = null, onProgress }) {
+        const serverUrl = AuthService.getServerUrl();
+        const tempChunkDir = FileSystem.cacheDirectory + 'lomorage_chunks/';
+        await FileSystem.makeDirectoryAsync(tempChunkDir, { intermediates: true }).catch(()=>{});
+        const pieceUri = tempChunkDir + `piece_${String(assetId).replace(/[^a-zA-Z0-9]/g, '')}_${hash}.tmp`;
+
+        let offset = startOffset;
+        try {
+            while (offset < fileSize) {
+                if (this.cancelledTasks.has(assetId)) throw new Error('Upload cancelled by user');
+                const length = Math.min(chunkSize, fileSize - offset);
+                const isLast = offset + length >= fileSize;
+                await sliceFileRangeAsync(uri, pieceUri, offset, length);
+                console.log(`[UploadService] Uploading bytes ${offset}-${offset + length} of ${fileSize} for ${hash}`);
+
+                const pieceStart = offset;
+                const response = await this._send({
+                    assetId, url: uploadUrl, fileUri: pieceUri, token,
+                    method: offset === 0 ? 'POST' : 'PATCH',
+                    headers: offset === 0 ? {} : { 'If-Match': ifMatch },
+                    onSent: (sent) => onProgress && onProgress({
+                        fraction: Math.min(1, (pieceStart + sent) / fileSize),
+                        loaded: pieceStart + sent,
+                        total: fileSize,
+                    }),
+                });
+
+                if (response.status === 200 || response.status === 201 || response.status === 409) {
+                    if (onProgress) onProgress({ fraction: 1, loaded: fileSize, total: fileSize });
+                    return { success: true, hash, chunked: true };
+                }
+                if (response.status === 413) {
+                    if (chunkSize <= this.minChunkSize) {
+                        throw new Error(`Server rejects uploads even in ${chunkSize} byte pieces (HTTP 413).`);
+                    }
+                    chunkSize = Math.max(this.minChunkSize, Math.floor(chunkSize / 2));
+                    await this._rememberChunkSize(serverUrl, chunkSize);
+                    continue;
+                }
+                const errorText = parseErrorText(response.body) || `Server returned ${response.status}`;
+                if (response.status !== 400 || !errorText.includes('different hash') || isLast) {
+                    const err = new Error(errorText);
+                    err.isDifferentHash = errorText.includes('different hash');
+                    throw err;
+                }
+
+                // Piece stored; ask the server where it stands before sending the next one.
+                const status = await this.checkUploadStatus(hash);
+                if (status.exists) return { success: true, hash, chunked: true };
+                if (!status.resumable || !status.ifMatch || status.receivedBytes <= offset || status.receivedBytes > fileSize) {
+                    throw new Error(`Server did not keep the uploaded piece (has ${status.receivedBytes || 0} of ${fileSize} bytes).`);
+                }
+                offset = status.receivedBytes;
+                ifMatch = status.ifMatch;
+            }
+            throw new Error(`Upload of ${hash} ended without the server confirming it.`);
+        } finally {
+            await FileSystem.deleteAsync(pieceUri, { idempotent: true }).catch(()=>{});
+        }
     }
 
     cancelUpload(assetId) {
@@ -103,57 +261,30 @@ class UploadService {
             await sliceFileAsync(uri, tempSliceUri, receivedBytes);
 
             console.log(`[UploadService] Initiating native PATCH upload of the remaining slice...`);
-            
-            const serverUrl = AuthService.getServerUrl();
-            const isHttps = serverUrl.toLowerCase().startsWith('https://');
-            const sessionType = Platform.OS === 'ios' && !isHttps
-                ? (FileSystem.FileSystemSessionType?.FOREGROUND ?? 1)
-                // eslint-disable-next-line import/namespace -- FileSystemUploadSessionType is an older expo-file-system export name kept as a fallback for SDK version differences
-                : (FileSystem.FileSystemSessionType?.BACKGROUND ?? FileSystem.FileSystemUploadSessionType?.BACKGROUND ?? 0);
-
-            const task = FileSystem.createUploadTask(
-                uploadUrl,
-                tempSliceUri,
-                {
-                    httpMethod: 'PATCH',
-                    headers: {
-                        'Authorization': `token=${token}`,
-                        'Content-Type': 'application/octet-stream',
-                        'If-Match': ifMatch
-                    },
-                    sessionType,
-                    uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
-                    mimeType: 'application/octet-stream',
-                },
-                (progress) => {
+            const response = await this._send({
+                assetId, url: uploadUrl, fileUri: tempSliceUri, token, method: 'PATCH',
+                headers: { 'If-Match': ifMatch },
+                onSent: (sent) => {
                     if (onProgress && fileSize > 0) {
-                        const totalSent = receivedBytes + progress.totalBytesSent;
+                        const totalSent = receivedBytes + sent;
                         onProgress({
                             fraction: Math.min(1, totalSent / fileSize),
                             loaded: totalSent,
                             total: fileSize
                         });
                     }
-                }
-            );
-
-            this.activeTasks.set(assetId, task);
-
-            if (this.cancelledTasks.has(assetId)) {
-                task.cancelAsync().catch(()=>{});
-                throw new Error('Upload cancelled by user');
-            }
-
-            const response = await task.uploadAsync();
-            this.activeTasks.delete(assetId);
+                },
+            });
 
             if (response.status === 200 || response.status === 201 || response.status === 409) {
                 if (onProgress) onProgress({ fraction: 1, loaded: fileSize, total: fileSize });
                 console.log(`[UploadService] Resumed upload completed for ${hash}`);
                 return { success: true, hash, resumed: true };
-            } else {
-                throw new Error(`Server returned ${response.status} on partial upload patch.`);
             }
+            if (response.status === 413) {
+                return { tooLarge: true };
+            }
+            throw new Error(`Server returned ${response.status} on partial upload patch.`);
 
         } finally {
             await FileSystem.deleteAsync(tempSliceUri, { idempotent: true }).catch(()=>{});
@@ -310,12 +441,30 @@ class UploadService {
             const creationTime = new Date(info.creationTime || Date.now()).toISOString();
             const uploadUrl = `${serverUrl}/asset/${hash.toLowerCase()}?ext=${ext}&createtime=${encodeURIComponent(creationTime)}`;
 
-            const isHttps = serverUrl.toLowerCase().startsWith('https://');
+            const finish = async (result) => {
+                if (result.success) await markUploaded();
+                if (tempFileToClean) await FileSystem.deleteAsync(tempFileToClean, { idempotent: true }).catch(()=>{});
+                return result;
+            };
+            const uploadInPieces = (chunkSize, startOffset = 0, ifMatch = null) => {
+                if (fileSizeBytes === 0) {
+                    throw new Error('Cannot upload in pieces because exact local file size could not be determined.');
+                }
+                return this._chunkedUpload({
+                    assetId: asset.id, uri, hash, uploadUrl, token, fileSize: fileSizeBytes,
+                    chunkSize, startOffset, ifMatch, onProgress,
+                });
+            };
+            // A server that rejected a large request before gets large files in pieces right away.
+            const knownChunkSize = await this.getChunkSize(serverUrl);
 
             // 6. Attempt resumable upload if server has partial data (skip for Live Photo zips since recreated zip bytes can differ)
             if (status.resumable && status.receivedBytes > 0 && status.ifMatch && !livePhotoBackup) {
                 if (fileSizeBytes === 0) {
                     throw new Error('Cannot safely resume upload because exact local file size could not be determined. Aborting to prevent server data corruption.');
+                }
+                if (knownChunkSize > 0 && fileSizeBytes - status.receivedBytes > knownChunkSize) {
+                    return finish({ ...(await uploadInPieces(knownChunkSize, status.receivedBytes, status.ifMatch)), resumed: true });
                 }
                 const resumeResult = await this._resumeUpload({
                     assetId: asset.id, uri, hash, uploadUrl, token,
@@ -324,76 +473,54 @@ class UploadService {
                     fileSize: fileSizeBytes,
                     onProgress,
                 });
-                if (resumeResult) {
-                    if (resumeResult.success) await markUploaded();
-                    if (tempFileToClean) await FileSystem.deleteAsync(tempFileToClean, { idempotent: true }).catch(()=>{});
-                    return resumeResult;
+                if (resumeResult.tooLarge) {
+                    await this._rememberChunkSize(serverUrl, this.chunkSize);
+                    return finish({ ...(await uploadInPieces(this.chunkSize, status.receivedBytes, status.ifMatch)), resumed: true });
                 }
+                return finish(resumeResult);
+            }
+
+            if (knownChunkSize > 0 && fileSizeBytes > knownChunkSize) {
+                console.log(`[UploadService] Uploading ${fileSizeBytes} bytes in pieces of ${knownChunkSize} to ${uploadUrl}`);
+                return finish(await uploadInPieces(knownChunkSize));
             }
 
             console.log(`[UploadService] Full upload to: ${uploadUrl} (${fileSizeBytes} bytes)`);
 
             // 7. Full binary Upload using native session
-            // iOS background URL sessions strictly require HTTPS, even with NSAllowsLocalNetworking.
-            // Plain HTTP (LAN server) silently fails with Network Error. 
-            // We must fallback to FOREGROUND session on iOS for plain HTTP.
-            const sessionType = Platform.OS === 'ios' && !isHttps
-                ? (FileSystem.FileSystemSessionType?.FOREGROUND ?? 1)
-                // eslint-disable-next-line import/namespace -- FileSystemUploadSessionType is an older expo-file-system export name kept as a fallback for SDK version differences
-                : (FileSystem.FileSystemSessionType?.BACKGROUND ?? FileSystem.FileSystemUploadSessionType?.BACKGROUND ?? 0);
-
             this.cancelledTasks.delete(asset.id);
-            const task = FileSystem.createUploadTask(
-                uploadUrl,
-                uri,
-                {
-                    httpMethod: 'POST',
-                    headers: {
-                        'Authorization': `token=${token}`,
-                        'Content-Type': 'application/octet-stream',
-                    },
-                    sessionType,
-                    uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
-                    mimeType: 'application/octet-stream',
-                },
-                (progress) => {
+            const response = await this._send({
+                assetId: asset.id, url: uploadUrl, fileUri: uri, token, method: 'POST',
+                onSent: (sent, expected) => {
                     if (onProgress) {
                         onProgress({
-                            fraction: fileSizeBytes > 0 ? progress.totalBytesSent / fileSizeBytes : 0,
-                            loaded: progress.totalBytesSent,
-                            total: fileSizeBytes > 0 ? fileSizeBytes : progress.totalBytesExpectedToSend
+                            fraction: fileSizeBytes > 0 ? sent / fileSizeBytes : 0,
+                            loaded: sent,
+                            total: fileSizeBytes > 0 ? fileSizeBytes : expected
                         });
                     }
-                }
-            );
-            this.activeTasks.set(asset.id, task);
+                },
+            });
 
-            if (this.cancelledTasks.has(asset.id)) {
-                task.cancelAsync().catch(()=>{});
-                throw new Error('Upload cancelled by user');
+            if (response.status === 413) {
+                // A proxy (e.g. Cloudflare's 100 MiB limit) refused the whole file; lomod never saw it.
+                console.log(`[UploadService] ${uploadUrl} answered 413 for ${fileSizeBytes} bytes, retrying in pieces.`);
+                await this._rememberChunkSize(serverUrl, this.chunkSize);
+                return finish(await uploadInPieces(this.chunkSize));
             }
 
-            const response = await task.uploadAsync();
-            this.activeTasks.delete(asset.id);
-            
             if (response.status === 200 || response.status === 201 || response.status === 409) {
                 await markUploaded();
                 console.log(`[UploadService] Full upload completed for ${hash} (HTTP ${response.status}).`);
                 if (tempFileToClean) await FileSystem.deleteAsync(tempFileToClean, { idempotent: true }).catch(()=>{});
                 return { success: true, hash };
             } else {
-                let errorMsg = `Server returned ${response.status}`;
-                let isDuplicate = false;
-                let isDifferentHash = false;
-                try {
-                    const body = JSON.parse(response.body);
-                    errorMsg = body.text || errorMsg;
-                    // Server returns UNIQUE constraint when a concurrent upload already saved it
-                    if (errorMsg.includes('UNIQUE constraint failed')) isDuplicate = true;
-                    // Server returns 'different hash' when iOS re-encodes the file between
-                    // hashing and uploading (HEIC auto-conversion, EXIF rewrite, iCloud sync, etc.)
-                    if (errorMsg.includes('different hash')) isDifferentHash = true;
-                } catch (e) {}
+                const errorMsg = parseErrorText(response.body) || `Server returned ${response.status}`;
+                // Server returns UNIQUE constraint when a concurrent upload already saved it
+                const isDuplicate = errorMsg.includes('UNIQUE constraint failed');
+                // Server returns 'different hash' when iOS re-encodes the file between
+                // hashing and uploading (HEIC auto-conversion, EXIF rewrite, iCloud sync, etc.)
+                const isDifferentHash = errorMsg.includes('different hash');
                 if (isDuplicate) {
                     console.warn(`[UploadService] Concurrent duplicate detected for ${hash}, treating as success.`);
                     await markUploaded();
