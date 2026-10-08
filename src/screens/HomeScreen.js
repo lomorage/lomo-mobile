@@ -1371,12 +1371,8 @@ export default function HomeScreen({ navigation, route }) {
             GalleryStore.setAssets(mappedOnThisDay, 'onThisDay');
 
             // Insert local assets into DB so they have GPS coordinate caching for map markers
-            AssetDBService.insertLocalAssets(cumulativeLocalAssets).then(() => {
-                // Read EXIF for photos with no taken date not seen before (a few hundred per run);
-                // they take effect from the next library load.
-                MediaService.readMissingTakenTimes(cumulativeLocalAssets, knownTakenTimes)
-                    .then(entries => AssetDBService.setExifTakenTimes(entries))
-                    .catch(err => console.warn('[HomeScreen] Reading EXIF taken times failed:', err));
+            const localRowsSaved = AssetDBService.insertLocalAssets(cumulativeLocalAssets);
+            localRowsSaved.then(() => {
                 SyncService.syncLocalGPS().catch(err => {
                     console.error('[HomeScreen] Failed to sync local GPS:', err);
                 });
@@ -1398,6 +1394,15 @@ export default function HomeScreen({ navigation, route }) {
             }).catch(err => {
                 console.error('[HomeScreen] Failed to insert local assets into DB:', err);
             });
+
+            // Read EXIF for photos with no taken date not seen before. Started now, applied after
+            // the first render and before the hash tree is built, so the first sync and the
+            // timeline already use the EXIF date. Usually only the first load has any to read.
+            const missingTakenTimes = MediaService.readMissingTakenTimes(cumulativeLocalAssets, knownTakenTimes)
+                .catch(err => {
+                    console.warn('[HomeScreen] Reading EXIF taken times failed:', err);
+                    return [];
+                });
 
             if (!isMounted.current) return;
 
@@ -1434,6 +1439,13 @@ export default function HomeScreen({ navigation, route }) {
                 // No user-facing progress here on purpose — this is a local hash/diff pass,
                 // not something a photo count would meaningfully describe to the user.
                 const scanStartedAt = Date.now();
+                const takenTimes = await missingTakenTimes;
+                if (takenTimes.length > 0) {
+                    localRowsSaved.then(() => AssetDBService.setExifTakenTimes(takenTimes))
+                        .catch(err => console.warn('[HomeScreen] Saving EXIF taken times failed:', err));
+                    const applied = MediaService.applyKnownTakenTimes(cumulativeLocalAssets, new Map(takenTimes.map(e => [e.id, e.time])));
+                    if (applied > 0 && isMounted.current) mergeAndSetAssets(cumulativeLocalAssets, false);
+                }
                 const diff = await SyncService.sync(cumulativeLocalAssets, () => {});
                 syncSucceeded = true;
                 logMetric('scan', Date.now() - scanStartedAt, {

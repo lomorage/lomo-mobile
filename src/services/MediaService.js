@@ -7,6 +7,7 @@ import { hashFileAsync, isLivePhotoAsync, prepareLivePhotoBackupAsync, extractVi
 import axios from 'axios';
 import AuthService from './AuthService';
 import { exifTakenTime } from '../utils/takenTime';
+import { logMetric } from '../utils/scaleMetrics';
 
 // Lomorage backs up photos and videos only. Without this list expo-media-library asks for and
 // checks music & audio too on Android 13+: a parent who refused that was asked again and again,
@@ -78,16 +79,25 @@ class MediaService {
     return applied;
   }
 
-  // Reads the EXIF taken time of up to `limit` photos with no OS taken date that haven't been
-  // read before. Returns [{ id, time }] (time 0 = no EXIF date) to store with setExifTakenTimes.
-  async readMissingTakenTimes(assets, known, limit = 300) {
+  // Reads the EXIF taken time of photos with no OS taken date that haven't been read before,
+  // a few at a time. Returns [{ id, time }] (time 0 = no EXIF date) for setExifTakenTimes.
+  async readMissingTakenTimes(assets, known, limit = Infinity, concurrency = 8) {
     const todo = assets
       .filter(a => !(a.creationTime > 0) && a.mediaType === 'photo' && !known.has(a.id))
       .slice(0, limit);
-    const entries = [];
-    for (const asset of todo) {
-      const info = await this.getAssetInfo(asset.id);
-      entries.push({ id: asset.id, time: exifTakenTime(info?.exif) || 0 });
+    const startedAt = Date.now();
+    const entries = new Array(todo.length);
+    let next = 0;
+    const worker = async () => {
+      while (next < todo.length) {
+        const i = next++;
+        const info = await this.getAssetInfo(todo[i].id);
+        entries[i] = { id: todo[i].id, time: exifTakenTime(info?.exif) || 0 };
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(concurrency, todo.length) }, worker));
+    if (todo.length > 0) {
+      logMetric('exif_taken_time', Date.now() - startedAt, { photos: todo.length, found: entries.filter(e => e.time > 0).length });
     }
     return entries;
   }
