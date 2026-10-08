@@ -522,14 +522,26 @@ class AssetDBService {
     return new Map(rows.map(r => [r.id, r.exifTakenTime]));
   }
 
+  async getExifTakenTime(id) {
+    if (!this.db) return null;
+    const row = await this.db.getFirstAsync('SELECT exifTakenTime FROM MediaAsset WHERE id = ? AND isLocal = 1', [id]);
+    return row?.exifTakenTime ?? null;
+  }
+
+  // Also fills createTime where the scan stored 0 (no OS taken date), so date-based queries such
+  // as On This Day see the EXIF date right away rather than after the next library load.
   async setExifTakenTimes(entries) {
     if (!this.db || !entries || entries.length === 0) return;
     for (let i = 0; i < entries.length; i += 200) {
       const chunk = entries.slice(i, i + 200);
       const cases = chunk.map(() => 'WHEN ? THEN ?').join(' ');
+      const params = [...chunk.flatMap(({ id, time }) => [id, time]), ...chunk.map(({ id }) => id)];
+      const ids = chunk.map(() => '?').join(',');
+      await this.db.runAsync(`UPDATE MediaAsset SET exifTakenTime = CASE id ${cases} END WHERE id IN (${ids})`, params);
       await this.db.runAsync(
-        `UPDATE MediaAsset SET exifTakenTime = CASE id ${cases} END WHERE id IN (${chunk.map(() => '?').join(',')})`,
-        [...chunk.flatMap(({ id, time }) => [id, time]), ...chunk.map(({ id }) => id)]
+        `UPDATE MediaAsset SET createTime = CASE id ${cases} END
+         WHERE id IN (${ids}) AND isLocal = 1 AND (createTime IS NULL OR createTime = 0)`,
+        params
       );
     }
   }

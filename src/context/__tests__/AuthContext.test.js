@@ -16,7 +16,12 @@ jest.mock('../../services/FirstBackupService', () => ({
   },
 }));
 
+jest.mock('../../utils/scaleMetrics', () => ({ markPaired: jest.fn() }));
+jest.mock('../../services/backupHistory', () => ({ clearLastBackupAt: jest.fn() }));
+
 const AuthService = require('../../services/AuthService');
+const { markPaired } = require('../../utils/scaleMetrics');
+const { clearLastBackupAt } = require('../../services/backupHistory');
 const FirstBackupService = require('../../services/FirstBackupService').default;
 import { AuthProvider, useAuth } from '../AuthContext';
 
@@ -40,6 +45,7 @@ beforeEach(() => {
   AuthService.login.mockResolvedValue();
   AuthService.register.mockResolvedValue();
   AuthService.logout.mockResolvedValue();
+  markPaired.mockResolvedValue(false);
   latestAuth = undefined;
 });
 
@@ -143,5 +149,28 @@ describe('session-expiry handling', () => {
       root.unmount();
     });
     expect(AuthService.setOnSessionExpired).toHaveBeenLastCalledWith(null);
+  });
+});
+
+describe('pairing with a computer', () => {
+  test('a new computer or account forgets the previous last-backup time', async () => {
+    markPaired.mockResolvedValue(true);
+    await renderAuthProvider();
+    await act(async () => { await latestAuth.login('nas:8000', 'alice', 'pw'); });
+    expect(markPaired).toHaveBeenCalledWith('nas:8000|alice');
+    expect(clearLastBackupAt).toHaveBeenCalled();
+  });
+
+  test('signing in again to the same one keeps it', async () => {
+    markPaired.mockResolvedValue(false);
+    await renderAuthProvider();
+    await act(async () => { await latestAuth.login('nas:8000', 'alice', 'pw'); });
+    expect(clearLastBackupAt).not.toHaveBeenCalled();
+  });
+
+  test('sign-up passes the computer name from the setup link on to login', async () => {
+    await renderAuthProvider();
+    await act(async () => { await latestAuth.register('nas:8000', 'alice', 'pw', 'disk', true, 'windows'); });
+    expect(AuthService.register).toHaveBeenCalledWith('nas:8000', 'alice', 'pw', 'disk', '', true, 'windows');
   });
 });

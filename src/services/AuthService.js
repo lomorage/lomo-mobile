@@ -577,7 +577,9 @@ class AuthService {
             console.warn('Sign-in after "already exists" failed:', loginError.message);
           }
         }
-        throw new Error("That name is already taken on this computer. If it's your account, sign in with its password instead.");
+        throw new Error(autoLogin
+          ? "That name is already taken on this computer. If it's your account, sign in with its password instead."
+          : 'That name is already taken on this computer. Please choose another one.');
       }
       if (!error.response) throw error; // network / validation errors already read fine
 

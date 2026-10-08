@@ -54,3 +54,9 @@ test('journey metrics are measured from pairing, survive restarts, and log once 
   await logSincePairedOnce('time_to_first_backup', {}, 230000);
   expect(logs[1]).toBe('[ScaleMetric] name=time_to_first_backup ms=30000');
 });
+
+test('markPaired tells whether this is a new pairing', async () => {
+  await expect(markPaired('nas|alice', 1)).resolves.toBe(true);
+  await expect(markPaired('nas|alice', 2)).resolves.toBe(false);
+  await expect(markPaired('pc|alice', 3)).resolves.toBe(true);
+});

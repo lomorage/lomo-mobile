@@ -614,3 +614,61 @@ describe('HomeScreen Performance Tests', () => {
     expect(duration).toBeLessThan(150);
   });
 });
+
+describe('HomeScreen EXIF taken dates on library load', () => {
+  const AssetDBService = require('../../services/AssetDBService').default;
+  const nav = () => ({ navigate: jest.fn(), addListener: jest.fn(() => () => {}) });
+  const takenAt = new Date(2019, 2, 4, 12, 27, 32).getTime();
+  const settle = async () => {
+    for (let i = 0; i < 5; i++) await act(async () => { await flushPromises(); });
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    SyncService.localHashCache = {};
+    MediaService.getAllAssets.mockResolvedValue([
+      { id: 'p', mediaType: 'photo', creationTime: 0, modificationTime: Date.now() },
+    ]);
+    AssetDBService.getExifTakenTimes.mockResolvedValue(new Map());
+  });
+
+  afterEach(() => {
+    MediaService.readMissingTakenTimes.mockResolvedValue([]);
+    jest.useRealTimers();
+  });
+
+  test('EXIF dates read during the load are applied and saved before the hash tree is built', async () => {
+    MediaService.readMissingTakenTimes.mockResolvedValue([{ id: 'p', time: takenAt }]);
+    let component;
+    await act(async () => { component = renderer.create(<HomeScreen navigation={nav()} />); });
+    await settle();
+
+    expect(SyncService.sync).toHaveBeenCalled();
+    const applyCall = MediaService.applyKnownTakenTimes.mock.calls.findIndex(([, map]) => map.get('p') === takenAt);
+    expect(applyCall).toBeGreaterThanOrEqual(0);
+    expect(MediaService.applyKnownTakenTimes.mock.invocationCallOrder[applyCall])
+      .toBeLessThan(SyncService.sync.mock.invocationCallOrder[0]);
+    expect(AssetDBService.setExifTakenTimes).toHaveBeenCalledWith([{ id: 'p', time: takenAt }]);
+    act(() => component.unmount());
+  });
+
+  test('a slow EXIF read does not hold up sync for more than a few seconds, and is still saved', async () => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'] });
+    let finishReading;
+    MediaService.readMissingTakenTimes.mockReturnValue(new Promise(resolve => { finishReading = resolve; }));
+    let component;
+    await act(async () => { component = renderer.create(<HomeScreen navigation={nav()} />); });
+    await settle();
+    expect(SyncService.sync).not.toHaveBeenCalled();
+
+    await act(async () => { jest.advanceTimersByTime(3000); });
+    await settle();
+    expect(SyncService.sync).toHaveBeenCalled();
+    expect(AssetDBService.setExifTakenTimes).not.toHaveBeenCalled();
+
+    await act(async () => { finishReading([{ id: 'p', time: takenAt }]); });
+    await settle();
+    expect(AssetDBService.setExifTakenTimes).toHaveBeenCalledWith([{ id: 'p', time: takenAt }]);
+    act(() => component.unmount());
+  });
+});

@@ -171,6 +171,14 @@ describe('buildUploadUrl', () => {
     expect(new Date(sent).getTime()).toBe(new Date(2019, 2, 4, 12, 27, 32).getTime());
   });
 
+  test('prefers the EXIF time the library load stored, so upload and timeline use the same value', () => {
+    const stored = new Date(2019, 2, 4, 12, 27, 32).getTime();
+    const url = buildUploadUrl('http://pc:8000', 'abc', 'jpg', {
+      creationTime: 0, modificationTime: modified, exif: { DateTimeOriginal: '2001:01:01 00:00:00' },
+    }, stored);
+    expect(new Date(decodeURIComponent(url.match(/createtime=([^&]+)/)[1])).getTime()).toBe(stored);
+  });
+
   test('no taken date and no EXIF date: the file time, never "now"', () => {
     const url = buildUploadUrl('http://pc:8000', 'abc', 'jpg', { creationTime: 0, modificationTime: modified });
     expect(url).toContain('createtime=2026-10-08T00%3A12%3A00.000Z');

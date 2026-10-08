@@ -57,6 +57,11 @@ describe('the date a photo is filed under on the computer', () => {
     expect(local && remote).toBeTruthy();
     expect(dayPath(local)).toBe(dayPath(remote));
     expect(dayPath(local)).toMatch(/^2005\//);
+
+    // the stored row gets the EXIF date too (On This Day and other date queries read createTime)
+    const photo = roll.find(a => a.filename === 'photo-2003-11-23.jpg');
+    const row = await AssetDBService.db.getFirstAsync('SELECT createTime FROM MediaAsset WHERE id = ?', [photo.id]);
+    expect(row.createTime).toBe(new Date(2005, 4, 5, 10, 0, 0).getTime());
   });
 
   it('a taken date the phone reports is used as is', async () => {

@@ -11,6 +11,15 @@ export async function setLastBackupAt(time = Date.now()) {
   }
 }
 
+// A different computer or account: its backups haven't happened yet.
+export async function clearLastBackupAt() {
+  try {
+    await SecureStore.deleteItemAsync(LAST_BACKUP_KEY);
+  } catch (e) {
+    console.warn('[backupHistory] Failed to clear last backup time:', e.message);
+  }
+}
+
 export async function getLastBackupAt() {
   try {
     const value = await SecureStore.getItemAsync(LAST_BACKUP_KEY);

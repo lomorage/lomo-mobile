@@ -32,6 +32,8 @@ const { width } = Dimensions.get('window');
 const COLUMN_COUNT = 3;
 const ITEM_SIZE = width / COLUMN_COUNT;
 const FIRST_BACKUP_KEEP_AWAKE_TAG = 'lomorage-first-backup';
+// Longest a library load waits for EXIF taken dates before syncing anyway.
+const EXIF_WAIT_MS = 3000;
 
 // Grid thumbnails intentionally skip the memory cache. We tried gating this on
 // Device.totalMemory (memory-disk above 4GB), but confirmed on a real 11.8GB-RAM
@@ -456,7 +458,6 @@ export default function HomeScreen({ navigation, route }) {
 
 
     const isMounted = useRef(true);
-
     const isProgrammaticSearchRef = useRef(false);
     const appState = useRef(AppState.currentState);
 
@@ -1439,13 +1440,24 @@ export default function HomeScreen({ navigation, route }) {
                 // No user-facing progress here on purpose — this is a local hash/diff pass,
                 // not something a photo count would meaningfully describe to the user.
                 const scanStartedAt = Date.now();
-                const takenTimes = await missingTakenTimes;
-                if (takenTimes.length > 0) {
-                    localRowsSaved.then(() => AssetDBService.setExifTakenTimes(takenTimes))
+                const applyTakenTimes = (entries) => {
+                    if (!entries || entries.length === 0) return;
+                    localRowsSaved.then(() => AssetDBService.setExifTakenTimes(entries))
                         .catch(err => console.warn('[HomeScreen] Saving EXIF taken times failed:', err));
-                    const applied = MediaService.applyKnownTakenTimes(cumulativeLocalAssets, new Map(takenTimes.map(e => [e.id, e.time])));
+                    const applied = MediaService.applyKnownTakenTimes(cumulativeLocalAssets, new Map(entries.map(e => [e.id, e.time])));
                     if (applied > 0 && isMounted.current) mergeAndSetAssets(cumulativeLocalAssets, false);
-                }
+                };
+                // Don't hold up sync (and backup) for long on a first load with many such photos:
+                // past EXIF_WAIT_MS, sync with what's known; the rest is still saved and shown, and
+                // the hash tree picks it up on the next load.
+                let exifWaitTimer;
+                const takenTimes = await Promise.race([
+                    missingTakenTimes,
+                    new Promise(resolve => { exifWaitTimer = setTimeout(() => resolve(null), EXIF_WAIT_MS); }),
+                ]);
+                clearTimeout(exifWaitTimer);
+                if (takenTimes) applyTakenTimes(takenTimes);
+                else missingTakenTimes.then(applyTakenTimes);
                 const diff = await SyncService.sync(cumulativeLocalAssets, () => {});
                 syncSucceeded = true;
                 logMetric('scan', Date.now() - scanStartedAt, {

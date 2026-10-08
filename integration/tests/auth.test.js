@@ -51,6 +51,13 @@ describe('account lifecycle against lomod', () => {
     await expect(attempt).rejects.not.toThrow(/Requested resource|\{/);
   });
 
+  it('adding a family member under a taken name asks for another name', async () => {
+    // done from Settings by someone already signed in
+    await AuthService.login(server.address, alice.username, alice.password);
+    const attempt = AuthService.register(server.address, alice.username, 'family-pw-1', diskName, '', false);
+    await expect(attempt).rejects.toThrow('That name is already taken on this computer. Please choose another one.');
+  });
+
   it('rejects a wrong password', async () => {
     await expect(AuthService.login(server.address, alice.username, 'not-the-password')).rejects.toThrow(
       'Invalid username or password',
