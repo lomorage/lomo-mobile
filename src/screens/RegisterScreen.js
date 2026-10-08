@@ -11,6 +11,7 @@ export default function RegisterScreen({ navigation, route }) {
     const { register: contextRegister } = useAuth();
     const fromSettings = route?.params?.fromSettings || false;
     const scannedServer = route?.params?.server || null;
+    const serverName = route?.params?.serverName || null;
     const [server, setServer] = useState(scannedServer || '');
     const [disks, setDisks] = useState([]);
     const [selectedDisk, setSelectedDisk] = useState(null);
@@ -95,7 +96,7 @@ export default function RegisterScreen({ navigation, route }) {
 
         setLoading(true);
         try {
-            await contextRegister(server, username, password, selectedDisk, !fromSettings);
+            await contextRegister(server, username, password, selectedDisk, !fromSettings, serverName);
             if (fromSettings) {
                 // Offer a QR code so the account holder can hand their device to the
                 // family member and have them scan-to-sign-in, instead of relaying

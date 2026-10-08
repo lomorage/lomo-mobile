@@ -39,8 +39,10 @@ describe('account lifecycle against lomod', () => {
   it('registering an existing name again with its password just signs in', async () => {
     // e.g. a second tap on "Register & Log In": the first one already created the account and
     // signed in, so this request carries that session.
-    await expect(AuthService.register(server.address, alice.username, alice.password, diskName)).resolves.toBe(true);
+    await expect(AuthService.register(server.address, alice.username, alice.password, diskName, '', true, 'windows')).resolves.toBe(true);
     expect(AuthService.getToken()).toBeTruthy();
+    // the computer's name from the setup link is kept for Backup Status
+    expect(AuthService.getServerName()).toBe('windows');
   });
 
   it('registering an existing name with another password explains it in plain words', async () => {

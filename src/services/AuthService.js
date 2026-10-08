@@ -525,7 +525,7 @@ class AuthService {
     return 'Unknown';
   }
 
-  async register(serverAddress, username, password, homedir, nickName = "", autoLogin = true) {
+  async register(serverAddress, username, password, homedir, nickName = "", autoLogin = true, serverName = null) {
     const trimmedServer = serverAddress ? serverAddress.trim() : '';
     const trimmedUsername = username ? username.trim() : '';
     const trimmedPassword = password ? password.trim() : '';
@@ -556,7 +556,7 @@ class AuthService {
       if (response.status === 200) {
         if (autoLogin) {
             console.log('Registration successful, logging in...');
-            return await this.login(trimmedServer, trimmedUsername, trimmedPassword);
+            return await this.login(trimmedServer, trimmedUsername, trimmedPassword, serverName);
         }
         return true;
       } else {
@@ -572,7 +572,7 @@ class AuthService {
           // Most often this is the same person tapping again after their account was in fact
           // created; if the password matches, just sign them in.
           try {
-            return await this.login(trimmedServer, trimmedUsername, trimmedPassword);
+            return await this.login(trimmedServer, trimmedUsername, trimmedPassword, serverName);
           } catch (loginError) {
             console.warn('Sign-in after "already exists" failed:', loginError.message);
           }

@@ -12,6 +12,7 @@ import TaskSchedulerService from './TaskSchedulerService';
 import { startKeepAlive, stopKeepAlive } from '../../modules/expo-background-keepalive';
 import FirstBackupService, { FIRST_BACKUP_CHANGED_EVENT } from './FirstBackupService';
 import { logMetric, logSincePairedOnce } from '../utils/scaleMetrics';
+import { setLastBackupAt } from './backupHistory';
 
 export const BACKGROUND_BACKUP_TASK = 'LOMO_BACKUP_TASK';
 export const BACKGROUND_LOCATION_TASK = 'LOMO_LOCATION_TASK';
@@ -478,6 +479,7 @@ class AutoBackupManager {
             if (!this.isPaused && remaining.length === 0) {
                 logSincePairedOnce('time_to_full_backup', { uploaded: this.completedSessionCount });
             }
+            if (this.completedSessionCount > 0) setLastBackupAt();
             if (remaining.length > 0 && !this.isPaused) {
                 this.syncQueueWithGallery();
             } else if (!this.isPaused) {

@@ -46,8 +46,9 @@ export const AuthProvider = ({ children }) => {
     setIsAuthenticated(true);
   };
 
-  const register = async (server, username, password, homedir, autoLogin = true) => {
-    await AuthService.register(server, username, password, homedir, "", autoLogin);
+  // serverName: the computer's name from the setup link, shown later in Backup Status.
+  const register = async (server, username, password, homedir, autoLogin = true, serverName = null) => {
+    await AuthService.register(server, username, password, homedir, "", autoLogin, serverName);
     if (autoLogin) {
       await markPaired(`${server}|${username}`);
       await FirstBackupService.beginIfNeeded().catch((error) => {

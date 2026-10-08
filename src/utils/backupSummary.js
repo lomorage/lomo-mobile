@@ -67,3 +67,16 @@ export function summarizeVerification(items, { safe, unsafe, weakEvidence }) {
     weakEvidence: !!weakEvidence,
   };
 }
+
+// "today at 12:22", "yesterday at 9:05", "Oct 3 at 18:40" (or a full date in another year).
+export function describeWhen(time, now = Date.now()) {
+  const date = new Date(time);
+  const clock = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((startOfDay(new Date(now)) - startOfDay(date)) / 86400000);
+  if (days === 0) return `today at ${clock}`;
+  if (days === 1) return `yesterday at ${clock}`;
+  const sameYear = date.getFullYear() === new Date(now).getFullYear();
+  const day = date.toLocaleDateString('en-US', sameYear ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' });
+  return `${day} at ${clock}`;
+}
