@@ -40,15 +40,17 @@ export function logSinceAppStartOnce(name, extra, now = Date.now()) {
 }
 
 // Pairing with a server/account restarts the journey timings. Logging in again to the same
-// one (e.g. after the session expired) does not.
+// one (e.g. after the session expired) does not. Returns true for a new pairing.
 export async function markPaired(pairingId, now = Date.now()) {
   try {
-    if ((await SecureStore.getItemAsync(PAIRING_ID_KEY)) === pairingId) return;
+    if ((await SecureStore.getItemAsync(PAIRING_ID_KEY)) === pairingId) return false;
     await SecureStore.setItemAsync(PAIRING_ID_KEY, pairingId);
     await SecureStore.setItemAsync(PAIRED_AT_KEY, String(now));
     await Promise.all(JOURNEY_METRICS.map(name => SecureStore.deleteItemAsync(LOGGED_KEY_PREFIX + name)));
+    return true;
   } catch (e) {
     console.warn('[scaleMetrics] markPaired failed:', e.message);
+    return false;
   }
 }
 

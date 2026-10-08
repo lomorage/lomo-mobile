@@ -170,8 +170,12 @@ function Navigation() {
                     cardStyle: { backgroundColor: '#fff' },
                 }}
             >
+                {/* navigationKey resets the stack whenever sign-in state flips. Without it a
+                    route whose name exists in both groups stays on screen: "Register" used to be
+                    in both, so a successful sign-up left the user on the form, where a second tap
+                    hit "Requested resource Exist". Keep route names unique across the groups too. */}
                 {!isAuthenticated ? (
-                    <>
+                    <Stack.Group navigationKey="signed-out">
                         <Stack.Screen 
                             name="Login" 
                             component={LoginScreen} 
@@ -187,9 +191,9 @@ function Navigation() {
                             component={ScanLoginScreen}
                             options={{ headerShown: false }}
                         />
-                    </>
+                    </Stack.Group>
                 ) : (
-                    <>
+                    <Stack.Group navigationKey="signed-in">
                         <Stack.Screen
                             name="MainTabs"
                             component={MainTabNavigator}
@@ -239,7 +243,7 @@ function Navigation() {
                             options={{ headerShown: false }}
                         />
                         <Stack.Screen
-                            name="Register"
+                            name="AddFamilyMember"
                             component={RegisterScreen}
                             options={{ headerShown: false }}
                         />
@@ -248,7 +252,7 @@ function Navigation() {
                             component={ShowSignInCodeScreen}
                             options={{ headerShown: false }}
                         />
-                    </>
+                    </Stack.Group>
                 )}
             </Stack.Navigator>
         </NavigationContainer>

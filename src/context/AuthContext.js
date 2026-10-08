@@ -2,6 +2,7 @@ import React, { createContext, useState, useContext, useEffect } from 'react';
 import AuthService from '../services/AuthService';
 import FirstBackupService from '../services/FirstBackupService';
 import { markPaired } from '../utils/scaleMetrics';
+import { clearLastBackupAt } from '../services/backupHistory';
 
 const AuthContext = createContext();
 
@@ -37,19 +38,24 @@ export const AuthProvider = ({ children }) => {
     };
   }, []);
 
+  const pairedWith = async (server, username) => {
+    if (await markPaired(`${server}|${username}`)) await clearLastBackupAt();
+  };
+
   const login = async (server, username, password, serverName = null) => {
     await AuthService.login(server, username, password, serverName);
-    await markPaired(`${server}|${username}`);
+    await pairedWith(server, username);
     await FirstBackupService.beginIfNeeded().catch((error) => {
       console.warn('[AuthContext] Failed to initialize first-backup guidance:', error);
     });
     setIsAuthenticated(true);
   };
 
-  const register = async (server, username, password, homedir, autoLogin = true) => {
-    await AuthService.register(server, username, password, homedir, "", autoLogin);
+  // serverName: the computer's name from the setup link, shown later in Backup Status.
+  const register = async (server, username, password, homedir, autoLogin = true, serverName = null) => {
+    await AuthService.register(server, username, password, homedir, "", autoLogin, serverName);
     if (autoLogin) {
-      await markPaired(`${server}|${username}`);
+      await pairedWith(server, username);
       await FirstBackupService.beginIfNeeded().catch((error) => {
         console.warn('[AuthContext] Failed to initialize first-backup guidance:', error);
       });

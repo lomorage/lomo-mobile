@@ -3,7 +3,9 @@ import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'rea
 import { ShieldCheck, ChevronLeft } from 'lucide-react-native';
 import AssetDBService from '../services/AssetDBService';
 import BackupSafetyService, { UNSAFE_REASONS } from '../services/BackupSafetyService';
-import { describeCounts, summarizeBackup, summarizeVerification } from '../utils/backupSummary';
+import AuthService from '../services/AuthService';
+import { getLastBackupAt } from '../services/backupHistory';
+import { describeCounts, describeWhen, summarizeBackup, summarizeVerification } from '../utils/backupSummary';
 import { formatBytesLog } from '../utils/formatters';
 import { logSincePairedOnce } from '../utils/scaleMetrics';
 
@@ -25,10 +27,11 @@ export default function BackupSummaryScreen({ navigation }) {
         setUnreachable(false);
         setProgress({ done: 0, total: 0 });
         try {
-            const [videos, photos, summaryRows] = await Promise.all([
+            const [videos, photos, summaryRows, lastBackupAt] = await Promise.all([
                 AssetDBService.getFreeUpSpaceCandidates('video'),
                 AssetDBService.getFreeUpSpaceCandidates('photo'),
                 AssetDBService.getBackupSummaryRows(),
+                getLastBackupAt(),
             ]);
             const items = [...photos, ...videos].map(asset => ({ ...asset, sizeBytes: asset.fileSize || 0 }));
             if (mounted.current) setProgress({ done: 0, total: items.length });
@@ -46,6 +49,8 @@ export default function BackupSummaryScreen({ navigation }) {
                 ...summarizeVerification(items, verification),
                 notBackedUp: backup.notBackedUp,
                 skipped: backup.skipped,
+                computerName: AuthService.getServerName?.() || null,
+                lastBackupAt,
             };
             setResult(summary);
             if (summary.safeCount > 0 && summary.unconfirmedCount === 0 && summary.notBackedUp === 0) {
@@ -108,8 +113,11 @@ export default function BackupSummaryScreen({ navigation }) {
                     <>
                         <Text style={styles.bigNumber}>{describeCounts(result.safePhotos, result.safeVideos)}</Text>
                         <Text style={styles.detail}>
-                            {result.weakEvidence ? 'backed up to your Lomorage computer' : 'checked and safe on your Lomorage computer'}
+                            {`${result.weakEvidence ? 'backed up to' : 'checked and safe on'} ${result.computerName ? `your computer “${result.computerName}”` : 'your Lomorage computer'}`}
                         </Text>
+                        {result.lastBackupAt && (
+                            <Text style={styles.detail}>{`Last backup: ${describeWhen(result.lastBackupAt)}`}</Text>
+                        )}
                         {result.safeBytes > 0 && (
                             <Text style={styles.freeable}>
                                 {result.sizeIsPartial ? 'At least ' : ''}{formatSize(result.safeBytes)} can be freed from this phone

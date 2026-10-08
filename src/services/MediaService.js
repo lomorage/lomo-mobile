@@ -6,6 +6,13 @@ import Constants from 'expo-constants';
 import { hashFileAsync, isLivePhotoAsync, prepareLivePhotoBackupAsync, extractVideoFromZipAsync, getLocalLivePhotoVideoUriAsync } from '../../modules/expo-lomo-hasher';
 import axios from 'axios';
 import AuthService from './AuthService';
+import { exifTakenTime } from '../utils/takenTime';
+import { logMetric } from '../utils/scaleMetrics';
+
+// Lomorage backs up photos and videos only. Without this list expo-media-library asks for and
+// checks music & audio too on Android 13+: a parent who refused that was asked again and again,
+// because "granted" stayed false.
+export const MEDIA_PERMISSIONS = ['photo', 'video'];
 
 class MediaService {
   /**
@@ -28,7 +35,7 @@ class MediaService {
    * can decide whether to show an explanation first.
    */
   async getPermissionStatus() {
-    return MediaLibrary.getPermissionsAsync();
+    return MediaLibrary.getPermissionsAsync(false, MEDIA_PERMISSIONS);
   }
 
   async getAccessibleAssetCount() {
@@ -54,9 +61,50 @@ class MediaService {
     return MediaLibrary.addListener(listener);
   }
 
+  /**
+   * Fills in creationTime for local assets the OS has no taken date for, from EXIF taken times
+   * already read (AssetDBService.getExifTakenTimes). Mutates the assets so the timeline, the
+   * hash tree and the upload all use the same date. See utils/takenTime.js.
+   */
+  applyKnownTakenTimes(assets, known) {
+    let applied = 0;
+    for (const asset of assets) {
+      if (asset.creationTime > 0) continue;
+      const time = known.get(asset.id);
+      if (time > 0) {
+        asset.creationTime = time;
+        applied++;
+      }
+    }
+    return applied;
+  }
+
+  // Reads the EXIF taken time of photos with no OS taken date that haven't been read before,
+  // a few at a time. Returns [{ id, time }] (time 0 = no EXIF date) for setExifTakenTimes.
+  async readMissingTakenTimes(assets, known, limit = Infinity, concurrency = 8) {
+    const todo = assets
+      .filter(a => !(a.creationTime > 0) && a.mediaType === 'photo' && !known.has(a.id))
+      .slice(0, limit);
+    const startedAt = Date.now();
+    const entries = new Array(todo.length);
+    let next = 0;
+    const worker = async () => {
+      while (next < todo.length) {
+        const i = next++;
+        const info = await this.getAssetInfo(todo[i].id);
+        entries[i] = { id: todo[i].id, time: exifTakenTime(info?.exif) || 0 };
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(concurrency, todo.length) }, worker));
+    if (todo.length > 0) {
+      logMetric('exif_taken_time', Date.now() - startedAt, { photos: todo.length, found: entries.filter(e => e.time > 0).length });
+    }
+    return entries;
+  }
+
   async requestPermissions() {
     console.log('Checking permissions for', Platform.OS, Platform.Version);
-    const existing = await MediaLibrary.getPermissionsAsync();
+    const existing = await MediaLibrary.getPermissionsAsync(false, MEDIA_PERMISSIONS);
     console.log('Existing permission status:', existing.status, 'granted:', existing.granted);
 
     // On Android, we need to check if we also have the required granular permissions
@@ -84,7 +132,7 @@ class MediaService {
 
     try {
       console.log('Requesting permissions...', Platform.OS, Platform.Version);
-      const { status } = await MediaLibrary.requestPermissionsAsync();
+      const { status } = await MediaLibrary.requestPermissionsAsync(false, MEDIA_PERMISSIONS);
       console.log('Permission request result:', status);
 
       // On Android 13+ (API 33), we need READ_MEDIA_IMAGES/VIDEO
@@ -94,20 +142,18 @@ class MediaService {
           PermissionsAndroid.PERMISSIONS.READ_MEDIA_IMAGES,
           PermissionsAndroid.PERMISSIONS.READ_MEDIA_VIDEO,
           PermissionsAndroid.PERMISSIONS.ACCESS_MEDIA_LOCATION,
-          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
         ]);
       } else if (Platform.OS === 'android' && Platform.Version >= 29) {
         const { PermissionsAndroid } = require('react-native');
         await PermissionsAndroid.requestMultiple([
           PermissionsAndroid.PERMISSIONS.ACCESS_MEDIA_LOCATION,
-          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
         ]);
       }
 
       return status === 'granted';
     } catch (error) {
       console.error('Permission request failed:', error);
-      const final = await MediaLibrary.getPermissionsAsync();
+      const final = await MediaLibrary.getPermissionsAsync(false, MEDIA_PERMISSIONS);
       if (Platform.OS === 'android') {
         const { PermissionsAndroid } = require('react-native');
         const hasLocation = await PermissionsAndroid.check(

@@ -12,7 +12,7 @@ jest.mock('../../../modules/expo-lomo-hasher', () => ({ sliceFileAsync: jest.fn(
 
 const axios = require('axios');
 const AuthService = require('../AuthService');
-import UploadService from '../UploadService';
+import UploadService, { buildUploadUrl } from '../UploadService';
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -151,5 +151,36 @@ describe('uploadAsset de-duplication', () => {
     expect(UploadService.cancelledTasks.has('asset1')).toBe(false);
 
     executeSpy.mockRestore();
+  });
+});
+
+describe('buildUploadUrl', () => {
+  const taken = Date.UTC(2019, 2, 4, 12, 27, 32);
+  const modified = Date.UTC(2026, 9, 8, 0, 12, 0);
+
+  test('sends when the photo was taken, plus the file time', () => {
+    expect(buildUploadUrl('http://pc:8000', 'ABC', 'jpg', { creationTime: taken, modificationTime: modified }))
+      .toBe('http://pc:8000/asset/abc?ext=jpg&createtime=2019-03-04T12%3A27%3A32.000Z&modifiedtime=2026-10-08T00%3A12%3A00.000Z');
+  });
+
+  test('no OS taken date: sends the EXIF date (read as local time), as the timeline shows it', () => {
+    const url = buildUploadUrl('http://pc:8000', 'abc', 'jpg', {
+      creationTime: 0, modificationTime: modified, exif: { DateTimeOriginal: '2019:03:04 12:27:32' },
+    });
+    const sent = decodeURIComponent(url.match(/createtime=([^&]+)/)[1]);
+    expect(new Date(sent).getTime()).toBe(new Date(2019, 2, 4, 12, 27, 32).getTime());
+  });
+
+  test('prefers the EXIF time the library load stored, so upload and timeline use the same value', () => {
+    const stored = new Date(2019, 2, 4, 12, 27, 32).getTime();
+    const url = buildUploadUrl('http://pc:8000', 'abc', 'jpg', {
+      creationTime: 0, modificationTime: modified, exif: { DateTimeOriginal: '2001:01:01 00:00:00' },
+    }, stored);
+    expect(new Date(decodeURIComponent(url.match(/createtime=([^&]+)/)[1])).getTime()).toBe(stored);
+  });
+
+  test('no taken date and no EXIF date: the file time, never "now"', () => {
+    const url = buildUploadUrl('http://pc:8000', 'abc', 'jpg', { creationTime: 0, modificationTime: modified });
+    expect(url).toContain('createtime=2026-10-08T00%3A12%3A00.000Z');
   });
 });

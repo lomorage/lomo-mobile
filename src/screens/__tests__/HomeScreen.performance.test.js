@@ -112,6 +112,8 @@ jest.mock('../../services/MediaService', () => ({
     presentLimitedLibraryPicker: jest.fn().mockResolvedValue(true),
     addLibraryChangeListener: jest.fn().mockReturnValue({ remove: jest.fn() }),
     getAllAssets: jest.fn().mockResolvedValue([]),
+    applyKnownTakenTimes: jest.fn(() => 0),
+    readMissingTakenTimes: jest.fn().mockResolvedValue([]),
   }
 }));
 jest.mock('../../services/SyncService', () => ({
@@ -147,6 +149,10 @@ jest.mock('../../services/AssetDBService', () => ({
     getOnThisDayAssets: jest.fn().mockResolvedValue([]),
     insertLocalAssets: jest.fn().mockResolvedValue(null),
     pruneDeletedLocalAssets: jest.fn().mockResolvedValue([]),
+    getExifTakenTimes: jest.fn().mockResolvedValue(new Map()),
+    setExifTakenTimes: jest.fn().mockResolvedValue(),
+    setBackupExcludedIds: jest.fn().mockResolvedValue(),
+    getBackupSummaryRows: jest.fn().mockResolvedValue([]),
   }
 }));
 jest.mock('../../services/AutoBackupManager', () => ({
@@ -202,7 +208,7 @@ describe('HomeScreen first backup guidance', () => {
     MediaService.getAllAssets.mockResolvedValue([{ id: 'new-photo', mediaType: 'photo', creationTime: Date.now() }]);
     let component;
     await act(async () => {
-      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn() }} />);
+      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn(), addListener: jest.fn(() => () => {}) }} />);
       await flushPromises();
     });
 
@@ -260,7 +266,7 @@ describe('HomeScreen first backup guidance', () => {
 
     let component;
     await act(async () => {
-      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn() }} />);
+      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn(), addListener: jest.fn(() => () => {}) }} />);
       await flushPromises();
     });
     expect(FirstBackupService.complete).not.toHaveBeenCalled();
@@ -283,7 +289,7 @@ describe('HomeScreen first backup guidance', () => {
 
     let component;
     await act(async () => {
-      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn() }} />);
+      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn(), addListener: jest.fn(() => () => {}) }} />);
       await flushPromises();
     });
 
@@ -300,7 +306,7 @@ describe('HomeScreen first backup guidance', () => {
 
     let component;
     await act(async () => {
-      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn() }} />);
+      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn(), addListener: jest.fn(() => () => {}) }} />);
       await flushPromises();
     });
 
@@ -367,7 +373,7 @@ describe('HomeScreen limited photo access', () => {
   test('warns about visible assets and opens the limited-library picker', async () => {
     let component;
     await act(async () => {
-      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn() }} />);
+      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn(), addListener: jest.fn(() => () => {}) }} />);
       await flushPromises();
     });
 
@@ -410,7 +416,7 @@ describe('HomeScreen limited photo access', () => {
 
     let component;
     await act(async () => {
-      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn() }} />);
+      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn(), addListener: jest.fn(() => () => {}) }} />);
       await flushPromises();
     });
 
@@ -438,7 +444,7 @@ describe('HomeScreen limited photo access', () => {
       }))
       .mockResolvedValue([]);
 
-    const navigation = { navigate: jest.fn() };
+    const navigation = { navigate: jest.fn(), addListener: jest.fn(() => () => {}) };
     let component;
     await act(async () => {
       component = renderer.create(<HomeScreen navigation={navigation} />);
@@ -475,7 +481,7 @@ describe('HomeScreen limited photo access', () => {
 
     let component;
     await act(async () => {
-      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn() }} />);
+      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn(), addListener: jest.fn(() => () => {}) }} />);
       await flushPromises();
     });
 
@@ -513,6 +519,7 @@ describe('HomeScreen Performance Tests', () => {
     jest.clearAllMocks();
     mockNavigation = {
       navigate: jest.fn(),
+      addListener: jest.fn(() => () => {}),
     };
   });
 
@@ -605,5 +612,63 @@ describe('HomeScreen Performance Tests', () => {
     // Verify token is added
     // We expect duration to be low under typical mock environments
     expect(duration).toBeLessThan(150);
+  });
+});
+
+describe('HomeScreen EXIF taken dates on library load', () => {
+  const AssetDBService = require('../../services/AssetDBService').default;
+  const nav = () => ({ navigate: jest.fn(), addListener: jest.fn(() => () => {}) });
+  const takenAt = new Date(2019, 2, 4, 12, 27, 32).getTime();
+  const settle = async () => {
+    for (let i = 0; i < 5; i++) await act(async () => { await flushPromises(); });
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    SyncService.localHashCache = {};
+    MediaService.getAllAssets.mockResolvedValue([
+      { id: 'p', mediaType: 'photo', creationTime: 0, modificationTime: Date.now() },
+    ]);
+    AssetDBService.getExifTakenTimes.mockResolvedValue(new Map());
+  });
+
+  afterEach(() => {
+    MediaService.readMissingTakenTimes.mockResolvedValue([]);
+    jest.useRealTimers();
+  });
+
+  test('EXIF dates read during the load are applied and saved before the hash tree is built', async () => {
+    MediaService.readMissingTakenTimes.mockResolvedValue([{ id: 'p', time: takenAt }]);
+    let component;
+    await act(async () => { component = renderer.create(<HomeScreen navigation={nav()} />); });
+    await settle();
+
+    expect(SyncService.sync).toHaveBeenCalled();
+    const applyCall = MediaService.applyKnownTakenTimes.mock.calls.findIndex(([, map]) => map.get('p') === takenAt);
+    expect(applyCall).toBeGreaterThanOrEqual(0);
+    expect(MediaService.applyKnownTakenTimes.mock.invocationCallOrder[applyCall])
+      .toBeLessThan(SyncService.sync.mock.invocationCallOrder[0]);
+    expect(AssetDBService.setExifTakenTimes).toHaveBeenCalledWith([{ id: 'p', time: takenAt }]);
+    act(() => component.unmount());
+  });
+
+  test('a slow EXIF read does not hold up sync for more than a few seconds, and is still saved', async () => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'] });
+    let finishReading;
+    MediaService.readMissingTakenTimes.mockReturnValue(new Promise(resolve => { finishReading = resolve; }));
+    let component;
+    await act(async () => { component = renderer.create(<HomeScreen navigation={nav()} />); });
+    await settle();
+    expect(SyncService.sync).not.toHaveBeenCalled();
+
+    await act(async () => { jest.advanceTimersByTime(3000); });
+    await settle();
+    expect(SyncService.sync).toHaveBeenCalled();
+    expect(AssetDBService.setExifTakenTimes).not.toHaveBeenCalled();
+
+    await act(async () => { finishReading([{ id: 'p', time: takenAt }]); });
+    await settle();
+    expect(AssetDBService.setExifTakenTimes).toHaveBeenCalledWith([{ id: 'p', time: takenAt }]);
+    act(() => component.unmount());
   });
 });

@@ -1,4 +1,4 @@
-import { parseTimeTokenExtra } from '../homeScreenHelpers';
+import { freeSpaceBannerInfo, parseTimeTokenExtra } from '../homeScreenHelpers';
 
 const startOfDay = (d) => {
   const nd = new Date(d);
@@ -70,5 +70,26 @@ describe('parseTimeTokenExtra', () => {
       expect(result.startTime).toBe(new Date(2026, 0, 1, 0, 0, 0, 0).getTime());
       expect(result.endTime).toBe(endOfDay(NOW));
     });
+  });
+});
+
+describe('freeSpaceBannerInfo', () => {
+  const GB = 1024 * 1024 * 1024;
+  const backup = { backedUp: 3, backedUpBytes: 700, photos: { backedUp: 2 }, videos: { backedUp: 1 } };
+  const base = { freeBytes: 2 * GB, backup, backupActive: false, dismissedAt: null, now: 1_000_000_000_000 };
+
+  test('low storage and something backed up: offer to free space', () => {
+    expect(freeSpaceBannerInfo(base)).toEqual({ count: 3, bytes: 700, photos: 2, videos: 1 });
+  });
+
+  test('never while a backup is still running or waiting', () => {
+    expect(freeSpaceBannerInfo({ ...base, backupActive: true })).toBeNull();
+  });
+
+  test('not when there is plenty of space, nothing is backed up, or it was dismissed this week', () => {
+    expect(freeSpaceBannerInfo({ ...base, freeBytes: 6 * GB })).toBeNull();
+    expect(freeSpaceBannerInfo({ ...base, backup: { ...backup, backedUp: 0 } })).toBeNull();
+    expect(freeSpaceBannerInfo({ ...base, dismissedAt: base.now - 24 * 3600 * 1000 })).toBeNull();
+    expect(freeSpaceBannerInfo({ ...base, dismissedAt: base.now - 8 * 24 * 3600 * 1000 })).not.toBeNull();
   });
 });

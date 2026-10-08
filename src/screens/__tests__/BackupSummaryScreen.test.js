@@ -18,6 +18,8 @@ jest.mock('../../services/BackupSafetyService', () => ({
   default: { checkAll: jest.fn() },
 }));
 jest.mock('../../utils/scaleMetrics', () => ({ logSincePairedOnce: jest.fn() }));
+jest.mock('../../services/AuthService', () => ({ __esModule: true, default: { getServerName: jest.fn(() => 'windows') } }));
+jest.mock('../../services/backupHistory', () => ({ getLastBackupAt: jest.fn(async () => Date.now() - 60 * 1000) }));
 
 const AssetDBService = require('../../services/AssetDBService').default;
 const BackupSafetyService = require('../../services/BackupSafetyService').default;
@@ -61,7 +63,8 @@ test('everything confirmed: says the photos are safe, logs Time to Safe, offers 
   const text = allText(tree);
   expect(text).toContain('Your photos are safe at home');
   expect(text).toContain('2 photos and 1 video');
-  expect(text).toContain('checked and safe on your Lomorage computer');
+  expect(text).toContain('checked and safe on your computer “windows”');
+  expect(text).toMatch(/Last backup: today at /);
   expect(logSincePairedOnce).toHaveBeenCalledWith('time_to_safe', { photos: 2, videos: 1, bytes: 5000 });
 
   await pressText(tree, 'Free Up Space');

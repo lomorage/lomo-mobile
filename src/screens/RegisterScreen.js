@@ -11,6 +11,7 @@ export default function RegisterScreen({ navigation, route }) {
     const { register: contextRegister } = useAuth();
     const fromSettings = route?.params?.fromSettings || false;
     const scannedServer = route?.params?.server || null;
+    const serverName = route?.params?.serverName || null;
     const [server, setServer] = useState(scannedServer || '');
     const [disks, setDisks] = useState([]);
     const [selectedDisk, setSelectedDisk] = useState(null);
@@ -95,7 +96,7 @@ export default function RegisterScreen({ navigation, route }) {
 
         setLoading(true);
         try {
-            await contextRegister(server, username, password, selectedDisk, !fromSettings);
+            await contextRegister(server, username, password, selectedDisk, !fromSettings, serverName);
             if (fromSettings) {
                 // Offer a QR code so the account holder can hand their device to the
                 // family member and have them scan-to-sign-in, instead of relaying
@@ -126,8 +127,10 @@ export default function RegisterScreen({ navigation, route }) {
         <>
         <KeyboardAvoidingView
             style={styles.container}
-            behavior="padding"
-            keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 80}
+            // Android already resizes the window for the keyboard (adjustResize); padding on top
+            // of that hid the lower fields and the submit button behind blank space.
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            keyboardVerticalOffset={0}
         >
             <ScrollView 
                 contentContainerStyle={styles.scrollContent}

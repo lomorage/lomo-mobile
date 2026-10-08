@@ -63,6 +63,28 @@ describe('loadSettings (mount)', () => {
     expect(latestSettings.isLoading).toBe(false);
   });
 
+  test('a fresh install remembers it, so the face dry-run prompt never shows after login', async () => {
+    // first launch: no device id yet (login creates it)
+    await renderSettingsProvider();
+    expect(latestSettings.faceDryRunMigrationNeeded).toBe(false);
+    expect(SecureStore.setItemAsync).toHaveBeenCalledWith('lomorage_face_dry_run_migrated_v1', 'true');
+
+    // next launch after login: device id exists, and the remembered flag keeps the prompt away
+    SecureStore.getItemAsync.mockImplementation(async (key) => ({
+      lomo_device_id: 'device-1',
+      lomorage_face_dry_run_migrated_v1: 'true',
+    }[key] ?? null));
+    await renderSettingsProvider();
+    expect(latestSettings.faceDryRunMigrationNeeded).toBe(false);
+    expect(latestSettings.faceDryRun).toBe(false);
+  });
+
+  test('an existing install from before the flag still gets the one-time prompt', async () => {
+    SecureStore.getItemAsync.mockImplementation(async (key) => (key === 'lomo_device_id' ? 'device-1' : null));
+    await renderSettingsProvider();
+    expect(latestSettings.faceDryRunMigrationNeeded).toBe(true);
+  });
+
   test('restores persisted boolean/number/JSON values, overriding the defaults', async () => {
     SecureStore.getItemAsync.mockImplementation((key) => {
       const values = {

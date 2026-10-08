@@ -4,6 +4,22 @@ import MediaService from './MediaService';
 import AuthService from './AuthService';
 import axios from 'axios';
 import { sliceFileAsync } from '../../modules/expo-lomo-hasher';
+import { resolveTakenTime } from '../utils/takenTime';
+
+// Upload URL for one asset. createtime is the same taken time the phone's timeline and hash
+// tree use (resolveTakenTime: OS date, else EXIF, else file time), so lomod files the photo under
+// the date the phone shows and the two hash trees bucket it alike. It used to fall back to "now",
+// which filed photos with no DATE_TAKEN under the upload day. storedExifTime is the EXIF time the
+// library load already read (MediaAsset.exifTakenTime), so both use the very same value.
+export function buildUploadUrl(serverUrl, hash, ext, info, storedExifTime = null) {
+    const params = [`ext=${ext}`];
+    const taken = resolveTakenTime(info, storedExifTime > 0 ? storedExifTime : null);
+    if (taken) params.push(`createtime=${encodeURIComponent(new Date(taken).toISOString())}`);
+    if (info.modificationTime > 0) {
+        params.push(`modifiedtime=${encodeURIComponent(new Date(info.modificationTime).toISOString())}`);
+    }
+    return `${serverUrl}/asset/${hash.toLowerCase()}?${params.join('&')}`;
+}
 
 class UploadService {
     constructor() {
@@ -307,8 +323,10 @@ class UploadService {
 
             // 5. Construct Upload URL with metadata
             const ext = livePhotoBackup ? 'zip' : (info.filename || 'file.jpg').split('.').pop().toLowerCase();
-            const creationTime = new Date(info.creationTime || Date.now()).toISOString();
-            const uploadUrl = `${serverUrl}/asset/${hash.toLowerCase()}?ext=${ext}&createtime=${encodeURIComponent(creationTime)}`;
+            const storedExifTime = info.creationTime > 0
+                ? null
+                : await require('./AssetDBService').default.getExifTakenTime(asset.id).catch(() => null);
+            const uploadUrl = buildUploadUrl(serverUrl, hash, ext, info, storedExifTime);
 
             const isHttps = serverUrl.toLowerCase().startsWith('https://');
 
