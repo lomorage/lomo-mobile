@@ -5,6 +5,21 @@ import AuthService from './AuthService';
 import axios from 'axios';
 import { sliceFileAsync } from '../../modules/expo-lomo-hasher';
 
+// Upload URL for one asset. createtime is only sent when the phone knows when the photo was
+// taken: Android leaves DATE_TAKEN empty for photos whose EXIF date has no time zone (copied
+// from older cameras, a PC or chat apps) and expo then reports 0. Sending "now" instead filed
+// those photos under the upload day. Without createtime, lomod reads the date from the file's
+// EXIF and only then falls back to modifiedtime.
+export function buildUploadUrl(serverUrl, hash, ext, info) {
+    const params = [`ext=${ext}`];
+    if (info.creationTime > 0) {
+        params.push(`createtime=${encodeURIComponent(new Date(info.creationTime).toISOString())}`);
+    }
+    const modified = info.modificationTime > 0 ? info.modificationTime : Date.now();
+    params.push(`modifiedtime=${encodeURIComponent(new Date(modified).toISOString())}`);
+    return `${serverUrl}/asset/${hash.toLowerCase()}?${params.join('&')}`;
+}
+
 class UploadService {
     constructor() {
         this.activeTasks = new Map(); // assetId -> task
@@ -307,8 +322,7 @@ class UploadService {
 
             // 5. Construct Upload URL with metadata
             const ext = livePhotoBackup ? 'zip' : (info.filename || 'file.jpg').split('.').pop().toLowerCase();
-            const creationTime = new Date(info.creationTime || Date.now()).toISOString();
-            const uploadUrl = `${serverUrl}/asset/${hash.toLowerCase()}?ext=${ext}&createtime=${encodeURIComponent(creationTime)}`;
+            const uploadUrl = buildUploadUrl(serverUrl, hash, ext, info);
 
             const isHttps = serverUrl.toLowerCase().startsWith('https://');
 
