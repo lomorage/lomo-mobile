@@ -4,19 +4,19 @@ import MediaService from './MediaService';
 import AuthService from './AuthService';
 import axios from 'axios';
 import { sliceFileAsync } from '../../modules/expo-lomo-hasher';
+import { resolveTakenTime } from '../utils/takenTime';
 
-// Upload URL for one asset. createtime is only sent when the phone knows when the photo was
-// taken: Android leaves DATE_TAKEN empty for photos whose EXIF date has no time zone (copied
-// from older cameras, a PC or chat apps) and expo then reports 0. Sending "now" instead filed
-// those photos under the upload day. Without createtime, lomod reads the date from the file's
-// EXIF and only then falls back to modifiedtime.
+// Upload URL for one asset. createtime is the same taken time the phone's timeline and hash
+// tree use (resolveTakenTime: OS date, else EXIF, else file time), so lomod files the photo under
+// the date the phone shows and the two hash trees bucket it alike. It used to fall back to "now",
+// which filed photos with no DATE_TAKEN under the upload day.
 export function buildUploadUrl(serverUrl, hash, ext, info) {
     const params = [`ext=${ext}`];
-    if (info.creationTime > 0) {
-        params.push(`createtime=${encodeURIComponent(new Date(info.creationTime).toISOString())}`);
+    const taken = resolveTakenTime(info);
+    if (taken) params.push(`createtime=${encodeURIComponent(new Date(taken).toISOString())}`);
+    if (info.modificationTime > 0) {
+        params.push(`modifiedtime=${encodeURIComponent(new Date(info.modificationTime).toISOString())}`);
     }
-    const modified = info.modificationTime > 0 ? info.modificationTime : Date.now();
-    params.push(`modifiedtime=${encodeURIComponent(new Date(modified).toISOString())}`);
     return `${serverUrl}/asset/${hash.toLowerCase()}?${params.join('&')}`;
 }
 

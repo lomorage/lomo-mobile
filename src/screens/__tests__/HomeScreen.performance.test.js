@@ -112,6 +112,8 @@ jest.mock('../../services/MediaService', () => ({
     presentLimitedLibraryPicker: jest.fn().mockResolvedValue(true),
     addLibraryChangeListener: jest.fn().mockReturnValue({ remove: jest.fn() }),
     getAllAssets: jest.fn().mockResolvedValue([]),
+    applyKnownTakenTimes: jest.fn(() => 0),
+    readMissingTakenTimes: jest.fn().mockResolvedValue([]),
   }
 }));
 jest.mock('../../services/SyncService', () => ({
@@ -147,6 +149,10 @@ jest.mock('../../services/AssetDBService', () => ({
     getOnThisDayAssets: jest.fn().mockResolvedValue([]),
     insertLocalAssets: jest.fn().mockResolvedValue(null),
     pruneDeletedLocalAssets: jest.fn().mockResolvedValue([]),
+    getExifTakenTimes: jest.fn().mockResolvedValue(new Map()),
+    setExifTakenTimes: jest.fn().mockResolvedValue(),
+    setBackupExcludedIds: jest.fn().mockResolvedValue(),
+    getBackupSummaryRows: jest.fn().mockResolvedValue([]),
   }
 }));
 jest.mock('../../services/AutoBackupManager', () => ({

@@ -6,6 +6,7 @@ import Constants from 'expo-constants';
 import { hashFileAsync, isLivePhotoAsync, prepareLivePhotoBackupAsync, extractVideoFromZipAsync, getLocalLivePhotoVideoUriAsync } from '../../modules/expo-lomo-hasher';
 import axios from 'axios';
 import AuthService from './AuthService';
+import { exifTakenTime } from '../utils/takenTime';
 
 // Lomorage backs up photos and videos only. Without this list expo-media-library asks for and
 // checks music & audio too on Android 13+: a parent who refused that was asked again and again,
@@ -57,6 +58,38 @@ class MediaService {
       return { remove: () => {} };
     }
     return MediaLibrary.addListener(listener);
+  }
+
+  /**
+   * Fills in creationTime for local assets the OS has no taken date for, from EXIF taken times
+   * already read (AssetDBService.getExifTakenTimes). Mutates the assets so the timeline, the
+   * hash tree and the upload all use the same date. See utils/takenTime.js.
+   */
+  applyKnownTakenTimes(assets, known) {
+    let applied = 0;
+    for (const asset of assets) {
+      if (asset.creationTime > 0) continue;
+      const time = known.get(asset.id);
+      if (time > 0) {
+        asset.creationTime = time;
+        applied++;
+      }
+    }
+    return applied;
+  }
+
+  // Reads the EXIF taken time of up to `limit` photos with no OS taken date that haven't been
+  // read before. Returns [{ id, time }] (time 0 = no EXIF date) to store with setExifTakenTimes.
+  async readMissingTakenTimes(assets, known, limit = 300) {
+    const todo = assets
+      .filter(a => !(a.creationTime > 0) && a.mediaType === 'photo' && !known.has(a.id))
+      .slice(0, limit);
+    const entries = [];
+    for (const asset of todo) {
+      const info = await this.getAssetInfo(asset.id);
+      entries.push({ id: asset.id, time: exifTakenTime(info?.exif) || 0 });
+    }
+    return entries;
   }
 
   async requestPermissions() {

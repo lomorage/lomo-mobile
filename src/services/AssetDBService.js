@@ -299,6 +299,21 @@ class AssetDBService {
         console.log('[AssetDBService] Database migrated to version 15 (Added backupExcluded).');
       }
 
+      if (currentVersion < 16) {
+        // Version 16: EXIF taken time for local photos the OS reports no taken date for, so the
+        // timeline and hash tree use the date lomod files them under (utils/takenTime.js).
+        // NULL = not read yet, 0 = the file has no EXIF date. Kept apart from createTime, which
+        // every library scan rewrites from the OS.
+        try {
+          await db.execAsync('ALTER TABLE MediaAsset ADD COLUMN exifTakenTime INTEGER;');
+        } catch (e) {
+          console.warn('[AssetDBService] Failed to migrate database to version 16:', e.message);
+        }
+        await db.execAsync('PRAGMA user_version = 16');
+        currentVersion = 16;
+        console.log('[AssetDBService] Database migrated to version 16 (Added exifTakenTime).');
+      }
+
       // Smooth migration: if local_hash_cache_v2.json exists, migrate it to SQLite
       await this.migrateLocalHashCache(db);
 
@@ -496,6 +511,25 @@ class AssetDBService {
       await this.db.runAsync(
         `UPDATE MediaAsset SET fileSize = CASE id ${cases} END WHERE id IN (${chunk.map(() => '?').join(',')})`,
         [...params, ...chunk.map(({ id }) => id)]
+      );
+    }
+  }
+
+  // id -> EXIF taken time (0 = no EXIF date) for local assets whose EXIF was already read.
+  async getExifTakenTimes() {
+    if (!this.db) return new Map();
+    const rows = await this.db.getAllAsync('SELECT id, exifTakenTime FROM MediaAsset WHERE isLocal = 1 AND exifTakenTime IS NOT NULL');
+    return new Map(rows.map(r => [r.id, r.exifTakenTime]));
+  }
+
+  async setExifTakenTimes(entries) {
+    if (!this.db || !entries || entries.length === 0) return;
+    for (let i = 0; i < entries.length; i += 200) {
+      const chunk = entries.slice(i, i + 200);
+      const cases = chunk.map(() => 'WHEN ? THEN ?').join(' ');
+      await this.db.runAsync(
+        `UPDATE MediaAsset SET exifTakenTime = CASE id ${cases} END WHERE id IN (${chunk.map(() => '?').join(',')})`,
+        [...chunk.flatMap(({ id, time }) => [id, time]), ...chunk.map(({ id }) => id)]
       );
     }
   }

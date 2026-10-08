@@ -158,14 +158,21 @@ describe('buildUploadUrl', () => {
   const taken = Date.UTC(2019, 2, 4, 12, 27, 32);
   const modified = Date.UTC(2026, 9, 8, 0, 12, 0);
 
-  test('sends when the photo was taken, plus the file time as a fallback', () => {
+  test('sends when the photo was taken, plus the file time', () => {
     expect(buildUploadUrl('http://pc:8000', 'ABC', 'jpg', { creationTime: taken, modificationTime: modified }))
       .toBe('http://pc:8000/asset/abc?ext=jpg&createtime=2019-03-04T12%3A27%3A32.000Z&modifiedtime=2026-10-08T00%3A12%3A00.000Z');
   });
 
-  test.each([0, null, undefined])('unknown taken time (%s): no createtime, so the server uses the EXIF date', (creationTime) => {
-    const url = buildUploadUrl('http://pc:8000', 'abc', 'jpg', { creationTime, modificationTime: modified });
-    expect(url).not.toContain('createtime=');
-    expect(url).toContain('modifiedtime=2026-10-08T00%3A12%3A00.000Z');
+  test('no OS taken date: sends the EXIF date (read as local time), as the timeline shows it', () => {
+    const url = buildUploadUrl('http://pc:8000', 'abc', 'jpg', {
+      creationTime: 0, modificationTime: modified, exif: { DateTimeOriginal: '2019:03:04 12:27:32' },
+    });
+    const sent = decodeURIComponent(url.match(/createtime=([^&]+)/)[1]);
+    expect(new Date(sent).getTime()).toBe(new Date(2019, 2, 4, 12, 27, 32).getTime());
+  });
+
+  test('no taken date and no EXIF date: the file time, never "now"', () => {
+    const url = buildUploadUrl('http://pc:8000', 'abc', 'jpg', { creationTime: 0, modificationTime: modified });
+    expect(url).toContain('createtime=2026-10-08T00%3A12%3A00.000Z');
   });
 });

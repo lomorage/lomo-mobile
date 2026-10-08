@@ -1346,6 +1346,10 @@ export default function HomeScreen({ navigation, route }) {
                 AssetDBService.getRemoteAssets(),
                 AssetDBService.getOnThisDayAssets()
             ]);
+            // Photos the OS has no taken date for: use their EXIF date (read on an earlier run)
+            // so the timeline, the hash tree and the upload agree. See utils/takenTime.js.
+            const knownTakenTimes = await AssetDBService.getExifTakenTimes().catch(() => new Map());
+            MediaService.applyKnownTakenTimes(cumulativeLocalAssets, knownTakenTimes);
             localAssetsRef.current = cumulativeLocalAssets;
             remoteAssetsListRef.current = sqliteRemoteAssets;
 
@@ -1368,6 +1372,11 @@ export default function HomeScreen({ navigation, route }) {
 
             // Insert local assets into DB so they have GPS coordinate caching for map markers
             AssetDBService.insertLocalAssets(cumulativeLocalAssets).then(() => {
+                // Read EXIF for photos with no taken date not seen before (a few hundred per run);
+                // they take effect from the next library load.
+                MediaService.readMissingTakenTimes(cumulativeLocalAssets, knownTakenTimes)
+                    .then(entries => AssetDBService.setExifTakenTimes(entries))
+                    .catch(err => console.warn('[HomeScreen] Reading EXIF taken times failed:', err));
                 SyncService.syncLocalGPS().catch(err => {
                     console.error('[HomeScreen] Failed to sync local GPS:', err);
                 });
