@@ -1,6 +1,8 @@
 jest.mock('axios');
 jest.mock('expo-file-system/legacy', () => ({
   cacheDirectory: 'file:///mock-cache/',
+  makeDirectoryAsync: jest.fn(async () => {}),
+  deleteAsync: jest.fn(async () => {}),
 }));
 jest.mock('react-native', () => ({ Platform: { OS: 'android' } }));
 jest.mock('../MediaService', () => ({}));
@@ -179,5 +181,78 @@ describe('remembered piece sizes', () => {
   test('a corrupt stored value starts over empty', async () => {
     SecureStore.getItemAsync.mockResolvedValueOnce('{not json');
     await expect(UploadService.getChunkSize('https://a')).resolves.toBe(0);
+  });
+});
+
+describe('_nothingReachedServer (a network error that may hide a proxy 413)', () => {
+  test('true when the server still has nothing', async () => {
+    axios.head.mockRejectedValue({ response: { status: 404 } });
+    await expect(UploadService._nothingReachedServer('a1', 'h1', 0)).resolves.toBe(true);
+  });
+
+  test('true when a partial upload did not grow', async () => {
+    axios.head.mockResolvedValue({ status: 206, headers: { 'if-match': 'size=500, sha1=x' } });
+    await expect(UploadService._nothingReachedServer('a1', 'h1', 500)).resolves.toBe(true);
+  });
+
+  test('false when part of the body arrived (an ordinary dropped connection, resumable)', async () => {
+    axios.head.mockResolvedValue({ status: 206, headers: { 'if-match': 'size=900, sha1=x' } });
+    await expect(UploadService._nothingReachedServer('a1', 'h1', 500)).resolves.toBe(false);
+  });
+
+  test("'exists' when the upload completed and only its response was lost", async () => {
+    axios.head.mockResolvedValue({ status: 200, headers: {} });
+    await expect(UploadService._nothingReachedServer('a1', 'h1', 0)).resolves.toBe('exists');
+  });
+
+  test('false when HEAD fails too (offline) or the user cancelled', async () => {
+    axios.head.mockRejectedValue(new Error('Network Error'));
+    await expect(UploadService._nothingReachedServer('a1', 'h1', 0)).resolves.toBe(false);
+
+    UploadService.cancelledTasks.add('a2');
+    await expect(UploadService._nothingReachedServer('a2', 'h1', 0)).resolves.toBe(false);
+    expect(axios.head).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('_chunkedUpload', () => {
+  const { sliceFileRangeAsync } = require('../../../modules/expo-lomo-hasher');
+  const args = {
+    assetId: 'a1', uri: 'file:///v.mp4', hash: 'h1', serverUrl: 'https://s', uploadUrl: 'https://s/asset/h1',
+    token: 't', fileSize: 100, chunkSize: 40,
+  };
+
+  beforeEach(() => {
+    UploadService.pieceUploads = 0;
+    UploadService.pieceWaiters = [];
+  });
+
+  test('stops instead of sending a short piece when the file changed', async () => {
+    sliceFileRangeAsync.mockResolvedValueOnce(25);
+    const sendSpy = jest.spyOn(UploadService, '_send');
+
+    await expect(UploadService._chunkedUpload(args)).rejects.toThrow('read 25 of 40 bytes at offset 0');
+    expect(sendSpy).not.toHaveBeenCalled();
+    expect(UploadService.pieceUploads).toBe(0); // slot released
+    sendSpy.mockRestore();
+  });
+
+  test('runs at most maxPieceUploads at once; the next waits for a slot', async () => {
+    UploadService.maxPieceUploads = 1;
+    try {
+      await UploadService._acquirePieceSlot();
+      let second = false;
+      const waiting = UploadService._acquirePieceSlot().then(() => { second = true; });
+      await Promise.resolve();
+      expect(second).toBe(false);
+
+      UploadService._releasePieceSlot();
+      await waiting;
+      expect(second).toBe(true);
+      UploadService._releasePieceSlot();
+      expect(UploadService.pieceUploads).toBe(0);
+    } finally {
+      UploadService.maxPieceUploads = 2;
+    }
   });
 });

@@ -28,10 +28,51 @@ class UploadService {
         this.activeTasks = new Map(); // assetId -> task
         this.activePromises = new Map(); // assetId -> promise
         this.cancelledTasks = new Set(); // assetId
-        this.chunkedServers = null; // (promise of) server URL -> piece size, loaded lazily from SecureStore
+        // (promise of) server URL -> piece size, loaded lazily from SecureStore. Never forgotten on
+        // purpose: if the server later drops its limit, the cost is one extra HEAD and request per
+        // piece, while forgetting it would bring back a wasted full-size attempt and 413 per file.
+        this.chunkedServers = null;
         // instance fields so integration tests can use small pieces
         this.chunkSize = CHUNK_SIZE;
         this.minChunkSize = MIN_CHUNK_SIZE;
+        // Each upload in pieces keeps a piece of up to chunkSize bytes in the cache, so only a few
+        // run at once; the rest wait for a slot.
+        this.maxPieceUploads = 2;
+        this.pieceUploads = 0;
+        this.pieceWaiters = [];
+    }
+
+    async _acquirePieceSlot() {
+        while (this.pieceUploads >= this.maxPieceUploads) {
+            await new Promise((resolve) => this.pieceWaiters.push(resolve));
+        }
+        this.pieceUploads++;
+    }
+
+    _releasePieceSlot() {
+        this.pieceUploads--;
+        const next = this.pieceWaiters.shift();
+        if (next) next();
+    }
+
+    /**
+     * After a request for a large body failed without an HTTP status, tells whether the server
+     * received none of it -- which is what a proxy's 413 looks like on a stack that reports the
+     * early rejection and closed connection as a network error instead of a response. (lomod
+     * keeps whatever part of an interrupted upload reached it, so an ordinary dropped connection
+     * leaves HEAD reporting more than receivedBefore.) Resolves to 'exists' if the upload in fact
+     * completed, true if nothing arrived, false otherwise (including when HEAD itself fails).
+     */
+    async _nothingReachedServer(assetId, hash, receivedBefore) {
+        if (this.cancelledTasks.has(assetId)) return false;
+        let status;
+        try {
+            status = await this.checkUploadStatus(hash);
+        } catch {
+            return false;
+        }
+        if (status.exists) return 'exists';
+        return (status.receivedBytes || 0) === receivedBefore;
     }
 
     _loadChunkedServers() {
@@ -114,13 +155,19 @@ class UploadService {
         await FileSystem.makeDirectoryAsync(tempChunkDir, { intermediates: true }).catch(()=>{});
         const pieceUri = tempChunkDir + `piece_${String(assetId).replace(/[^a-zA-Z0-9]/g, '')}_${hash}.tmp`;
 
+        await this._acquirePieceSlot();
         let offset = startOffset;
         try {
             while (offset < fileSize) {
                 if (this.cancelledTasks.has(assetId)) throw new Error('Upload cancelled by user');
                 const length = Math.min(chunkSize, fileSize - offset);
                 const isLast = offset + length >= fileSize;
-                await sliceFileRangeAsync(uri, pieceUri, offset, length);
+                const sliced = await sliceFileRangeAsync(uri, pieceUri, offset, length);
+                if (sliced !== length) {
+                    // The file changed since its size was read; sending a short piece would only
+                    // fail later with "different hash" after uploading the rest.
+                    throw new Error(`Local file changed during upload: read ${sliced} of ${length} bytes at offset ${offset}.`);
+                }
                 console.log(`[UploadService] Uploading bytes ${offset}-${offset + length} of ${fileSize} for ${hash}`);
 
                 const pieceStart = offset;
@@ -166,6 +213,7 @@ class UploadService {
             throw new Error(`Upload of ${hash} ended without the server confirming it.`);
         } finally {
             await FileSystem.deleteAsync(pieceUri, { idempotent: true }).catch(()=>{});
+            this._releasePieceSlot();
         }
     }
 
@@ -283,7 +331,9 @@ class UploadService {
             if (response.status === 413) {
                 return { tooLarge: true };
             }
-            throw new Error(`Server returned ${response.status} on partial upload patch.`);
+            const err = new Error(`Server returned ${response.status} on partial upload patch.`);
+            err.httpStatus = response.status;
+            throw err;
 
         } finally {
             await FileSystem.deleteAsync(tempSliceUri, { idempotent: true }).catch(()=>{});
@@ -471,13 +521,24 @@ class UploadService {
                 if (knownChunkSize > 0 && fileSizeBytes - status.receivedBytes > knownChunkSize) {
                     return finish({ ...(await uploadInPieces(knownChunkSize, status.receivedBytes, status.ifMatch)), resumed: true });
                 }
-                const resumeResult = await this._resumeUpload({
-                    assetId: asset.id, uri, hash, uploadUrl, token,
-                    receivedBytes: status.receivedBytes,
-                    ifMatch: status.ifMatch,
-                    fileSize: fileSizeBytes,
-                    onProgress,
-                });
+                let resumeResult;
+                try {
+                    resumeResult = await this._resumeUpload({
+                        assetId: asset.id, uri, hash, uploadUrl, token,
+                        receivedBytes: status.receivedBytes,
+                        ifMatch: status.ifMatch,
+                        fileSize: fileSizeBytes,
+                        onProgress,
+                    });
+                } catch (sendErr) {
+                    // As for the full POST below: only a network error on a remainder too big for one piece.
+                    if (sendErr.httpStatus || fileSizeBytes - status.receivedBytes <= chunkSizeAfter413) throw sendErr;
+                    const nothing = await this._nothingReachedServer(asset.id, hash, status.receivedBytes);
+                    if (nothing === 'exists') return finish({ success: true, hash, resumed: true });
+                    if (!nothing) throw sendErr;
+                    console.log(`[UploadService] PATCH of ${hash} failed (${sendErr.message}) with nothing stored, retrying in pieces.`);
+                    return finish({ ...(await uploadInPieces(chunkSizeAfter413, status.receivedBytes, status.ifMatch)), resumed: true });
+                }
                 if (resumeResult.tooLarge) {
                     await this._rememberChunkSize(serverUrl, chunkSizeAfter413);
                     return finish({ ...(await uploadInPieces(chunkSizeAfter413, status.receivedBytes, status.ifMatch)), resumed: true });
@@ -494,18 +555,30 @@ class UploadService {
 
             // 7. Full binary Upload using native session
             this.cancelledTasks.delete(asset.id);
-            const response = await this._send({
-                assetId: asset.id, url: uploadUrl, fileUri: uri, token, method: 'POST',
-                onSent: (sent, expected) => {
-                    if (onProgress) {
-                        onProgress({
-                            fraction: fileSizeBytes > 0 ? sent / fileSizeBytes : 0,
-                            loaded: sent,
-                            total: fileSizeBytes > 0 ? fileSizeBytes : expected
-                        });
-                    }
-                },
-            });
+            let response;
+            try {
+                response = await this._send({
+                    assetId: asset.id, url: uploadUrl, fileUri: uri, token, method: 'POST',
+                    onSent: (sent, expected) => {
+                        if (onProgress) {
+                            onProgress({
+                                fraction: fileSizeBytes > 0 ? sent / fileSizeBytes : 0,
+                                loaded: sent,
+                                total: fileSizeBytes > 0 ? fileSizeBytes : expected
+                            });
+                        }
+                    },
+                });
+            } catch (sendErr) {
+                // Only a body too big for one piece can be a proxy rejection worth splitting up.
+                // Not remembered as a limit: the same symptom can be an ordinary dropped connection.
+                if (livePhotoBackup || fileSizeBytes <= chunkSizeAfter413) throw sendErr;
+                const nothing = await this._nothingReachedServer(asset.id, hash, 0);
+                if (nothing === 'exists') return finish({ success: true, hash });
+                if (!nothing) throw sendErr;
+                console.log(`[UploadService] POST of ${fileSizeBytes} bytes failed (${sendErr.message}) with nothing stored, retrying in pieces.`);
+                return finish(await uploadInPieces(chunkSizeAfter413));
+            }
 
             if (response.status === 413) {
                 // A proxy (e.g. Cloudflare's 100 MiB limit) refused the whole file; lomod never saw it.

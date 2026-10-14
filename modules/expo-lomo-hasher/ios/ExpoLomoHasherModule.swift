@@ -452,14 +452,15 @@ public class ExpoLomoHasherModule: Module {
 
           try sourceHandle.seek(toOffset: UInt64(offset))
 
+          // The throwing read/write APIs: the legacy readData/write raise Objective-C exceptions
+          // on I/O errors (e.g. disk full), which Swift can't catch and which crash the app.
           let bufferSize = 1024 * 1024 // 1MB chunks
-          while autoreleasepool(invoking: {
-            let data = sourceHandle.readData(ofLength: bufferSize)
-            if !data.isEmpty {
-              destHandle.write(data)
-              return true
+          while try autoreleasepool(invoking: {
+            guard let data = try sourceHandle.read(upToCount: bufferSize), !data.isEmpty else {
+              return false
             }
-            return false
+            try destHandle.write(contentsOf: data)
+            return true
           }) {}
 
           promise.resolve(true)
@@ -503,12 +504,12 @@ public class ExpoLomoHasherModule: Module {
           var remaining = length
           let bufferSize: Int64 = 1024 * 1024
           var written: Int64 = 0
-          while remaining > 0 && autoreleasepool(invoking: {
-            let data = sourceHandle.readData(ofLength: Int(min(bufferSize, remaining)))
-            if data.isEmpty {
+          // Throwing read/write APIs, as in sliceFileAsync, so a full disk is an error, not a crash
+          while try remaining > 0 && autoreleasepool(invoking: {
+            guard let data = try sourceHandle.read(upToCount: Int(min(bufferSize, remaining))), !data.isEmpty else {
               return false
             }
-            destHandle.write(data)
+            try destHandle.write(contentsOf: data)
             remaining -= Int64(data.count)
             written += Int64(data.count)
             return true

@@ -16,8 +16,10 @@ const MiB = 1024 * KiB;
 // Stands in for Cloudflare in front of lomod: a request whose Content-Length is over the limit
 // gets 413 straight away and never reaches lomod; anything else is passed through. Every
 // request is recorded so tests can see how the app split its uploads; onRequest lets a test
-// act in the middle of an upload.
-function startLimitingProxy(target, limit) {
+// act in the middle of an upload. With drop, an over-limit request is cut off without any
+// answer instead -- what the app sees if its HTTP stack reports Cloudflare's early 413 and
+// closed connection as a network error.
+function startLimitingProxy(target, limit, { drop = false } = {}) {
   const requests = [];
   let onRequest = null;
   const proxy = http.createServer((req, res) => {
@@ -25,6 +27,11 @@ function startLimitingProxy(target, limit) {
     const entry = { method: req.method, path: req.url.split('?')[0], length };
     requests.push(entry);
     if (onRequest) onRequest(entry);
+    if (limit && length > limit && drop) {
+      entry.status = 'dropped';
+      req.once('data', () => req.socket.destroy());
+      return;
+    }
     if (limit && length > limit) {
       entry.status = 413;
       req.resume();
@@ -217,6 +224,28 @@ describe('uploading files larger than a proxy allows', () => {
       await expect(UploadService.getChunkSize(direct.url)).resolves.toBe(0);
     } finally {
       await tight.close();
+    }
+  });
+
+  it('falls back to pieces when an oversized upload is cut off before reaching the server', async () => {
+    const dropping = await startLimitingProxy(server.url, 1.5 * MiB, { drop: true });
+    try {
+      await AuthService.updateServerUrl(dropping.url);
+      const file = bigPhoto('dropped.jpg', 2.5 * MiB);
+      const hash = sha1(file);
+
+      const result = await UploadService.uploadAsset(addToCameraRoll(file));
+
+      expect(result).toMatchObject({ success: true, hash, chunked: true });
+      expect(dropping.uploads().map((r) => [r.method, r.length, r.status])).toEqual([
+        ['POST', fs.statSync(file).size, 'dropped'],
+        ['POST', 1 * MiB, 400], ['PATCH', 1 * MiB, 400], ['PATCH', 0.5 * MiB, 200],
+      ]);
+      await expect(downloadedSha1(hash)).resolves.toBe(hash);
+      // a cut-off connection isn't proof of a limit, so nothing is remembered
+      await expect(UploadService.getChunkSize(dropping.url)).resolves.toBe(0);
+    } finally {
+      await dropping.close();
     }
   });
 
