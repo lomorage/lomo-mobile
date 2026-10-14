@@ -45,7 +45,6 @@
       "permissions": [
         "android.permission.READ_MEDIA_IMAGES",
         "android.permission.READ_MEDIA_VIDEO",
-        "android.permission.READ_MEDIA_AUDIO",
         "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.WRITE_EXTERNAL_STORAGE",
@@ -90,7 +89,8 @@
           "photosPermission": "Allow Lomorage to access your photos to upload and backup your memories to your Lomorage server.",
           "savePhotosPermission": "Allow Lomorage to save downloaded photos to your library.",
           "isAccessMediaLocationEnabled": true,
-          "isStandard": false
+          "isStandard": false,
+          "granularPermissions": ["photo", "video"]
         }
       ],
       [

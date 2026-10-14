@@ -1,4 +1,4 @@
-import { countByMediaType, describeCounts, summarizeBackup, summarizeVerification } from '../backupSummary';
+import { countByMediaType, describeCounts, describeWhen, summarizeBackup, summarizeVerification } from '../backupSummary';
 
 test('summarizes photos and videos, treating anything not video as a photo', () => {
   const summary = summarizeBackup([
@@ -54,4 +54,12 @@ test('summarizes a library verification: only confirmed items count as safe', ()
     safePhotos: 2, safeVideos: 1, safeCount: 3, safeBytes: 1100, sizeIsPartial: true,
     unconfirmedCount: 1, weakEvidence: false,
   });
+});
+
+test('describes when the last backup happened', () => {
+  const now = new Date(2026, 9, 8, 15, 0).getTime();
+  expect(describeWhen(new Date(2026, 9, 8, 12, 22).getTime(), now)).toBe('today at 12:22 PM');
+  expect(describeWhen(new Date(2026, 9, 7, 9, 5).getTime(), now)).toBe('yesterday at 9:05 AM');
+  expect(describeWhen(new Date(2026, 9, 3, 18, 40).getTime(), now)).toBe('Oct 3 at 6:40 PM');
+  expect(describeWhen(new Date(2025, 0, 2, 8, 0).getTime(), now)).toBe('Jan 2, 2025 at 8:00 AM');
 });

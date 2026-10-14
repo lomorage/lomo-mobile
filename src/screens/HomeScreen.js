@@ -23,7 +23,7 @@ import { isVideoExtension } from '../utils/mediaType';
 import { isLivePhoto } from '../utils/livePhoto';
 import { isNotFoundImageError } from '../utils/imageErrors';
 import { useGatedImageUri } from '../hooks/useImageRetry';
-import { parseTimeTokenExtra } from './homeScreenHelpers';
+import { freeSpaceBannerInfo, parseTimeTokenExtra } from './homeScreenHelpers';
 import * as SecureStore from 'expo-secure-store';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
 import { pinyin } from 'pinyin-pro';
@@ -32,6 +32,8 @@ const { width } = Dimensions.get('window');
 const COLUMN_COUNT = 3;
 const ITEM_SIZE = width / COLUMN_COUNT;
 const FIRST_BACKUP_KEEP_AWAKE_TAG = 'lomorage-first-backup';
+// Longest a library load waits for EXIF taken dates before syncing anyway.
+const EXIF_WAIT_MS = 3000;
 
 // Grid thumbnails intentionally skip the memory cache. We tried gating this on
 // Device.totalMemory (memory-disk above 4GB), but confirmed on a real 11.8GB-RAM
@@ -489,6 +491,38 @@ export default function HomeScreen({ navigation, route }) {
     useEffect(() => {
         backupStateRef.current = backupState;
     }, [backupState]);
+
+    // "Phone storage is low" banner. Re-evaluated after a library scan, whenever backup goes
+    // idle, and when Photos comes back into view (e.g. after Free Up Space removed items).
+    const refreshFreeSpaceBanner = useCallback(async () => {
+        try {
+            const { isBackingUp, pendingCount } = backupStateRef.current;
+            const lastDismissed = await SecureStore.getItemAsync('lastBannerDismissed');
+            const info = freeSpaceBannerInfo({
+                freeBytes: await LegacyFileSystem.getFreeDiskStorageAsync(),
+                backup: summarizeBackup(await AssetDBService.getBackupSummaryRows()),
+                backupActive: isBackingUp || pendingCount > 0,
+                dismissedAt: lastDismissed ? parseInt(lastDismissed, 10) : null,
+                now: Date.now(),
+            });
+            if (!isMounted.current) return;
+            setFreeUpSpaceInfo(info
+                ? { visible: true, count: info.count, bytes: info.bytes, description: describeCounts(info.photos, info.videos), loading: false }
+                : { visible: false, count: 0, loading: false });
+        } catch (e) {
+            console.error('[HomeScreen] Error checking free-space banner:', e);
+        }
+    }, []);
+
+    useEffect(() => navigation.addListener('focus', refreshFreeSpaceBanner), [navigation, refreshFreeSpaceBanner]);
+
+    useEffect(() => {
+        if (backupState.isBackingUp || backupState.pendingCount > 0) {
+            setFreeUpSpaceInfo(prev => (prev.visible ? { visible: false, count: 0, loading: false } : prev));
+        } else {
+            refreshFreeSpaceBanner();
+        }
+    }, [backupState.isBackingUp, backupState.pendingCount, refreshFreeSpaceBanner]);
 
     const assetsRef = useRef([]);
     useEffect(() => {
@@ -1313,6 +1347,10 @@ export default function HomeScreen({ navigation, route }) {
                 AssetDBService.getRemoteAssets(),
                 AssetDBService.getOnThisDayAssets()
             ]);
+            // Photos the OS has no taken date for: use their EXIF date (read on an earlier run)
+            // so the timeline, the hash tree and the upload agree. See utils/takenTime.js.
+            const knownTakenTimes = await AssetDBService.getExifTakenTimes().catch(() => new Map());
+            MediaService.applyKnownTakenTimes(cumulativeLocalAssets, knownTakenTimes);
             localAssetsRef.current = cumulativeLocalAssets;
             remoteAssetsListRef.current = sqliteRemoteAssets;
 
@@ -1334,7 +1372,8 @@ export default function HomeScreen({ navigation, route }) {
             GalleryStore.setAssets(mappedOnThisDay, 'onThisDay');
 
             // Insert local assets into DB so they have GPS coordinate caching for map markers
-            AssetDBService.insertLocalAssets(cumulativeLocalAssets).then(() => {
+            const localRowsSaved = AssetDBService.insertLocalAssets(cumulativeLocalAssets);
+            localRowsSaved.then(() => {
                 SyncService.syncLocalGPS().catch(err => {
                     console.error('[HomeScreen] Failed to sync local GPS:', err);
                 });
@@ -1356,6 +1395,15 @@ export default function HomeScreen({ navigation, route }) {
             }).catch(err => {
                 console.error('[HomeScreen] Failed to insert local assets into DB:', err);
             });
+
+            // Read EXIF for photos with no taken date not seen before. Started now, applied after
+            // the first render and before the hash tree is built, so the first sync and the
+            // timeline already use the EXIF date. Usually only the first load has any to read.
+            const missingTakenTimes = MediaService.readMissingTakenTimes(cumulativeLocalAssets, knownTakenTimes)
+                .catch(err => {
+                    console.warn('[HomeScreen] Reading EXIF taken times failed:', err);
+                    return [];
+                });
 
             if (!isMounted.current) return;
 
@@ -1392,6 +1440,24 @@ export default function HomeScreen({ navigation, route }) {
                 // No user-facing progress here on purpose — this is a local hash/diff pass,
                 // not something a photo count would meaningfully describe to the user.
                 const scanStartedAt = Date.now();
+                const applyTakenTimes = (entries) => {
+                    if (!entries || entries.length === 0) return;
+                    localRowsSaved.then(() => AssetDBService.setExifTakenTimes(entries))
+                        .catch(err => console.warn('[HomeScreen] Saving EXIF taken times failed:', err));
+                    const applied = MediaService.applyKnownTakenTimes(cumulativeLocalAssets, new Map(entries.map(e => [e.id, e.time])));
+                    if (applied > 0 && isMounted.current) mergeAndSetAssets(cumulativeLocalAssets, false);
+                };
+                // Don't hold up sync (and backup) for long on a first load with many such photos:
+                // past EXIF_WAIT_MS, sync with what's known; the rest is still saved and shown, and
+                // the hash tree picks it up on the next load.
+                let exifWaitTimer;
+                const takenTimes = await Promise.race([
+                    missingTakenTimes,
+                    new Promise(resolve => { exifWaitTimer = setTimeout(() => resolve(null), EXIF_WAIT_MS); }),
+                ]);
+                clearTimeout(exifWaitTimer);
+                if (takenTimes) applyTakenTimes(takenTimes);
+                else missingTakenTimes.then(applyTakenTimes);
                 const diff = await SyncService.sync(cumulativeLocalAssets, () => {});
                 syncSucceeded = true;
                 logMetric('scan', Date.now() - scanStartedAt, {
@@ -1427,42 +1493,7 @@ export default function HomeScreen({ navigation, route }) {
                     });
 
                     // Check for large backed-up files and system space
-                    const checkFreeSpaceBanner = async () => {
-                        try {
-                            const lastDismissed = await SecureStore.getItemAsync('lastBannerDismissed');
-                            if (lastDismissed) {
-                                const daysSinceDismiss = (Date.now() - parseInt(lastDismissed, 10)) / (1000 * 60 * 60 * 24);
-                                if (daysSinceDismiss < 7) {
-                                    setFreeUpSpaceInfo({ visible: false, count: 0, loading: false });
-                                    return; // within cooldown
-                                }
-                            }
-                            
-                            // Check system space (< 5GB threshold)
-                            const freeSpaceBytes = await LegacyFileSystem.getFreeDiskStorageAsync();
-                            const freeSpaceGB = freeSpaceBytes / (1024 * 1024 * 1024);
-                            if (freeSpaceGB > 5) {
-                                setFreeUpSpaceInfo({ visible: false, count: 0, loading: false });
-                                return; // still has plenty of space
-                            }
-
-                            const backup = summarizeBackup(await AssetDBService.getBackupSummaryRows());
-                            if (isMounted.current && backup.backedUp > 0) {
-                                setFreeUpSpaceInfo({
-                                    visible: true,
-                                    count: backup.backedUp,
-                                    bytes: backup.backedUpBytes,
-                                    description: describeCounts(backup.photos.backedUp, backup.videos.backedUp),
-                                    loading: false,
-                                });
-                            } else if (isMounted.current) {
-                                setFreeUpSpaceInfo({ visible: false, count: 0, loading: false });
-                            }
-                        } catch (e) {
-                            console.error('[HomeScreen] Error checking large files banner condition:', e);
-                        }
-                    };
-                    checkFreeSpaceBanner();
+                    refreshFreeSpaceBanner();
                 }
             }
 
