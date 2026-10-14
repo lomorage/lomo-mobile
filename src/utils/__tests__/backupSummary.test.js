@@ -52,8 +52,17 @@ test('summarizes a library verification: only confirmed items count as safe', ()
   });
   expect(result).toEqual({
     safePhotos: 2, safeVideos: 1, safeCount: 3, safeBytes: 1100, sizeIsPartial: true,
-    unconfirmedCount: 1, weakEvidence: false,
+    unconfirmedCount: 1, restoringCount: 0, missingCount: 1, weakEvidence: false,
   });
+});
+
+test('counts files the computer lost apart: being restored, or missing', () => {
+  const items = ['a', 'b', 'c', 'd'].map(id => ({ id, mediaType: 'photo', sizeBytes: 1 }));
+  const result = summarizeVerification(items, {
+    safe: ['a'],
+    unsafe: [{ id: 'b', reason: 'file_missing_restoring' }, { id: 'c', reason: 'file_missing_restoring' }, { id: 'd', reason: 'damaged' }],
+  });
+  expect(result).toMatchObject({ unconfirmedCount: 3, restoringCount: 2, missingCount: 0 });
 });
 
 test('describes when the last backup happened', () => {

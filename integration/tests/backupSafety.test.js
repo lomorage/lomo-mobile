@@ -8,6 +8,11 @@ import SyncService from '../../src/services/SyncService';
 import UploadService from '../../src/services/UploadService';
 import { addToCameraRoll, fixturePath } from '../support/cameraRoll';
 import { registerUser, sha1, startTestServer } from '../support/harness';
+import { notCovered } from '../support/notCovered';
+
+// A restore is an upload, so it asks the backup settings (Wi-Fi only etc.) first; AutoBackupManager
+// itself needs notification/background-task modules Node doesn't have.
+jest.mock('../../src/services/AutoBackupManager', () => ({ __esModule: true, default: { canUploadNow: async () => true } }));
 
 const server = startTestServer('backup-safety');
 
@@ -23,6 +28,22 @@ function findMasterFile(dir, extension) {
     }
   }
   return null;
+}
+
+// Windows refuses to delete a file another process has open (EPERM): lomod's preview workers may
+// still be reading a just-restored video. Wait for them to let go. (fs.rmSync's maxRetries
+// doesn't retry this case.)
+async function removeWhenReleased(dir, timeoutMs = 30000) {
+  const started = Date.now();
+  for (;;) {
+    try {
+      fs.rmSync(dir, { recursive: true });
+      return;
+    } catch (e) {
+      if (!['EPERM', 'EBUSY'].includes(e.code) || Date.now() - started > timeoutMs) throw e;
+      await new Promise(r => setTimeout(r, 250));
+    }
+  }
 }
 
 async function verifyRaw(hashes) {
@@ -83,18 +104,61 @@ describe('checking backups before freeing up space', () => {
     expect(result).toEqual({ safe: [photo.id, video.id], unsafe: [], weakEvidence: false });
   });
 
-  it('an asset whose file vanished from the computer stays on the phone', async () => {
+  it('an asset whose file vanished from the computer stays on the phone, and is put back', async () => {
     const videoFile = findMasterFile(server.baseDir, '.mp4');
     expect(videoFile).toBeTruthy();
     fs.rmSync(videoFile);
+    // Restoring needs a lomod that says `repair: true`; an older one (or CI's image until it has
+    // it) still gets the old answer checked: kept on the phone, nothing re-uploaded.
+    const canRepair = (await verifyRaw([videoHash])).repair === true;
+    if (!canRepair) notCovered('no repair support, only the keep-on-phone path ran');
 
     const result = await BackupSafetyService.checkBeforeDelete([photo.id, video.id]);
 
     expect(result.safe).toEqual([photo.id]);
-    expect(result.unsafe).toEqual([{ id: video.id, reason: UNSAFE_REASONS.FILE_MISSING }]);
-    const [row] = await AssetDBService.getBackupRowsByIds([video.id]);
-    // The server still lists the hash, so a re-upload would be refused (409); don't pretend.
-    expect(row.uploaded).toBe(1);
+    if (!canRepair) {
+      expect(result.unsafe).toEqual([{ id: video.id, reason: UNSAFE_REASONS.FILE_MISSING }]);
+      await BackupSafetyService.restoring;
+      expect(fs.existsSync(videoFile)).toBe(false);
+      const [row] = await AssetDBService.getBackupRowsByIds([video.id]);
+      // The server still lists the hash, so a re-upload would be refused (409); don't pretend.
+      expect(row.uploaded).toBe(1);
+      return;
+    }
+    expect(result.unsafe).toEqual([{ id: video.id, reason: UNSAFE_REASONS.FILE_MISSING_RESTORING }]);
+
+    // the phone uploads it again; lomod writes the file back under the same asset
+    await BackupSafetyService.restoring;
+    expect(fs.readFileSync(videoFile)).toEqual(fs.readFileSync(fixturePath('video-2013-08-08.mp4')));
+    const body = await verifyRaw([videoHash]);
+    // the re-upload is the evidence -- or a consistency check lomod started after it (it runs one
+    // at startup), which then saw the restored file
+    expect(body.assets).toEqual([{ hash: videoHash, status: 'ok', evidence: expect.stringMatching(/^(upload|ccheck)$/), checkedAt: expect.any(Number) }]);
+
+    await expect(BackupSafetyService.checkBeforeDelete([video.id])).resolves.toEqual({ safe: [video.id], unsafe: [], weakEvidence: false });
+  });
+
+  it('the whole library folder deleted from a disk that is still there: everything is put back', async () => {
+    const photoFile = findMasterFile(server.baseDir, '.jpg');
+    const masterDir = photoFile.slice(0, photoFile.indexOf(`${path.sep}master${path.sep}`) + `${path.sep}master`.length);
+    const homeDir = path.dirname(path.dirname(masterDir)); // masterDir is <home>/Photos/master
+    const canRepair = (await verifyRaw([photoHash])).repair === true;
+    if (!canRepair || !fs.existsSync(path.join(homeDir, '.lomo', 'disk_uuid'))) {
+      notCovered('no repair support or no .lomo/disk_uuid, skipped');
+      return;
+    }
+    await removeWhenReleased(masterDir);
+
+    const result = await BackupSafetyService.checkBeforeDelete([photo.id, video.id]);
+    expect(result.unsafe).toEqual([
+      { id: photo.id, reason: UNSAFE_REASONS.FILE_MISSING_RESTORING },
+      { id: video.id, reason: UNSAFE_REASONS.FILE_MISSING_RESTORING },
+    ]);
+
+    await BackupSafetyService.restoring;
+    expect(fs.readFileSync(photoFile)).toEqual(fs.readFileSync(fixturePath('photo-2003-11-01.jpg')));
+    await expect(BackupSafetyService.checkBeforeDelete([photo.id, video.id]))
+      .resolves.toEqual({ safe: [photo.id, video.id], unsafe: [], weakEvidence: false });
   });
 
   it('an asset deleted on the server is kept on the phone', async () => {

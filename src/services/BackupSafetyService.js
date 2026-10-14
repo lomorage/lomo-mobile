@@ -10,6 +10,7 @@ export const UNSAFE_REASONS = {
   MISSING_LOCALLY: 'missing_locally',
   MISSING_ON_SERVER: 'missing_on_server',
   FILE_MISSING: 'file_missing',
+  FILE_MISSING_RESTORING: 'file_missing_restoring', // being uploaded again to put the file back
   LINKED_ONLY: 'linked_only',
   DAMAGED: 'damaged',
   STORAGE_UNAVAILABLE: 'storage_unavailable',
@@ -17,9 +18,10 @@ export const UNSAFE_REASONS = {
   UNCONFIRMED: 'unconfirmed', // the server answered, but not with anything we recognize
 };
 
-// Server statuses (lomod common/check/store.go) the next backup fixes by re-uploading. Only
-// not_found: for file_missing the server still lists the hash, so sync marks it uploaded
-// again and lomod would answer a re-upload with 409 -- it stays on the phone instead.
+// Server statuses (lomod common/check/store.go) the next backup fixes by re-uploading. Not
+// file_missing: the server still lists the hash, so the backup sees nothing to upload (and
+// sync marks it uploaded again). Servers that say `repair: true` take it back by a direct
+// upload instead (see _restoreMissing); older ones refuse it (409) and it stays on the phone.
 const REUPLOAD_STATUSES = new Set(['not_found']);
 
 const SERVER_STATUS_REASONS = {
@@ -48,6 +50,29 @@ const LOCAL_CHECK_CONCURRENCY = 8; // MediaLibrary lookups for large selections
  * @returns {Promise<{ safe: string[], unsafe: { id: string, reason: string }[], weakEvidence: boolean }>}
  */
 class BackupSafetyService {
+  constructor() {
+    this.restoring = Promise.resolve(); // settles when every queued restore is done
+    this.restorePending = new Set(); // ids queued or being restored, so a re-check doesn't queue them twice
+    this.restoredListeners = new Set();
+    this.restoredSinceNotify = 0; // files put back since onRestored listeners were last called
+  }
+
+  /**
+   * Calls listener once every queued restore is done, if at least one put a file back; returns
+   * an unsubscribe function.
+   */
+  onRestored(listener) {
+    this.restoredListeners.add(listener);
+    return () => this.restoredListeners.delete(listener);
+  }
+
+  // A restore is an upload like any backup, so it follows the same settings (backup on, not
+  // paused, Wi-Fi / charging / night only). Required lazily: AutoBackupManager pulls in the
+  // notification and background-task modules, and itself depends on much of the app.
+  _uploadsAllowed() {
+    return require('./AutoBackupManager').default.canUploadNow();
+  }
+
   async checkBeforeDelete(ids) {
     const rows = await AssetDBService.getBackupRowsByIds(ids);
     const rowById = new Map(rows.map(row => [row.id, row]));
@@ -121,8 +146,9 @@ class BackupSafetyService {
     if (candidates.length === 0) return { reasons, weakEvidence: false };
 
     let statusByHash;
+    let canRepair;
     try {
-      statusByHash = await this._verifyOnServer(candidates.map(c => c.hash));
+      ({ statusByHash, canRepair } = await this._verifyOnServer(candidates.map(c => c.hash)));
     } catch (e) {
       // Older lomod has no such route: gorilla/mux answers 405 (another /assets/... route
       // matches the path) or 404.
@@ -135,35 +161,105 @@ class BackupSafetyService {
       return { reasons, weakEvidence: false };
     }
 
+    // Only say "being backed up again" when the backup settings let it happen now; otherwise
+    // it's plain file_missing, and the next check (on allowed conditions) restores it.
+    const anyMissing = canRepair && candidates.some(c => statusByHash.get(c.hash.toLowerCase()) === 'file_missing');
+    const restoreNow = anyMissing && await this._uploadsAllowed();
+    const toRestore = [];
     for (const { id, hash } of candidates) {
       const status = statusByHash.get(hash.toLowerCase());
       if (status === 'ok') continue;
+      if (status === 'file_missing' && restoreNow) {
+        reasons.set(id, UNSAFE_REASONS.FILE_MISSING_RESTORING);
+        toRestore.push({ id, hash });
+        continue;
+      }
       reasons.set(id, SERVER_STATUS_REASONS[status] || UNSAFE_REASONS.UNCONFIRMED);
       if (REUPLOAD_STATUSES.has(status)) {
         await AssetDBService.markAssetNotUploaded(id).catch(() => {});
       }
     }
+    if (toRestore.length > 0) this._restoreMissing(toRestore);
     return { reasons, weakEvidence: false };
   }
 
-  // Returns a Map of lowercased hash -> server status.
+  /**
+   * Uploads these assets ({ id, hash }) again so the server puts their missing files back. In
+   * the background: the check reports them as unsafe right away, and they become safe to delete
+   * once restored. Restores run one at a time; `restoring` settles when all queued are done.
+   * Ids already queued are skipped, and the backup settings are checked again before each
+   * upload, since they can change while earlier restores run.
+   */
+  _restoreMissing(items) {
+    const fresh = items.filter(({ id }) => !this.restorePending.has(id));
+    if (fresh.length === 0) return this.restoring;
+    fresh.forEach(({ id }) => this.restorePending.add(id));
+
+    const run = async () => {
+      try {
+        for (let i = 0; i < fresh.length; i++) {
+          const { id, hash } = fresh[i];
+          if (!(await this._uploadsAllowed())) {
+            console.log(`[BackupSafetyService] Backup settings don't allow uploading now; ${fresh.length - i} restore(s) wait for the next check.`);
+            break;
+          }
+          const info = await MediaService.getAssetInfo(id);
+          if (!info) continue;
+          try {
+            // the hash the server reported missing: uploadAsset needn't hash the file again
+            const result = await UploadService.uploadAsset({ ...info, hash });
+            // Only an upload of this very hash puts the file back. A "duplicate" (the server
+            // already had it) or a different hash (e.g. a Live Photo re-encoded since) fixed
+            // nothing; counting it would re-check, re-queue and "succeed" again, in a loop.
+            if (result?.success && !result.duplicate && result.hash?.toLowerCase() === hash.toLowerCase()) {
+              this.restoredSinceNotify++;
+              console.log(`[BackupSafetyService] Restored missing file of ${id} on the server.`);
+            } else {
+              console.warn(`[BackupSafetyService] Re-upload of ${id} did not restore ${hash}:`, JSON.stringify(result));
+            }
+          } catch (e) {
+            console.warn(`[BackupSafetyService] Could not restore ${id}:`, e.message);
+          }
+        }
+      } finally {
+        fresh.forEach(({ id }) => this.restorePending.delete(id));
+      }
+      // Once the whole queue has drained, not per batch: restoring a lost library queues it 500 at
+      // a time, and each notification makes Backup Status verify the entire library again. Only
+      // after a success: a re-check then finds it ok, so this can't loop on a failing restore.
+      if (this.restorePending.size === 0 && this.restoredSinceNotify > 0) {
+        this.restoredSinceNotify = 0;
+        this.restoredListeners.forEach((listener) => {
+          try { listener(); } catch (e) { console.warn('[BackupSafetyService] onRestored listener failed:', e.message); }
+        });
+      }
+    };
+    this.restoring = this.restoring.then(run);
+    return this.restoring;
+  }
+
+  // Returns a Map of lowercased hash -> server status, and whether the server takes a
+  // re-upload of a file_missing asset to restore it.
   async _verifyOnServer(hashes) {
     const serverUrl = AuthService.getServerUrl();
     const token = AuthService.getToken();
     if (!serverUrl || !token) throw new Error('Not connected to a Lomorage server');
 
     const statusByHash = new Map();
+    let canRepair = false;
     for (let i = 0; i < hashes.length; i += VERIFY_BATCH_SIZE) {
       const batch = hashes.slice(i, i + VERIFY_BATCH_SIZE);
       const response = await axios.post(`${serverUrl}/assets/verify`, { hashes: batch }, {
         headers: { Authorization: `token=${token}`, 'Content-Type': 'application/json' },
         timeout: 60000,
       });
+      // a server-wide capability; require it of every batch's reply rather than trusting the last
+      canRepair = response.data?.repair === true && (i === 0 || canRepair);
       for (const item of response.data?.assets || []) {
         statusByHash.set(String(item.hash).toLowerCase(), item.status);
       }
     }
-    return statusByHash;
+    return { statusByHash, canRepair };
   }
 
   async _checkServerWithHead(candidates) {

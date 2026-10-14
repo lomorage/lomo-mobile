@@ -138,3 +138,48 @@ describe('AutoBackupManager', () => {
     expect(startKeepAlive).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('canUploadNow (uploads outside the queue, e.g. restoring a lost file)', () => {
+  const Network = require('expo-network');
+  const Battery = require('expo-battery');
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    Object.assign(AutoBackupManager, {
+      autoBackupEnabled: true, isPaused: false, pauseReason: null,
+      wifiOnlyBackup: true, chargingOnlyBackup: false, nightBackupOnly: false,
+    });
+  });
+
+  test('allowed on Wi-Fi with backup on', async () => {
+    await expect(AutoBackupManager.canUploadNow()).resolves.toBe(true);
+  });
+
+  test('not on mobile data when Wi-Fi only, and it does not pause the backup', async () => {
+    Network.getNetworkStateAsync.mockResolvedValueOnce({ isConnected: true, type: 'CELLULAR' });
+    await expect(AutoBackupManager.canUploadNow()).resolves.toBe(false);
+    expect(AutoBackupManager.isPaused).toBe(false);
+  });
+
+  test('not when backup is off or paused', async () => {
+    AutoBackupManager.autoBackupEnabled = false;
+    await expect(AutoBackupManager.canUploadNow()).resolves.toBe(false);
+    AutoBackupManager.autoBackupEnabled = true;
+    AutoBackupManager.isPaused = true;
+    await expect(AutoBackupManager.canUploadNow()).resolves.toBe(false);
+  });
+
+  test('not off the charger when charging only', async () => {
+    AutoBackupManager.chargingOnlyBackup = true;
+    Battery.getBatteryStateAsync.mockResolvedValueOnce('UNPLUGGED');
+    await expect(AutoBackupManager.canUploadNow()).resolves.toBe(false);
+  });
+
+  test('a queued upload still pauses the backup off Wi-Fi', async () => {
+    Network.getNetworkStateAsync.mockResolvedValueOnce({ isConnected: true, type: 'CELLULAR' });
+    await expect(AutoBackupManager._uploadSingle({ id: 'x' })).resolves.toBe(false);
+    expect(AutoBackupManager.isPaused).toBe(true);
+    expect(AutoBackupManager.pauseReason).toBe('Not connected to Wi-Fi');
+    expect(UploadService.uploadAsset).not.toHaveBeenCalled();
+  });
+});
