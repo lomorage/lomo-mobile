@@ -237,6 +237,68 @@ describe('_chunkedUpload', () => {
     sendSpy.mockRestore();
   });
 
+  const SecureStore = require('expo-secure-store');
+  const partial = (size) => ({ status: 206, headers: { 'if-match': `size=${size}, sha1=x${size}` } });
+  const diffHash = { status: 400, body: JSON.stringify({ text: 'different hash' }) };
+
+  test('a server that does not keep the first piece is not remembered and fails cleanly', async () => {
+    UploadService.chunkedServers = null;
+    sliceFileRangeAsync.mockImplementation(async (_u, _p, _o, len) => len);
+    const sendSpy = jest.spyOn(UploadService, '_send').mockResolvedValue(diffHash);
+    axios.head.mockRejectedValue({ response: { status: 404 } });
+
+    await expect(UploadService._chunkedUpload({ ...args, rememberAs: 40 }))
+      .rejects.toMatchObject({ resumeUnsupported: true });
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    expect(SecureStore.setItemAsync).not.toHaveBeenCalled();
+    await expect(UploadService.getChunkSize('https://s')).resolves.toBe(0);
+    sendSpy.mockRestore();
+  });
+
+  test('the piece size is remembered once the server keeps the first piece', async () => {
+    UploadService.chunkedServers = null;
+    sliceFileRangeAsync.mockImplementation(async (_u, _p, _o, len) => len);
+    const sendSpy = jest.spyOn(UploadService, '_send')
+      .mockResolvedValueOnce(diffHash).mockResolvedValueOnce(diffHash).mockResolvedValueOnce({ status: 200 });
+    axios.head.mockResolvedValueOnce(partial(40)).mockResolvedValueOnce(partial(80));
+
+    await expect(UploadService._chunkedUpload({ ...args, rememberAs: 40 })).resolves.toMatchObject({ success: true });
+    await expect(UploadService.getChunkSize('https://s')).resolves.toBe(40);
+    sendSpy.mockRestore();
+  });
+
+  test('a piece that hits a network error is resent from where HEAD says the server is', async () => {
+    sliceFileRangeAsync.mockImplementation(async (_u, _p, _o, len) => len);
+    const sendSpy = jest.spyOn(UploadService, '_send')
+      .mockResolvedValueOnce(diffHash)                        // piece 0-40
+      .mockRejectedValueOnce(new Error('Network Error'))      // piece 40-80 drops after 20 bytes
+      .mockResolvedValueOnce({ status: 200 });                // 60-100 resent from 60
+    axios.head
+      .mockResolvedValueOnce(partial(40))
+      .mockResolvedValueOnce(partial(60)); // realign after the drop
+
+    await expect(UploadService._chunkedUpload(args)).resolves.toMatchObject({ success: true });
+    const calls = sendSpy.mock.calls.map(([a]) => [a.method, a.headers['If-Match']]);
+    expect(calls).toEqual([
+      ['POST', undefined], ['PATCH', 'size=40, sha1=x40'], ['PATCH', 'size=60, sha1=x60'],
+    ]);
+    expect(sliceFileRangeAsync.mock.calls.map((c) => c[2])).toEqual([0, 40, 60]);
+    sendSpy.mockRestore();
+  });
+
+  test('gives up after the piece retries are used up', async () => {
+    sliceFileRangeAsync.mockImplementation(async (_u, _p, _o, len) => len);
+    const sendSpy = jest.spyOn(UploadService, '_send')
+      .mockResolvedValueOnce(diffHash)
+      .mockRejectedValue(new Error('Network Error'));
+    axios.head.mockResolvedValue(partial(40));
+
+    await expect(UploadService._chunkedUpload(args)).rejects.toThrow('Network Error');
+    expect(sendSpy).toHaveBeenCalledTimes(1 + 1 + UploadService.pieceRetries);
+    expect(UploadService.pieceUploads).toBe(0);
+    sendSpy.mockRestore();
+  });
+
   test('runs at most maxPieceUploads at once; the next waits for a slot', async () => {
     UploadService.maxPieceUploads = 1;
     try {
