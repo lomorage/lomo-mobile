@@ -9,11 +9,13 @@ jest.mock('../AuthService', () => ({
 }));
 jest.mock('../MediaService', () => ({ getAssetInfo: jest.fn() }));
 jest.mock('../UploadService', () => ({ checkUploadStatus: jest.fn(), uploadAsset: jest.fn(() => Promise.resolve({ success: true })) }));
+jest.mock('../AutoBackupManager', () => ({ __esModule: true, default: { canUploadNow: jest.fn(async () => true) } }));
 
 const axios = require('axios');
 const AssetDBService = require('../AssetDBService');
 const MediaService = require('../MediaService');
 const UploadService = require('../UploadService');
+const AutoBackupManager = require('../AutoBackupManager').default;
 import BackupSafetyService, { UNSAFE_REASONS } from '../BackupSafetyService';
 
 const row = (id, overrides = {}) => ({ id, hash: `hash-${id}`, hashModificationTime: 1000, uploaded: 1, ...overrides });
@@ -27,6 +29,10 @@ const serverReplies = (statuses = {}, extra = {}) => {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  AutoBackupManager.canUploadNow.mockImplementation(async () => true);
+  BackupSafetyService.restoring = Promise.resolve();
+  BackupSafetyService.restorePending.clear();
+  BackupSafetyService.restoredListeners.clear();
   MediaService.getAssetInfo.mockResolvedValue({ modificationTime: 1000.4 });
   serverReplies();
 });
@@ -102,7 +108,7 @@ test('file_missing on a server that can repair: uploaded again right away to put
     { id: 'nf', reason: UNSAFE_REASONS.MISSING_ON_SERVER },
   ]);
   // not via the next backup: the server still lists the hash, so that would never upload it
-  expect(UploadService.uploadAsset.mock.calls.map(c => c[0].id)).toEqual(['fm']);
+  expect(UploadService.uploadAsset.mock.calls.map(c => [c[0].id, c[0].hash])).toEqual([['fm', 'hash-fm']]);
   expect(AssetDBService.markAssetNotUploaded.mock.calls.map(c => c[0])).toEqual(['nf']);
 });
 
@@ -121,6 +127,86 @@ test('a failed restore is logged, not thrown', async () => {
   UploadService.uploadAsset.mockRejectedValueOnce(new Error('Network Error'));
   await BackupSafetyService.checkBeforeDelete(['fm']);
   await expect(BackupSafetyService.restoring).resolves.toBeUndefined();
+});
+
+test('file_missing while the backup settings forbid uploading (e.g. Wi-Fi only on mobile data): not restored now', async () => {
+  AssetDBService.getBackupRowsByIds.mockResolvedValue([row('fm')]);
+  serverReplies({ 'hash-fm': 'file_missing' }, { repair: true });
+  AutoBackupManager.canUploadNow.mockResolvedValue(false);
+
+  const result = await BackupSafetyService.checkBeforeDelete(['fm']);
+  await BackupSafetyService.restoring;
+
+  expect(result.unsafe).toEqual([{ id: 'fm', reason: UNSAFE_REASONS.FILE_MISSING }]);
+  expect(UploadService.uploadAsset).not.toHaveBeenCalled();
+});
+
+test('settings that change mid-way stop the remaining restores, which the next check queues again', async () => {
+  AssetDBService.getBackupRowsByIds.mockResolvedValue([row('a'), row('b')]);
+  serverReplies({ 'hash-a': 'file_missing', 'hash-b': 'file_missing' }, { repair: true });
+  MediaService.getAssetInfo.mockImplementation(async (id) => ({ id, modificationTime: 1000.4 }));
+  // allowed for the check and the first restore, then the phone leaves Wi-Fi
+  AutoBackupManager.canUploadNow
+    .mockResolvedValueOnce(true).mockResolvedValueOnce(true).mockResolvedValue(false);
+
+  await BackupSafetyService.checkBeforeDelete(['a', 'b']);
+  await BackupSafetyService.restoring;
+
+  expect(UploadService.uploadAsset.mock.calls.map(c => c[0].id)).toEqual(['a']);
+  expect(BackupSafetyService.restorePending.size).toBe(0);
+});
+
+test('checking again while a restore is queued does not queue it twice', async () => {
+  AssetDBService.getBackupRowsByIds.mockResolvedValue([row('fm')]);
+  serverReplies({ 'hash-fm': 'file_missing' }, { repair: true });
+  MediaService.getAssetInfo.mockImplementation(async (id) => ({ id, modificationTime: 1000.4 }));
+  let finishUpload;
+  UploadService.uploadAsset.mockImplementationOnce(() => new Promise((resolve) => { finishUpload = resolve; }));
+
+  await BackupSafetyService.checkBeforeDelete(['fm']);
+  await BackupSafetyService.checkBeforeDelete(['fm']);
+  await new Promise(setImmediate);
+  finishUpload({ success: true });
+  await BackupSafetyService.restoring;
+
+  expect(UploadService.uploadAsset).toHaveBeenCalledTimes(1);
+});
+
+test('onRestored fires after a file is put back, not after a failed restore', async () => {
+  AssetDBService.getBackupRowsByIds.mockResolvedValue([row('fm')]);
+  serverReplies({ 'hash-fm': 'file_missing' }, { repair: true });
+  MediaService.getAssetInfo.mockImplementation(async (id) => ({ id, modificationTime: 1000.4 }));
+  const listener = jest.fn();
+  const unsubscribe = BackupSafetyService.onRestored(listener);
+
+  UploadService.uploadAsset.mockRejectedValueOnce(new Error('Network Error'));
+  await BackupSafetyService.checkBeforeDelete(['fm']);
+  await BackupSafetyService.restoring;
+  expect(listener).not.toHaveBeenCalled();
+
+  await BackupSafetyService.checkBeforeDelete(['fm']);
+  await BackupSafetyService.restoring;
+  expect(listener).toHaveBeenCalledTimes(1);
+
+  unsubscribe();
+  await BackupSafetyService.checkBeforeDelete(['fm']);
+  await BackupSafetyService.restoring;
+  expect(listener).toHaveBeenCalledTimes(1);
+});
+
+test('repair is only trusted when every batch of the reply offers it', async () => {
+  const ids = Array.from({ length: 501 }, (_, i) => `id${i}`);
+  AssetDBService.getBackupRowsByIds.mockResolvedValue(ids.map(id => row(id)));
+  MediaService.getAssetInfo.mockImplementation(async (id) => ({ id, modificationTime: 1000.4 }));
+  let call = 0;
+  axios.post.mockImplementation(async (url, body) => ({
+    data: { assets: body.hashes.map(hash => ({ hash, status: 'file_missing' })), repair: call++ === 0 },
+  }));
+
+  const result = await BackupSafetyService.checkBeforeDelete(ids);
+
+  expect(new Set(result.unsafe.map(u => u.reason))).toEqual(new Set([UNSAFE_REASONS.FILE_MISSING]));
+  expect(UploadService.uploadAsset).not.toHaveBeenCalled();
 });
 
 test('hash missing from the server reply is not treated as safe', async () => {

@@ -53,6 +53,11 @@ export function countByMediaType(items) {
 
 // What the "photos are safe" screen shows after BackupSafetyService.checkAll over `items`
 // (backed-up local assets with mediaType and sizeBytes).
+// BackupSafetyService UNSAFE_REASONS for files the computer lost (kept as strings: this util
+// stays free of service imports).
+const RESTORING = 'file_missing_restoring';
+const MISSING = 'file_missing';
+
 export function summarizeVerification(items, { safe, unsafe, weakEvidence }) {
   const safeSet = new Set(safe);
   const safeItems = items.filter(item => safeSet.has(item.id));
@@ -63,7 +68,9 @@ export function summarizeVerification(items, { safe, unsafe, weakEvidence }) {
     safeCount: safeItems.length,
     safeBytes: safeItems.reduce((sum, item) => sum + (item.sizeBytes || 0), 0),
     sizeIsPartial: safeItems.some(item => !item.sizeBytes),
-    unconfirmedCount: unsafe.length,
+    unconfirmedCount: unsafe.length, // every one not confirmed, including the two below
+    restoringCount: unsafe.filter(u => u.reason === RESTORING).length, // being uploaded again now
+    missingCount: unsafe.filter(u => u.reason === MISSING).length, // lost, not being restored now
     weakEvidence: !!weakEvidence,
   };
 }

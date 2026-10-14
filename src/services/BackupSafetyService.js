@@ -50,6 +50,25 @@ const LOCAL_CHECK_CONCURRENCY = 8; // MediaLibrary lookups for large selections
  * @returns {Promise<{ safe: string[], unsafe: { id: string, reason: string }[], weakEvidence: boolean }>}
  */
 class BackupSafetyService {
+  constructor() {
+    this.restoring = Promise.resolve(); // settles when every queued restore is done
+    this.restorePending = new Set(); // ids queued or being restored, so a re-check doesn't queue them twice
+    this.restoredListeners = new Set();
+  }
+
+  /** Calls listener after restores put at least one file back; returns an unsubscribe function. */
+  onRestored(listener) {
+    this.restoredListeners.add(listener);
+    return () => this.restoredListeners.delete(listener);
+  }
+
+  // A restore is an upload like any backup, so it follows the same settings (backup on, not
+  // paused, Wi-Fi / charging / night only). Required lazily: AutoBackupManager pulls in the
+  // notification and background-task modules, and itself depends on much of the app.
+  _uploadsAllowed() {
+    return require('./AutoBackupManager').default.canUploadNow();
+  }
+
   async checkBeforeDelete(ids) {
     const rows = await AssetDBService.getBackupRowsByIds(ids);
     const rowById = new Map(rows.map(row => [row.id, row]));
@@ -138,13 +157,17 @@ class BackupSafetyService {
       return { reasons, weakEvidence: false };
     }
 
+    // Only say "being backed up again" when the backup settings let it happen now; otherwise
+    // it's plain file_missing, and the next check (on allowed conditions) restores it.
+    const anyMissing = canRepair && candidates.some(c => statusByHash.get(c.hash.toLowerCase()) === 'file_missing');
+    const restoreNow = anyMissing && await this._uploadsAllowed();
     const toRestore = [];
     for (const { id, hash } of candidates) {
       const status = statusByHash.get(hash.toLowerCase());
       if (status === 'ok') continue;
-      if (status === 'file_missing' && canRepair) {
+      if (status === 'file_missing' && restoreNow) {
         reasons.set(id, UNSAFE_REASONS.FILE_MISSING_RESTORING);
-        toRestore.push(id);
+        toRestore.push({ id, hash });
         continue;
       }
       reasons.set(id, SERVER_STATUS_REASONS[status] || UNSAFE_REASONS.UNCONFIRMED);
@@ -157,24 +180,48 @@ class BackupSafetyService {
   }
 
   /**
-   * Uploads these assets again so the server puts their missing files back. In the
-   * background: the check reports them as unsafe right away, and they become safe to delete
+   * Uploads these assets ({ id, hash }) again so the server puts their missing files back. In
+   * the background: the check reports them as unsafe right away, and they become safe to delete
    * once restored. Restores run one at a time; `restoring` settles when all queued are done.
+   * Ids already queued are skipped, and the backup settings are checked again before each
+   * upload, since they can change while earlier restores run.
    */
-  _restoreMissing(ids) {
+  _restoreMissing(items) {
+    const fresh = items.filter(({ id }) => !this.restorePending.has(id));
+    if (fresh.length === 0) return this.restoring;
+    fresh.forEach(({ id }) => this.restorePending.add(id));
+
     const run = async () => {
-      for (const id of ids) {
-        const info = await MediaService.getAssetInfo(id);
-        if (!info) continue;
-        try {
-          await UploadService.uploadAsset(info);
-          console.log(`[BackupSafetyService] Restored missing file of ${id} on the server.`);
-        } catch (e) {
-          console.warn(`[BackupSafetyService] Could not restore ${id}:`, e.message);
+      let restored = 0;
+      try {
+        for (let i = 0; i < fresh.length; i++) {
+          const { id, hash } = fresh[i];
+          if (!(await this._uploadsAllowed())) {
+            console.log(`[BackupSafetyService] Backup settings don't allow uploading now; ${fresh.length - i} restore(s) wait for the next check.`);
+            break;
+          }
+          const info = await MediaService.getAssetInfo(id);
+          if (!info) continue;
+          try {
+            // the hash the server reported missing: uploadAsset needn't hash the file again
+            await UploadService.uploadAsset({ ...info, hash });
+            restored++;
+            console.log(`[BackupSafetyService] Restored missing file of ${id} on the server.`);
+          } catch (e) {
+            console.warn(`[BackupSafetyService] Could not restore ${id}:`, e.message);
+          }
         }
+      } finally {
+        fresh.forEach(({ id }) => this.restorePending.delete(id));
+      }
+      // Only after a success: a re-check then finds it ok, so this can't loop on a failing restore.
+      if (restored > 0) {
+        this.restoredListeners.forEach((listener) => {
+          try { listener(); } catch (e) { console.warn('[BackupSafetyService] onRestored listener failed:', e.message); }
+        });
       }
     };
-    this.restoring = (this.restoring || Promise.resolve()).then(run);
+    this.restoring = this.restoring.then(run);
     return this.restoring;
   }
 
@@ -193,7 +240,8 @@ class BackupSafetyService {
         headers: { Authorization: `token=${token}`, 'Content-Type': 'application/json' },
         timeout: 60000,
       });
-      canRepair = response.data?.repair === true;
+      // a server-wide capability; require it of every batch's reply rather than trusting the last
+      canRepair = response.data?.repair === true && (i === 0 || canRepair);
       for (const item of response.data?.assets || []) {
         statusByHash.set(String(item.hash).toLowerCase(), item.status);
       }

@@ -9,6 +9,10 @@ import UploadService from '../../src/services/UploadService';
 import { addToCameraRoll, fixturePath } from '../support/cameraRoll';
 import { registerUser, sha1, startTestServer } from '../support/harness';
 
+// A restore is an upload, so it asks the backup settings (Wi-Fi only etc.) first; AutoBackupManager
+// itself needs notification/background-task modules Node doesn't have.
+jest.mock('../../src/services/AutoBackupManager', () => ({ __esModule: true, default: { canUploadNow: async () => true } }));
+
 const server = startTestServer('backup-safety');
 
 // The library copy lomod keeps for a hash: <media>/<user>/Photos/master/YYYY/MM/DD/YYYYMMDD_<id>.<ext>
@@ -87,20 +91,55 @@ describe('checking backups before freeing up space', () => {
     const videoFile = findMasterFile(server.baseDir, '.mp4');
     expect(videoFile).toBeTruthy();
     fs.rmSync(videoFile);
+    // Restoring needs a lomod that says `repair: true`; an older one (or CI's image until it has
+    // it) still gets the old answer checked: kept on the phone, nothing re-uploaded.
+    const canRepair = (await verifyRaw([videoHash])).repair === true;
+    if (!canRepair) console.warn('lomod has no repair support: only the keep-on-phone path of this test ran');
 
     const result = await BackupSafetyService.checkBeforeDelete([photo.id, video.id]);
 
     expect(result.safe).toEqual([photo.id]);
+    if (!canRepair) {
+      expect(result.unsafe).toEqual([{ id: video.id, reason: UNSAFE_REASONS.FILE_MISSING }]);
+      await BackupSafetyService.restoring;
+      expect(fs.existsSync(videoFile)).toBe(false);
+      const [row] = await AssetDBService.getBackupRowsByIds([video.id]);
+      // The server still lists the hash, so a re-upload would be refused (409); don't pretend.
+      expect(row.uploaded).toBe(1);
+      return;
+    }
     expect(result.unsafe).toEqual([{ id: video.id, reason: UNSAFE_REASONS.FILE_MISSING_RESTORING }]);
 
     // the phone uploads it again; lomod writes the file back under the same asset
     await BackupSafetyService.restoring;
     expect(fs.readFileSync(videoFile)).toEqual(fs.readFileSync(fixturePath('video-2013-08-08.mp4')));
     const body = await verifyRaw([videoHash]);
-    expect(body.repair).toBe(true);
     expect(body.assets).toEqual([{ hash: videoHash, status: 'ok', evidence: 'upload', checkedAt: expect.any(Number) }]);
 
     await expect(BackupSafetyService.checkBeforeDelete([video.id])).resolves.toEqual({ safe: [video.id], unsafe: [], weakEvidence: false });
+  });
+
+  it('the whole library folder deleted from a disk that is still there: everything is put back', async () => {
+    const photoFile = findMasterFile(server.baseDir, '.jpg');
+    const masterDir = photoFile.slice(0, photoFile.indexOf(`${path.sep}master${path.sep}`) + `${path.sep}master`.length);
+    const homeDir = path.dirname(path.dirname(masterDir)); // <home>/Photos/master
+    const canRepair = (await verifyRaw([photoHash])).repair === true;
+    if (!canRepair || !fs.existsSync(path.join(homeDir, '.lomo'))) {
+      console.warn('lomod has no repair support or no .lomo folder: skipped');
+      return;
+    }
+    fs.rmSync(masterDir, { recursive: true });
+
+    const result = await BackupSafetyService.checkBeforeDelete([photo.id, video.id]);
+    expect(result.unsafe).toEqual([
+      { id: photo.id, reason: UNSAFE_REASONS.FILE_MISSING_RESTORING },
+      { id: video.id, reason: UNSAFE_REASONS.FILE_MISSING_RESTORING },
+    ]);
+
+    await BackupSafetyService.restoring;
+    expect(fs.readFileSync(photoFile)).toEqual(fs.readFileSync(fixturePath('photo-2003-11-01.jpg')));
+    await expect(BackupSafetyService.checkBeforeDelete([photo.id, video.id]))
+      .resolves.toEqual({ safe: [photo.id, video.id], unsafe: [], weakEvidence: false });
   });
 
   it('an asset deleted on the server is kept on the phone', async () => {

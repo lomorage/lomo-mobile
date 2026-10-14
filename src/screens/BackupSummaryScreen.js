@@ -70,7 +70,14 @@ export default function BackupSummaryScreen({ navigation }) {
     useEffect(() => {
         mounted.current = true;
         check();
-        return () => { mounted.current = false; };
+        // A file the computer had lost was just put back: check again so it shows as safe.
+        const unsubscribe = BackupSafetyService.onRestored(() => {
+            if (mounted.current) check();
+        });
+        return () => {
+            mounted.current = false;
+            unsubscribe();
+        };
     }, [check]);
 
     const formatSize = (bytes) => formatBytesLog(bytes, { decimals: 1 });
@@ -135,9 +142,19 @@ export default function BackupSummaryScreen({ navigation }) {
                         {`${result.skipped.toLocaleString('en-US')} in albums you don't back up — they stay on this phone.`}
                     </Text>
                 )}
-                {result.unconfirmedCount > 0 && (
+                {result.restoringCount > 0 && (
                     <Text style={styles.note}>
-                        {`${result.unconfirmedCount.toLocaleString('en-US')} couldn't be confirmed — they stay on this phone.`}
+                        {`Restoring ${result.restoringCount.toLocaleString('en-US')} to your computer — it had lost them. They stay on this phone until that's done.`}
+                    </Text>
+                )}
+                {result.missingCount > 0 && (
+                    <Text style={styles.note}>
+                        {`${result.missingCount.toLocaleString('en-US')} ${result.missingCount === 1 ? 'is' : 'are'} missing from your Lomorage computer — they stay on this phone.`}
+                    </Text>
+                )}
+                {result.unconfirmedCount - result.restoringCount - result.missingCount > 0 && (
+                    <Text style={styles.note}>
+                        {`${(result.unconfirmedCount - result.restoringCount - result.missingCount).toLocaleString('en-US')} couldn't be confirmed — they stay on this phone.`}
                     </Text>
                 )}
                 {result.weakEvidence && (

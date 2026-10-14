@@ -498,42 +498,47 @@ class AutoBackupManager {
         });
     }
 
+    /**
+     * Why the user's backup settings (Wi-Fi only, charging only, night only) forbid uploading
+     * right now, or null when they allow it. No side effects: _uploadSingle pauses on a reason,
+     * canUploadNow just reports it.
+     */
+    async _settingsBlockReason() {
+        if (this.wifiOnlyBackup && !(await this.isWifiConnected())) {
+            return 'Not connected to Wi-Fi';
+        }
+        if (this.chargingOnlyBackup && !(await this.isDeviceCharging())) {
+            // iOS Optimization: If we are in the background (e.g., triggered by geofence),
+            // bypass the charging requirement. iOS background networking handles power efficiently,
+            // and there is no reliable "plugged-in" trigger to wake the app later.
+            if (Platform.OS === 'ios' && AppState.currentState !== 'active') {
+                console.log('[AutoBackupManager] iOS Optimization: Bypassing charging constraint to guarantee background backup.');
+            } else {
+                return 'Device is not charging';
+            }
+        }
+        if (this.nightBackupOnly && !this.isNightTime()) {
+            return 'Outside night backup window (2–5 AM)';
+        }
+        return null;
+    }
+
+    /**
+     * Whether an upload outside the backup queue (e.g. restoring a file the server lost) may run
+     * now: backup is on, not paused, and the settings allow it.
+     */
+    async canUploadNow() {
+        if (!this.autoBackupEnabled || this.isPaused) return false;
+        return (await this._settingsBlockReason()) === null;
+    }
+
     async _uploadSingle(asset) {
-        // Wi-Fi-only enforcement: pause upload if disconnected from Wi-Fi
-        if (this.wifiOnlyBackup) {
-            const onWifi = await this.isWifiConnected();
-            if (!onWifi) {
-                console.log('[AutoBackupManager] Wi-Fi-only mode enabled and not on Wi-Fi. Pausing backup.');
-                this.pause('Not connected to Wi-Fi');
-                return false;
-            }
-        }
-
-        // Charging-only enforcement: pause upload if disconnected from charger
-        if (this.chargingOnlyBackup) {
-            const charging = await this.isDeviceCharging();
-            if (!charging) {
-                // iOS Optimization: If we are in the background (e.g., triggered by geofence), 
-                // bypass the charging requirement. iOS background networking handles power efficiently,
-                // and there is no reliable "plugged-in" trigger to wake the app later.
-                if (Platform.OS === 'ios' && AppState.currentState !== 'active') {
-                    console.log('[AutoBackupManager] iOS Optimization: Bypassing charging constraint to guarantee background backup.');
-                } else {
-                    console.log('[AutoBackupManager] Charging-only mode enabled and not charging. Pausing backup.');
-                    this.pause('Device is not charging');
-                    return false;
-                }
-            }
-        }
-
-        // Night-only enforcement: pause upload if outside late-night window
-        if (this.nightBackupOnly) {
-            const nightTime = this.isNightTime();
-            if (!nightTime) {
-                console.log('[AutoBackupManager] Night-only mode enabled and outside backup window. Pausing backup.');
-                this.pause('Outside night backup window (2–5 AM)');
-                return false;
-            }
+        // Wi-Fi-only / charging-only / night-only enforcement: pause the backup until allowed
+        const blockReason = await this._settingsBlockReason();
+        if (blockReason) {
+            console.log(`[AutoBackupManager] ${blockReason}. Pausing backup.`);
+            this.pause(blockReason);
+            return false;
         }
 
         // Designate this asset as the UI's representative asset if there isn't one
