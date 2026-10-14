@@ -54,9 +54,13 @@ class BackupSafetyService {
     this.restoring = Promise.resolve(); // settles when every queued restore is done
     this.restorePending = new Set(); // ids queued or being restored, so a re-check doesn't queue them twice
     this.restoredListeners = new Set();
+    this.restoredSinceNotify = 0; // files put back since onRestored listeners were last called
   }
 
-  /** Calls listener after restores put at least one file back; returns an unsubscribe function. */
+  /**
+   * Calls listener once every queued restore is done, if at least one put a file back; returns
+   * an unsubscribe function.
+   */
   onRestored(listener) {
     this.restoredListeners.add(listener);
     return () => this.restoredListeners.delete(listener);
@@ -192,7 +196,6 @@ class BackupSafetyService {
     fresh.forEach(({ id }) => this.restorePending.add(id));
 
     const run = async () => {
-      let restored = 0;
       try {
         for (let i = 0; i < fresh.length; i++) {
           const { id, hash } = fresh[i];
@@ -204,9 +207,16 @@ class BackupSafetyService {
           if (!info) continue;
           try {
             // the hash the server reported missing: uploadAsset needn't hash the file again
-            await UploadService.uploadAsset({ ...info, hash });
-            restored++;
-            console.log(`[BackupSafetyService] Restored missing file of ${id} on the server.`);
+            const result = await UploadService.uploadAsset({ ...info, hash });
+            // Only an upload of this very hash puts the file back. A "duplicate" (the server
+            // already had it) or a different hash (e.g. a Live Photo re-encoded since) fixed
+            // nothing; counting it would re-check, re-queue and "succeed" again, in a loop.
+            if (result?.success && !result.duplicate && result.hash?.toLowerCase() === hash.toLowerCase()) {
+              this.restoredSinceNotify++;
+              console.log(`[BackupSafetyService] Restored missing file of ${id} on the server.`);
+            } else {
+              console.warn(`[BackupSafetyService] Re-upload of ${id} did not restore ${hash}:`, JSON.stringify(result));
+            }
           } catch (e) {
             console.warn(`[BackupSafetyService] Could not restore ${id}:`, e.message);
           }
@@ -214,8 +224,11 @@ class BackupSafetyService {
       } finally {
         fresh.forEach(({ id }) => this.restorePending.delete(id));
       }
-      // Only after a success: a re-check then finds it ok, so this can't loop on a failing restore.
-      if (restored > 0) {
+      // Once the whole queue has drained, not per batch: restoring a lost library queues it 500 at
+      // a time, and each notification makes Backup Status verify the entire library again. Only
+      // after a success: a re-check then finds it ok, so this can't loop on a failing restore.
+      if (this.restorePending.size === 0 && this.restoredSinceNotify > 0) {
+        this.restoredSinceNotify = 0;
         this.restoredListeners.forEach((listener) => {
           try { listener(); } catch (e) { console.warn('[BackupSafetyService] onRestored listener failed:', e.message); }
         });

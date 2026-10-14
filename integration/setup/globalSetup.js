@@ -11,4 +11,6 @@ module.exports = async () => {
     );
   }
   if (!fs.existsSync(bin)) throw new Error(`LOMOD_BIN=${bin} does not exist`);
+  // start each run with an empty list of paths lomod couldn't cover (see support/notCovered.js)
+  fs.rmSync(require('../support/notCovered').NOT_COVERED_FILE, { force: true });
 };

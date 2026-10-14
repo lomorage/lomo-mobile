@@ -144,12 +144,16 @@ export default function BackupSummaryScreen({ navigation }) {
                 )}
                 {result.restoringCount > 0 && (
                     <Text style={styles.note}>
-                        {`Restoring ${result.restoringCount.toLocaleString('en-US')} to your computer — it had lost them. They stay on this phone until that's done.`}
+                        {result.restoringCount === 1
+                            ? "Restoring 1 to your computer — it had lost it. It stays on this phone until that's done."
+                            : `Restoring ${result.restoringCount.toLocaleString('en-US')} to your computer — it had lost them. They stay on this phone until that's done.`}
                     </Text>
                 )}
                 {result.missingCount > 0 && (
                     <Text style={styles.note}>
-                        {`${result.missingCount.toLocaleString('en-US')} ${result.missingCount === 1 ? 'is' : 'are'} missing from your Lomorage computer — they stay on this phone.`}
+                        {result.missingCount === 1
+                            ? '1 is missing from your Lomorage computer — it stays on this phone.'
+                            : `${result.missingCount.toLocaleString('en-US')} are missing from your Lomorage computer — they stay on this phone.`}
                     </Text>
                 )}
                 {result.unconfirmedCount - result.restoringCount - result.missingCount > 0 && (

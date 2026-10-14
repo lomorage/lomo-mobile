@@ -31,6 +31,7 @@ module.exports = {
     '^\\./AIService$': shim('stubs/AIService.js'),
   },
   globalSetup: '<rootDir>/integration/setup/globalSetup.js',
+  globalTeardown: '<rootDir>/integration/setup/globalTeardown.js',
   setupFilesAfterEnv: ['<rootDir>/integration/setup/quietConsole.js'],
   testTimeout: 60000,
 };

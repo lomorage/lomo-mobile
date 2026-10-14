@@ -91,7 +91,7 @@ test('some not backed up, skipped or unconfirmed: says so and does not log Time 
   expect(text).toContain('Most of your photos are safe at home');
   expect(text).toContain('2 still to back up');
   expect(text).toContain("1 in albums you don't back up");
-  expect(text).toContain('1 is missing from your Lomorage computer — they stay on this phone.');
+  expect(text).toContain('1 is missing from your Lomorage computer — it stays on this phone.');
   expect(text).toContain("1 couldn't be confirmed");
   expect(logSincePairedOnce).not.toHaveBeenCalled();
 });
@@ -114,7 +114,7 @@ test('a lost file put back on the computer: says so, checks again, and stops lis
   BackupSafetyService.checkAll.mockResolvedValue({ safe: ['p1', 'p2', 'v1'], unsafe: [], weakEvidence: false });
   const tree = await render();
   expect(BackupSafetyService.checkAll).toHaveBeenCalledTimes(1);
-  expect(allText(tree)).toContain("Restoring 1 to your computer — it had lost them. They stay on this phone until that's done.");
+  expect(allText(tree)).toContain("Restoring 1 to your computer — it had lost it. It stays on this phone until that's done.");
   expect(allText(tree)).not.toContain("couldn't be confirmed");
 
   await act(async () => { mockRestoredListeners.forEach(listener => listener()); });
@@ -123,4 +123,21 @@ test('a lost file put back on the computer: says so, checks again, and stops lis
 
   await act(async () => { tree.unmount(); });
   expect(mockRestoredListeners.size).toBe(0);
+});
+
+test('several lost files: restoring and missing counted apart, in plural', async () => {
+  AssetDBService.getBackupSummaryRows.mockResolvedValue(summaryRows({ total: 2, backedUp: 2 }, { total: 1, backedUp: 1 }));
+  BackupSafetyService.checkAll.mockResolvedValue({
+    safe: [],
+    unsafe: [
+      { id: 'p1', reason: 'file_missing_restoring' },
+      { id: 'p2', reason: 'file_missing_restoring' },
+      { id: 'v1', reason: 'file_missing' },
+    ],
+  });
+  const tree = await render();
+  const text = allText(tree);
+  expect(text).toContain("Restoring 2 to your computer — it had lost them. They stay on this phone until that's done.");
+  expect(text).toContain('1 is missing from your Lomorage computer — it stays on this phone.');
+  expect(text).not.toContain("couldn't be confirmed");
 });

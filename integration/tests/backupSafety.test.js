@@ -8,6 +8,7 @@ import SyncService from '../../src/services/SyncService';
 import UploadService from '../../src/services/UploadService';
 import { addToCameraRoll, fixturePath } from '../support/cameraRoll';
 import { registerUser, sha1, startTestServer } from '../support/harness';
+import { notCovered } from '../support/notCovered';
 
 // A restore is an upload, so it asks the backup settings (Wi-Fi only etc.) first; AutoBackupManager
 // itself needs notification/background-task modules Node doesn't have.
@@ -110,7 +111,7 @@ describe('checking backups before freeing up space', () => {
     // Restoring needs a lomod that says `repair: true`; an older one (or CI's image until it has
     // it) still gets the old answer checked: kept on the phone, nothing re-uploaded.
     const canRepair = (await verifyRaw([videoHash])).repair === true;
-    if (!canRepair) console.warn('lomod has no repair support: only the keep-on-phone path of this test ran');
+    if (!canRepair) notCovered('no repair support, only the keep-on-phone path ran');
 
     const result = await BackupSafetyService.checkBeforeDelete([photo.id, video.id]);
 
@@ -140,10 +141,10 @@ describe('checking backups before freeing up space', () => {
   it('the whole library folder deleted from a disk that is still there: everything is put back', async () => {
     const photoFile = findMasterFile(server.baseDir, '.jpg');
     const masterDir = photoFile.slice(0, photoFile.indexOf(`${path.sep}master${path.sep}`) + `${path.sep}master`.length);
-    const homeDir = path.dirname(path.dirname(masterDir)); // <home>/Photos/master
+    const homeDir = path.dirname(path.dirname(masterDir)); // masterDir is <home>/Photos/master
     const canRepair = (await verifyRaw([photoHash])).repair === true;
     if (!canRepair || !fs.existsSync(path.join(homeDir, '.lomo', 'disk_uuid'))) {
-      console.warn('lomod has no repair support or no disk id file: skipped');
+      notCovered('no repair support or no .lomo/disk_uuid, skipped');
       return;
     }
     await removeWhenReleased(masterDir);

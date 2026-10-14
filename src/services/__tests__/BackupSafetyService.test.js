@@ -8,7 +8,7 @@ jest.mock('../AuthService', () => ({
   getToken: jest.fn(() => 'test-token'),
 }));
 jest.mock('../MediaService', () => ({ getAssetInfo: jest.fn() }));
-jest.mock('../UploadService', () => ({ checkUploadStatus: jest.fn(), uploadAsset: jest.fn(() => Promise.resolve({ success: true })) }));
+jest.mock('../UploadService', () => ({ checkUploadStatus: jest.fn(), uploadAsset: jest.fn(async (asset) => ({ success: true, hash: asset.hash })) }));
 jest.mock('../AutoBackupManager', () => ({ __esModule: true, default: { canUploadNow: jest.fn(async () => true) } }));
 
 const axios = require('axios');
@@ -33,6 +33,7 @@ beforeEach(() => {
   BackupSafetyService.restoring = Promise.resolve();
   BackupSafetyService.restorePending.clear();
   BackupSafetyService.restoredListeners.clear();
+  BackupSafetyService.restoredSinceNotify = 0;
   MediaService.getAssetInfo.mockResolvedValue({ modificationTime: 1000.4 });
   serverReplies();
 });
@@ -191,6 +192,46 @@ test('onRestored fires after a file is put back, not after a failed restore', as
   unsubscribe();
   await BackupSafetyService.checkBeforeDelete(['fm']);
   await BackupSafetyService.restoring;
+  expect(listener).toHaveBeenCalledTimes(1);
+});
+
+test('a re-upload that put nothing back (server already had it, or another hash) does not count as restored', async () => {
+  AssetDBService.getBackupRowsByIds.mockResolvedValue([row('fm')]);
+  serverReplies({ 'hash-fm': 'file_missing' }, { repair: true });
+  MediaService.getAssetInfo.mockImplementation(async (id) => ({ id, modificationTime: 1000.4 }));
+  const listener = jest.fn();
+  BackupSafetyService.onRestored(listener);
+
+  UploadService.uploadAsset.mockResolvedValueOnce({ success: true, duplicate: true, hash: 'hash-fm' });
+  await BackupSafetyService.checkBeforeDelete(['fm']);
+  await BackupSafetyService.restoring;
+  UploadService.uploadAsset.mockResolvedValueOnce({ success: true, hash: 'some-other-hash' });
+  await BackupSafetyService.checkBeforeDelete(['fm']);
+  await BackupSafetyService.restoring;
+
+  expect(UploadService.uploadAsset).toHaveBeenCalledTimes(2);
+  expect(listener).not.toHaveBeenCalled();
+});
+
+test('onRestored fires once when the whole queue has drained, not after every batch', async () => {
+  AssetDBService.getBackupRowsByIds.mockImplementation(async (ids) => ids.map(id => row(id)));
+  serverReplies({ 'hash-a': 'file_missing', 'hash-b': 'file_missing' }, { repair: true });
+  MediaService.getAssetInfo.mockImplementation(async (id) => ({ id, modificationTime: 1000.4 }));
+  const listener = jest.fn();
+  BackupSafetyService.onRestored(listener);
+  let finishFirst;
+  UploadService.uploadAsset.mockImplementationOnce((asset) => new Promise((resolve) => {
+    finishFirst = () => resolve({ success: true, hash: asset.hash });
+  }));
+
+  // two checks queue two batches, the way checkAll queues a large library 500 at a time
+  await BackupSafetyService.checkBeforeDelete(['a']);
+  await BackupSafetyService.checkBeforeDelete(['b']);
+  await new Promise(setImmediate);
+  finishFirst();
+  await BackupSafetyService.restoring;
+
+  expect(UploadService.uploadAsset.mock.calls.map(c => c[0].id)).toEqual(['a', 'b']);
   expect(listener).toHaveBeenCalledTimes(1);
 });
 
