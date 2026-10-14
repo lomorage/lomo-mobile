@@ -1,0 +1,6 @@
+{
+  "name": "expo-background-keepalive",
+  "private": true,
+  "main": "index.ts",
+  "types": "index.ts"
+}
