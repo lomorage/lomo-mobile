@@ -29,6 +29,22 @@ function findMasterFile(dir, extension) {
   return null;
 }
 
+// Windows refuses to delete a file another process has open (EPERM): lomod's preview workers may
+// still be reading a just-restored video. Wait for them to let go. (fs.rmSync's maxRetries
+// doesn't retry this case.)
+async function removeWhenReleased(dir, timeoutMs = 30000) {
+  const started = Date.now();
+  for (;;) {
+    try {
+      fs.rmSync(dir, { recursive: true });
+      return;
+    } catch (e) {
+      if (!['EPERM', 'EBUSY'].includes(e.code) || Date.now() - started > timeoutMs) throw e;
+      await new Promise(r => setTimeout(r, 250));
+    }
+  }
+}
+
 async function verifyRaw(hashes) {
   const res = await fetch(`${server.url}/assets/verify`, {
     method: 'POST',
@@ -114,7 +130,9 @@ describe('checking backups before freeing up space', () => {
     await BackupSafetyService.restoring;
     expect(fs.readFileSync(videoFile)).toEqual(fs.readFileSync(fixturePath('video-2013-08-08.mp4')));
     const body = await verifyRaw([videoHash]);
-    expect(body.assets).toEqual([{ hash: videoHash, status: 'ok', evidence: 'upload', checkedAt: expect.any(Number) }]);
+    // the re-upload is the evidence -- or a consistency check lomod started after it (it runs one
+    // at startup), which then saw the restored file
+    expect(body.assets).toEqual([{ hash: videoHash, status: 'ok', evidence: expect.stringMatching(/^(upload|ccheck)$/), checkedAt: expect.any(Number) }]);
 
     await expect(BackupSafetyService.checkBeforeDelete([video.id])).resolves.toEqual({ safe: [video.id], unsafe: [], weakEvidence: false });
   });
@@ -124,11 +142,11 @@ describe('checking backups before freeing up space', () => {
     const masterDir = photoFile.slice(0, photoFile.indexOf(`${path.sep}master${path.sep}`) + `${path.sep}master`.length);
     const homeDir = path.dirname(path.dirname(masterDir)); // <home>/Photos/master
     const canRepair = (await verifyRaw([photoHash])).repair === true;
-    if (!canRepair || !fs.existsSync(path.join(homeDir, '.lomo'))) {
-      console.warn('lomod has no repair support or no .lomo folder: skipped');
+    if (!canRepair || !fs.existsSync(path.join(homeDir, '.lomo', 'disk_uuid'))) {
+      console.warn('lomod has no repair support or no disk id file: skipped');
       return;
     }
-    fs.rmSync(masterDir, { recursive: true });
+    await removeWhenReleased(masterDir);
 
     const result = await BackupSafetyService.checkBeforeDelete([photo.id, video.id]);
     expect(result.unsafe).toEqual([
