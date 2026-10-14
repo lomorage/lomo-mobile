@@ -109,6 +109,10 @@ export function SettingsProvider({ children }) {
                 const deviceId = await SecureStore.getItemAsync('lomo_device_id');
                 if (migrated === 'true' || !deviceId) {
                     setFaceDryRun(false);
+                    // Remember this was a fresh install: login creates the device id, so on the
+                    // next launch it would otherwise look like an old install and show new
+                    // users the dry-run migration prompt.
+                    await SecureStore.setItemAsync('lomorage_face_dry_run_migrated_v1', 'true');
                 } else {
                     setFaceDryRun(true);
                     setFaceDryRunMigrationNeeded(true);

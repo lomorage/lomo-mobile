@@ -13,7 +13,8 @@ function fixturePath(name) {
   return path.join(FIXTURES_DIR, name);
 }
 
-function addToCameraRoll(fixture, { creationTime, filename = fixture } = {}) {
+// exif: what expo's getAssetInfoAsync reports for the photo (e.g. { DateTimeOriginal }).
+function addToCameraRoll(fixture, { creationTime, modificationTime, exif, filename = fixture } = {}) {
   const id = String(nextId++);
   const dest = path.join(sandbox.dir('DCIM'), `${id}-${filename}`);
   fs.copyFileSync(fixturePath(fixture), dest);
@@ -28,7 +29,8 @@ function addToCameraRoll(fixture, { creationTime, filename = fixture } = {}) {
     height: 0,
     duration: 0,
     creationTime: time,
-    modificationTime: time,
+    modificationTime: modificationTime ?? time,
+    ...(exif ? { exif } : {}),
     albumId: 'camera',
   };
   MediaLibrary.__assets.set(id, asset);
