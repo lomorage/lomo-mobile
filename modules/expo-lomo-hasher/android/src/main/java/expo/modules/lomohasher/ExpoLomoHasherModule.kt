@@ -2,6 +2,7 @@ package expo.modules.lomohasher
 
 import android.net.Uri
 import android.os.Build
+import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
 import android.util.Log
 import expo.modules.kotlin.modules.Module
@@ -346,6 +347,79 @@ class ExpoLomoHasherModule : Module() {
             try {
                 outputStream.close()
             } catch (e: Exception) {}
+        }
+    }
+
+    // Copies length bytes of sourceUri starting at offset into destUri (fewer at end of file),
+    // for uploading a large file in pieces a size-limited proxy will accept.
+    AsyncFunction("sliceFileRangeAsync") { sourceUriString: String, destUriString: String, offset: Long, length: Long ->
+        if (offset < 0 || length <= 0) {
+            throw Exception("Invalid range offset=$offset length=$length")
+        }
+        val sourceUri = Uri.parse(sourceUriString)
+        val context = appContext.reactContext ?: throw Exception("React context not available")
+
+        // Seek through a file descriptor where we can: a large file is sliced into many pieces,
+        // and skip() on some content providers reads through every byte before the offset.
+        var seeked = false
+        val inputStream: InputStream = if (sourceUri.scheme == "content") {
+            val pfd = try { context.contentResolver.openFileDescriptor(sourceUri, "r") } catch (e: Exception) { null }
+            if (pfd != null) {
+                val fis = ParcelFileDescriptor.AutoCloseInputStream(pfd)
+                try {
+                    fis.channel.position(offset)
+                    seeked = true
+                } catch (e: Exception) {
+                    // not seekable (e.g. a pipe); fall back to skipping below
+                }
+                fis
+            } else {
+                context.contentResolver.openInputStream(sourceUri)
+                    ?: throw Exception("Could not open content URI: $sourceUriString")
+            }
+        } else {
+            val file = File(sourceUriString.removePrefix("file://"))
+            if (!file.exists()) {
+                throw Exception("Source file not found at ${file.path}")
+            }
+            FileInputStream(file).also {
+                it.channel.position(offset)
+                seeked = true
+            }
+        }
+
+        val destFile = File(destUriString.removePrefix("file://"))
+        destFile.parentFile?.mkdirs()
+        val outputStream = FileOutputStream(destFile)
+
+        try {
+            var skipped = if (seeked) offset else 0L
+            while (skipped < offset) {
+                val n = inputStream.skip(offset - skipped)
+                if (n > 0) {
+                    skipped += n
+                    continue
+                }
+                // skip() may return 0 on some content streams; fall back to reading
+                val tmp = ByteArray(Math.min(8192L, offset - skipped).toInt())
+                val read = inputStream.read(tmp)
+                if (read <= 0) throw Exception("Offset $offset is beyond end of file")
+                skipped += read
+            }
+            val buffer = ByteArray(1024 * 1024)
+            var remaining = length
+            var written = 0L
+            while (remaining > 0) {
+                val read = inputStream.read(buffer, 0, Math.min(buffer.size.toLong(), remaining).toInt())
+                if (read == -1) break
+                outputStream.write(buffer, 0, read)
+                remaining -= read
+                written += read
+            }
+            written
+        } finally {
+            try { inputStream.close() } catch (e: Exception) {}
+            try { outputStream.close() } catch (e: Exception) {}
         }
     }
 

@@ -18,6 +18,20 @@ async function sliceFileAsync(sourceUri, destUri, offset) {
   return true;
 }
 
+async function sliceFileRangeAsync(sourceUri, destUri, offset, length) {
+  const dest = toPath(destUri);
+  await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+  const fh = await fs.promises.open(toPath(sourceUri), 'r');
+  try {
+    const buf = Buffer.alloc(length);
+    const { bytesRead } = await fh.read(buf, 0, length, offset);
+    await fs.promises.writeFile(dest, buf.subarray(0, bytesRead));
+    return bytesRead;
+  } finally {
+    await fh.close();
+  }
+}
+
 const notOnNode = (name) => async () => {
   throw new Error(`ExpoLomoHasher.${name} is not available in integration tests`);
 };
@@ -25,6 +39,7 @@ const notOnNode = (name) => async () => {
 module.exports = {
   hashFileAsync,
   sliceFileAsync,
+  sliceFileRangeAsync,
   isLivePhotoAsync: async () => false,
   prepareLivePhotoBackupAsync: async () => null,
   extractVideoFromZipAsync: notOnNode('extractVideoFromZipAsync'),
