@@ -14,6 +14,8 @@ import { resolveTakenTime } from '../utils/takenTime';
 export const CHUNK_SIZE = 90 * 1024 * 1024;
 const MIN_CHUNK_SIZE = 8 * 1024 * 1024;
 const CHUNKED_SERVERS_KEY = 'lomo_chunked_upload_servers';
+// Times a piece is resent after a network error (each after a HEAD to realign with the server).
+const PIECE_RETRIES = 2;
 
 // lomod error bodies are {"id": "...", "text": "..."}
 function parseErrorText(body) {
@@ -51,6 +53,7 @@ class UploadService {
         // instance fields so integration tests can use small pieces
         this.chunkSize = CHUNK_SIZE;
         this.minChunkSize = MIN_CHUNK_SIZE;
+        this.pieceRetries = PIECE_RETRIES;
         // Each upload in pieces keeps a piece of up to chunkSize bytes in the cache, so only a few
         // run at once; the rest wait for a slot.
         this.maxPieceUploads = 2;
@@ -164,15 +167,26 @@ class UploadService {
      * Uploads uri in pieces of at most chunkSize bytes, starting at startOffset (with ifMatch
      * from HEAD when the server already holds part of the file). lomod answers every piece but
      * the last with 400 "different hash" and keeps the partial file; HEAD then reports its new
-     * size. A piece that still gets 413 is retried at half the size.
+     * size. A piece that still gets 413 is retried at half the size. A piece that fails with a
+     * network error is resent up to pieceRetries times, from wherever HEAD says the server is.
+     * rememberAs: piece size to remember for serverUrl, but only once the server has shown it
+     * keeps partial uploads (an old lomod without resume support must not be remembered).
      */
-    async _chunkedUpload({ assetId, uri, hash, serverUrl, uploadUrl, token, fileSize, chunkSize, startOffset = 0, ifMatch = null, onProgress }) {
+    async _chunkedUpload({ assetId, uri, hash, serverUrl, uploadUrl, token, fileSize, chunkSize, startOffset = 0, ifMatch = null, onProgress, rememberAs = 0 }) {
         const tempChunkDir = FileSystem.cacheDirectory + 'lomorage_chunks/';
         await FileSystem.makeDirectoryAsync(tempChunkDir, { intermediates: true }).catch(()=>{});
         const pieceUri = tempChunkDir + `piece_${String(assetId).replace(/[^a-zA-Z0-9]/g, '')}_${hash}.tmp`;
 
         await this._acquirePieceSlot();
         let offset = startOffset;
+        let resumeConfirmed = startOffset > 0;
+        let pendingSize = rememberAs;
+        const confirmResume = async () => {
+            resumeConfirmed = true;
+            if (pendingSize) await this._rememberChunkSize(serverUrl, pendingSize);
+            pendingSize = 0;
+        };
+        let retriesLeft = this.pieceRetries;
         try {
             while (offset < fileSize) {
                 if (this.cancelledTasks.has(assetId)) throw new Error('Upload cancelled by user');
@@ -187,18 +201,49 @@ class UploadService {
                 console.log(`[UploadService] Uploading bytes ${offset}-${offset + length} of ${fileSize} for ${hash}`);
 
                 const pieceStart = offset;
-                const response = await this._send({
-                    assetId, url: uploadUrl, fileUri: pieceUri, token,
-                    method: offset === 0 ? 'POST' : 'PATCH',
-                    headers: offset === 0 ? {} : { 'If-Match': ifMatch },
-                    onSent: (sent) => onProgress && onProgress({
-                        fraction: Math.min(1, (pieceStart + sent) / fileSize),
-                        loaded: pieceStart + sent,
-                        total: fileSize,
-                    }),
-                });
+                let response;
+                try {
+                    response = await this._send({
+                        assetId, url: uploadUrl, fileUri: pieceUri, token,
+                        method: offset === 0 ? 'POST' : 'PATCH',
+                        headers: offset === 0 ? {} : { 'If-Match': ifMatch },
+                        onSent: (sent) => onProgress && onProgress({
+                            fraction: Math.min(1, (pieceStart + sent) / fileSize),
+                            loaded: pieceStart + sent,
+                            total: fileSize,
+                        }),
+                    });
+                } catch (sendErr) {
+                    if (retriesLeft <= 0 || this.cancelledTasks.has(assetId)) throw sendErr;
+                    retriesLeft--;
+                    // Realign with what the server actually has before resending.
+                    let st;
+                    try {
+                        st = await this.checkUploadStatus(hash);
+                    } catch {
+                        throw sendErr;
+                    }
+                    if (st.exists) {
+                        if (pendingSize) await confirmResume();
+                        if (onProgress) onProgress({ fraction: 1, loaded: fileSize, total: fileSize });
+                        return { success: true, hash, chunked: true };
+                    }
+                    if (st.resumable && st.ifMatch && st.receivedBytes > 0 && st.receivedBytes <= fileSize) {
+                        if (st.receivedBytes > offset) await confirmResume();
+                        offset = st.receivedBytes;
+                        ifMatch = st.ifMatch;
+                    } else if (!resumeConfirmed) {
+                        offset = 0;
+                        ifMatch = null;
+                    } else {
+                        throw sendErr; // server lost the partial file it had
+                    }
+                    console.log(`[UploadService] Piece at ${pieceStart} failed (${sendErr.message}); retrying from ${offset} (${retriesLeft} retries left).`);
+                    continue;
+                }
 
                 if (response.status === 200 || response.status === 201 || response.status === 409) {
+                    if (pendingSize) await confirmResume();
                     if (onProgress) onProgress({ fraction: 1, loaded: fileSize, total: fileSize });
                     return { success: true, hash, chunked: true };
                 }
@@ -207,7 +252,8 @@ class UploadService {
                         throw new Error(`Server rejects uploads even in ${chunkSize} byte pieces (HTTP 413).`);
                     }
                     chunkSize = Math.max(this.minChunkSize, Math.floor(chunkSize / 2));
-                    await this._rememberChunkSize(serverUrl, chunkSize);
+                    if (resumeConfirmed) await this._rememberChunkSize(serverUrl, chunkSize);
+                    else pendingSize = chunkSize;
                     continue;
                 }
                 const errorText = parseErrorText(response.body) || `Server returned ${response.status}`;
@@ -221,10 +267,17 @@ class UploadService {
                 const status = await this.checkUploadStatus(hash);
                 if (status.exists) return { success: true, hash, chunked: true };
                 if (!status.resumable || !status.ifMatch || status.receivedBytes <= offset || status.receivedBytes > fileSize) {
+                    if (!resumeConfirmed) {
+                        const err = new Error(`The server can't take this ${fileSize} byte file: a proxy limits request size and this lomod does not keep partial uploads. Update lomod or connect on the local network.`);
+                        err.resumeUnsupported = true;
+                        throw err;
+                    }
                     throw new Error(`Server did not keep the uploaded piece (has ${status.receivedBytes || 0} of ${fileSize} bytes).`);
                 }
+                await confirmResume();
                 offset = status.receivedBytes;
                 ifMatch = status.ifMatch;
+                retriesLeft = this.pieceRetries;
             }
             throw new Error(`Upload of ${hash} ended without the server confirming it.`);
         } finally {
@@ -513,7 +566,7 @@ class UploadService {
                 if (tempFileToClean) await FileSystem.deleteAsync(tempFileToClean, { idempotent: true }).catch(()=>{});
                 return result;
             };
-            const uploadInPieces = (chunkSize, startOffset = 0, ifMatch = null) => {
+            const uploadInPieces = (chunkSize, startOffset = 0, ifMatch = null, rememberAs = 0) => {
                 if (livePhotoBackup) {
                     // lomod parses a Live Photo zip as it arrives, so it can't take one in pieces
                     throw new Error(`This Live Photo (${fileSizeBytes} bytes) is larger than the current connection to the server accepts. Connect to the server's local network to back it up.`);
@@ -523,7 +576,7 @@ class UploadService {
                 }
                 return this._chunkedUpload({
                     assetId: asset.id, uri, hash, serverUrl, uploadUrl, token, fileSize: fileSizeBytes,
-                    chunkSize, startOffset, ifMatch, onProgress,
+                    chunkSize, startOffset, ifMatch, onProgress, rememberAs,
                 });
             };
             // A server that rejected a large request before gets large files in pieces right away.
@@ -558,6 +611,7 @@ class UploadService {
                     return finish({ ...(await uploadInPieces(chunkSizeAfter413, status.receivedBytes, status.ifMatch)), resumed: true });
                 }
                 if (resumeResult.tooLarge) {
+                    // this server already kept a partial upload, so it supports resume
                     await this._rememberChunkSize(serverUrl, chunkSizeAfter413);
                     return finish({ ...(await uploadInPieces(chunkSizeAfter413, status.receivedBytes, status.ifMatch)), resumed: true });
                 }
@@ -601,8 +655,8 @@ class UploadService {
             if (response.status === 413) {
                 // A proxy (e.g. Cloudflare's 100 MiB limit) refused the whole file; lomod never saw it.
                 console.log(`[UploadService] ${uploadUrl} answered 413 for ${fileSizeBytes} bytes, retrying in pieces.`);
-                await this._rememberChunkSize(serverUrl, chunkSizeAfter413);
-                return finish(await uploadInPieces(chunkSizeAfter413));
+                // Remembered only once the first piece shows this lomod keeps partial uploads.
+                return finish(await uploadInPieces(chunkSizeAfter413, 0, null, chunkSizeAfter413));
             }
 
             if (response.status === 200 || response.status === 201 || response.status === 409) {
