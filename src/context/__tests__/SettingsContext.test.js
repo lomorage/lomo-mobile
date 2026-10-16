@@ -17,7 +17,17 @@ jest.mock('../../services/AIService', () => {
   return { __esModule: true, default: mock, ...mock };
 });
 
+jest.mock('../../services/ModelAssetService', () => {
+  const mock = {
+    isReady: jest.fn().mockResolvedValue(false),
+    isDownloadAllowedNow: jest.fn().mockResolvedValue(true),
+    ensureModels: jest.fn().mockResolvedValue(true),
+  };
+  return { __esModule: true, default: mock };
+});
+
 const SecureStore = require('expo-secure-store');
+const ModelAssetService = require('../../services/ModelAssetService').default;
 const AIService = require('../../services/AIService');
 import { SettingsProvider, useSettings } from '../SettingsContext';
 
@@ -178,6 +188,47 @@ describe('AI-related toggles trigger the right AIService calls', () => {
     expect(latestSettings.aiEnabled).toBe(true);
     expect(AIService.processLocalEmbeddings).toHaveBeenCalledWith(30);
     expect(AIService.registerBackgroundSync).toHaveBeenCalled();
+  });
+
+  describe('turning AI on starts the model download only when it makes sense', () => {
+    const aiOffThen = (extra = {}) =>
+      SecureStore.getItemAsync.mockImplementation((key) =>
+        Promise.resolve(key === 'lomorage_ai_enabled' ? 'false' : (extra[key] ?? null))
+      );
+    const turnOn = async () => {
+      await renderSettingsProvider();
+      await act(async () => {
+        await latestSettings.toggleAIEnabled();
+      });
+      await flushMicrotasks();
+      await flushMicrotasks();
+    };
+
+    test('downloads when the models are missing and the network allows it', async () => {
+      aiOffThen();
+      await turnOn();
+      expect(ModelAssetService.ensureModels).toHaveBeenCalledTimes(1);
+    });
+
+    test('does not download in Lite mode, where AI never runs', async () => {
+      aiOffThen({ lomorage_lite_mode: 'true' });
+      await turnOn();
+      expect(ModelAssetService.ensureModels).not.toHaveBeenCalled();
+    });
+
+    test('does not download when Wi-Fi Only blocks it right now', async () => {
+      aiOffThen();
+      ModelAssetService.isDownloadAllowedNow.mockResolvedValueOnce(false);
+      await turnOn();
+      expect(ModelAssetService.ensureModels).not.toHaveBeenCalled();
+    });
+
+    test('does not download when the models are already there', async () => {
+      aiOffThen();
+      ModelAssetService.isReady.mockResolvedValueOnce(true);
+      await turnOn();
+      expect(ModelAssetService.ensureModels).not.toHaveBeenCalled();
+    });
   });
 
   test('toggleAIEnabled(true -> false) unregisters background sync instead', async () => {

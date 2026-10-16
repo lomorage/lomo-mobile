@@ -52,6 +52,7 @@ jest.mock('./../ModelAssetService', () => ({
   default: {
     getModelPath: jest.fn(async (name) => name),
     isReady: jest.fn(async () => true),
+    isDownloadAllowedNow: jest.fn(async () => true),
     ensureModels: jest.fn(async () => true),
   },
 }));

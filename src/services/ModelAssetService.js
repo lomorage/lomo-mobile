@@ -1,5 +1,7 @@
 import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as SecureStore from 'expo-secure-store';
+import * as Network from 'expo-network';
 import * as ExpoLomoHasher from '../../modules/expo-lomo-hasher';
 
 // AI models are downloaded on demand instead of being bundled in the app (they were
@@ -30,8 +32,13 @@ const modelsDir = () => `${FileSystem.documentDirectory}models/`;
 const stripScheme = (uri) => uri.replace(/^file:\/\//, '');
 const byName = (name) => MODEL_FILES.find((m) => m.name === name);
 
+// Slack on top of the files themselves, so a nearly-full phone doesn't end up with a
+// download that fits but leaves the OS with no room to work.
+const FREE_SPACE_HEADROOM_BYTES = 64 * 1024 * 1024;
+const AI_WIFI_ONLY_KEY = 'lomorage_ai_wifi_only';
+
 let inFlight = null;
-let state = { status: 'idle', downloadedBytes: 0, totalBytes: 0, error: null };
+let state = { status: 'idle', downloadedBytes: 0, totalBytes: 0, error: null, errorCode: null };
 const listeners = new Set();
 
 function setState(next) {
@@ -55,6 +62,15 @@ const ModelAssetService = {
 
     getState() {
         return state;
+    },
+
+    // Whether starting a download right now respects the user's "Wi-Fi Only" AI setting
+    // (on by default). Explicit user actions (the Download button) don't need to ask.
+    async isDownloadAllowedNow() {
+        const wifiOnly = (await SecureStore.getItemAsync(AI_WIFI_ONLY_KEY)) !== 'false';
+        if (!wifiOnly) return true;
+        const net = await Network.getNetworkStateAsync();
+        return net.type === Network.NetworkStateType.WIFI;
     },
 
     // Calls listener on every change; returns the unsubscribe function.
@@ -91,14 +107,28 @@ const ModelAssetService = {
         inFlight = (async () => {
             const missing = await this.getMissing();
             if (missing.length === 0) {
-                setState({ status: 'ready', error: null });
+                setState({ status: 'ready', error: null, errorCode: null });
                 return true;
             }
-            await FileSystem.makeDirectoryAsync(modelsDir(), { intermediates: true });
             const totalBytes = missing.reduce((sum, m) => sum + m.size, 0);
+            const needed = totalBytes + FREE_SPACE_HEADROOM_BYTES;
+            const free = await FileSystem.getFreeDiskStorageAsync();
+            if (free < needed) {
+                const mb = Math.ceil(needed / (1024 * 1024));
+                const error = new Error(`Not enough free space: about ${mb} MB needed`);
+                error.code = 'INSUFFICIENT_SPACE';
+                setState({ status: 'error', error: error.message, errorCode: error.code });
+                throw error;
+            }
+            await FileSystem.makeDirectoryAsync(modelsDir(), { intermediates: true });
+            // Leftovers of a download that was interrupted (app killed, background task ended).
+            // Nothing else writes these, and only one download runs at a time.
+            for (const model of missing) {
+                await FileSystem.deleteAsync(`${modelsDir()}${model.name}.part`, { idempotent: true });
+            }
             let doneBytes = 0;
             const report = (downloadedBytes) => {
-                setState({ status: 'downloading', downloadedBytes, totalBytes, error: null });
+                setState({ status: 'downloading', downloadedBytes, totalBytes, error: null, errorCode: null });
                 onProgress?.({ downloadedBytes, totalBytes });
             };
             report(0);
@@ -127,10 +157,10 @@ const ModelAssetService = {
                     report(doneBytes);
                 }
             } catch (e) {
-                setState({ status: 'error', error: e.message });
+                setState({ status: 'error', error: e.message, errorCode: e.code || null });
                 throw e;
             }
-            setState({ status: 'ready', error: null });
+            setState({ status: 'ready', error: null, errorCode: null });
             return true;
         })().finally(() => {
             inFlight = null;

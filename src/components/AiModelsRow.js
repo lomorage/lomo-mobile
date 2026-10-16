@@ -34,6 +34,8 @@ export default function AiModelsRow({ style }) {
         description = `Downloading… ${pct}% (${formatBytesLog(dl.downloadedBytes, { decimals: 0 })} of ${formatBytesLog(dl.totalBytes, { decimals: 0 })})`;
     } else if (ready) {
         description = 'Downloaded. Runs on this phone, no internet needed.';
+    } else if (dl.status === 'error' && dl.errorCode === 'INSUFFICIENT_SPACE') {
+        description = `${dl.error}. Free up some space on this phone and try again.`;
     } else if (dl.status === 'error') {
         description = `Download failed. Check your connection and try again. (${dl.error})`;
     } else {

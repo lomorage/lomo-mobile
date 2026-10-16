@@ -9,7 +9,7 @@ model files/URLs, `AIService` model loading, the Settings "AI Models" row, the n
 
 | Layer | What it proves | How |
 |---|---|---|
-| Jest (automatic, CI) | Manifest, size/SHA-1 checks, reuse of legacy copies, error paths, state/progress events, `AIService` still works through `ModelAssetService` | `npx jest src/services/__tests__/ModelAssetService.test.js src/services/__tests__/AIService` |
+| Jest (automatic, CI) | Manifest, size/SHA-1 checks, reuse of legacy copies, error paths, free-space check, stale `.part` cleanup, Wi-Fi Only gating, state/progress events; `AIService` (forced runs respect Wi-Fi Only, failed download skips indexing); Settings (no download in Lite mode / when blocked / when already present) | `npx jest src/services/__tests__/ModelAssetService.test.js src/services/__tests__/AIService` |
 | Hosting | The files really are on the CDN, byte-identical to the manifest | Step 0 below |
 | Emulator, end to end | A real release build downloads, verifies and loads the models, and AI works on real photos | Steps 1–6 below, `scripts/regression/ai-models.sh` |
 | Real device / iOS | arm64 build, iOS download path | Manual, not yet covered (see "Gaps") |
@@ -78,12 +78,13 @@ caption, so they exercise CLIP/OCR but contain no faces; the face check depends 
 
 ## Gaps (not covered yet, worth doing next)
 
-- **Failure paths on a real build:** download with no network or interrupted midway (the `.part`
-  file must never be used), a corrupted file (SHA-1 mismatch must delete it and show Retry), retry
-  after failure.
+- **Failure paths on a real build** (all unit-tested, none seen on a device): download with no
+  network or interrupted midway, a corrupted file (SHA-1 mismatch must delete it and show Retry),
+  not enough free space (the row should say how much is needed), retry after failure.
 - **Upgrade path:** an install that already has the models in the documents root (old builds
   copied them there) must reuse them without downloading again.
-- **Wi-Fi Only:** turning AI on while on cellular must not auto-download; the manual button must.
+- **Wi-Fi Only on a device:** with AI on and the models missing, cellular must not auto-download
+  (also not from the Settings "rebuild" actions); the manual Download button still works.
 - **iOS:** the iOS pod no longer bundles models; the download path is only unit-tested.
 - **arm64 / real device,** and a low-storage phone (the reason for this change).
 - **Release size:** compare the new AAB with the old 472MB one.

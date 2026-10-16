@@ -2,15 +2,13 @@ import React, { createContext, useState, useContext, useEffect } from 'react';
 import * as SecureStore from 'expo-secure-store';
 import { LITE_MODE_KEY } from '../services/liteMode';
 
-// Required lazily, like AIService below: these pull in native modules.
-async function startModelDownload(wifiOnly) {
+// Required lazily, like AIService below: this pulls in native modules.
+async function startModelDownload(liteMode) {
+    // Lite mode never runs AI, so there is nothing to fetch the models for.
+    if (liteMode) return;
     const ModelAssetService = require('../services/ModelAssetService').default;
     if (await ModelAssetService.isReady()) return;
-    if (wifiOnly) {
-        const Network = require('expo-network');
-        const net = await Network.getNetworkStateAsync();
-        if (net.type !== Network.NetworkStateType.WIFI) return;
-    }
+    if (!(await ModelAssetService.isDownloadAllowedNow())) return;
     await ModelAssetService.ensureModels();
 }
 
@@ -303,7 +301,7 @@ export function SettingsProvider({ children }) {
             if (newValue) {
                 // The AI models aren't bundled; start fetching them now (on Wi-Fi when the
                 // user asked for Wi-Fi only; otherwise the Settings row offers a manual button).
-                startModelDownload(aiWifiOnly).catch(e => console.warn('[SettingsContext] AI model download failed:', e.message));
+                startModelDownload(liteMode).catch(e => console.warn('[SettingsContext] AI model download failed:', e.message));
                 (async () => {
                     await AIService.processLocalEmbeddings(30);
                     await AIService.syncEmbeddings();

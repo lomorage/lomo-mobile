@@ -5,12 +5,20 @@ jest.mock('expo-file-system/legacy', () => ({
     deleteAsync: jest.fn(async () => {}),
     moveAsync: jest.fn(async () => {}),
     createDownloadResumable: jest.fn(),
+    getFreeDiskStorageAsync: jest.fn(),
+}));
+jest.mock('expo-secure-store', () => ({ getItemAsync: jest.fn() }));
+jest.mock('expo-network', () => ({
+    getNetworkStateAsync: jest.fn(),
+    NetworkStateType: { WIFI: 'WIFI', CELLULAR: 'CELLULAR' },
 }));
 jest.mock('../../../modules/expo-lomo-hasher', () => ({ hashFileAsync: jest.fn() }));
 
 const { Platform } = require('react-native');
 const FileSystem = require('expo-file-system/legacy');
 const Hasher = require('../../../modules/expo-lomo-hasher');
+const SecureStore = require('expo-secure-store');
+const Network = require('expo-network');
 const ModelAssetService = require('../ModelAssetService').default;
 const { MODEL_FILES } = require('../ModelAssetService');
 
@@ -21,9 +29,12 @@ const present = (paths) =>
     });
 const sizeOf = (name) => MODEL_FILES.find((m) => m.name === name).size;
 
+const GB = 1024 * 1024 * 1024;
+
 beforeEach(() => {
     jest.clearAllMocks();
     Platform.OS = 'android';
+    FileSystem.getFreeDiskStorageAsync.mockResolvedValue(10 * GB);
 });
 afterAll(() => {
     Platform.OS = 'ios';
@@ -119,4 +130,63 @@ test('only missing files are fetched', async () => {
 
     await ModelAssetService.ensureModels();
     expect(FileSystem.createDownloadResumable).toHaveBeenCalledTimes(1);
+});
+
+test('not enough free space: fails up front with a clear error and downloads nothing', async () => {
+    present({});
+    FileSystem.getFreeDiskStorageAsync.mockResolvedValue(100 * 1024 * 1024);
+
+    await expect(ModelAssetService.ensureModels()).rejects.toMatchObject({
+        code: 'INSUFFICIENT_SPACE',
+        message: expect.stringMatching(/Not enough free space: about \d+ MB needed/),
+    });
+    expect(FileSystem.createDownloadResumable).not.toHaveBeenCalled();
+    expect(ModelAssetService.getState()).toMatchObject({ status: 'error', errorCode: 'INSUFFICIENT_SPACE' });
+});
+
+test('only the missing files count towards the space needed', async () => {
+    const paths = {};
+    for (const m of MODEL_FILES.slice(1)) paths[`file:///data/files/models/${m.name}`] = m.size;
+    present(paths);
+    // Enough for the one small missing file plus headroom, nowhere near the full set.
+    FileSystem.getFreeDiskStorageAsync.mockResolvedValue(MODEL_FILES[0].size + 200 * 1024 * 1024);
+    FileSystem.createDownloadResumable.mockImplementation((url, dest) => ({
+        downloadAsync: async () => ({ status: 200, uri: dest }),
+    }));
+    Hasher.hashFileAsync.mockResolvedValue(MODEL_FILES[0].sha1);
+
+    await expect(ModelAssetService.ensureModels()).resolves.toBe(true);
+});
+
+test('leftover .part files from an interrupted download are deleted before downloading', async () => {
+    present({});
+    FileSystem.createDownloadResumable.mockImplementation((url, dest) => ({
+        downloadAsync: async () => ({ status: 200, uri: dest }),
+    }));
+    Hasher.hashFileAsync.mockImplementation(async (tmp) =>
+        MODEL_FILES.find((m) => tmp.endsWith(`${m.name}.part`)).sha1);
+
+    await ModelAssetService.ensureModels();
+
+    const deleted = FileSystem.deleteAsync.mock.calls.map((c) => c[0]);
+    for (const m of MODEL_FILES) expect(deleted).toContain(`file:///data/files/models/${m.name}.part`);
+    // ...and that happens before the first download starts.
+    expect(FileSystem.deleteAsync.mock.invocationCallOrder[0])
+        .toBeLessThan(FileSystem.createDownloadResumable.mock.invocationCallOrder[0]);
+});
+
+describe('isDownloadAllowedNow', () => {
+    const net = (type) => Network.getNetworkStateAsync.mockResolvedValue({ type });
+
+    test.each([
+        ['default (Wi-Fi Only on), on Wi-Fi', null, 'WIFI', true],
+        ['default (Wi-Fi Only on), on cellular', null, 'CELLULAR', false],
+        ['Wi-Fi Only on, on cellular', 'true', 'CELLULAR', false],
+        ['Wi-Fi Only off, on cellular', 'false', 'CELLULAR', true],
+    ])('%s', async (_name, saved, type, expected) => {
+        SecureStore.getItemAsync.mockResolvedValue(saved);
+        net(type);
+        await expect(ModelAssetService.isDownloadAllowedNow()).resolves.toBe(expected);
+        expect(SecureStore.getItemAsync).toHaveBeenCalledWith('lomorage_ai_wifi_only');
+    });
 });

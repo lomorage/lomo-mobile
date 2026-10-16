@@ -1134,9 +1134,13 @@ class AIService {
       }
     }
 
-    // Models are downloaded on demand (not bundled). Idle here means Wi-Fi + charging, or the
-    // user forced a run, so fetching them now is acceptable.
+    // Models are downloaded on demand (not bundled). A forced run skips the idle check above,
+    // so the Wi-Fi Only setting still has to be honored before a ~300 MB download.
     if (!(await ModelAssetService.isReady())) {
+      if (!(await ModelAssetService.isDownloadAllowedNow())) {
+        console.log('[AIService] Skip local indexing: AI models not downloaded and Wi-Fi Only is on.');
+        return;
+      }
       try {
         await ModelAssetService.ensureModels();
       } catch (e) {
