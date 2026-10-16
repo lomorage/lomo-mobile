@@ -55,6 +55,15 @@ jest.mock('./../MediaService', () => ({
   getPreviewUrl: jest.fn(),
   getAssetInfo: jest.fn(),
 }));
+jest.mock('./../ModelAssetService', () => ({
+  __esModule: true,
+  default: {
+    getModelPath: jest.fn(async (name) => name),
+    isReady: jest.fn(async () => true),
+    isDownloadAllowedNow: jest.fn(async () => true),
+    ensureModels: jest.fn(async () => true),
+  },
+}));
 jest.mock('./../TaskSchedulerService', () => ({
   waitUntilIdle: jest.fn().mockResolvedValue(),
 }));
@@ -167,6 +176,49 @@ describe('AIService.processLocalEmbeddings (smoke)', () => {
     expect(AIService.isProcessing).toBe(false);
     // Never got far enough to touch the DB.
     expect(AssetDBService.db).toBeNull();
+  });
+
+  describe('AI models that are not downloaded yet', () => {
+    const ModelAssetService = require('./../ModelAssetService').default;
+
+    test('a forced run does not download over cellular when Wi-Fi Only is on', async () => {
+      ModelAssetService.isReady.mockResolvedValueOnce(false);
+      ModelAssetService.isDownloadAllowedNow.mockResolvedValueOnce(false);
+      AssetDBService.db = makeEmptyDb();
+
+      await AIService.processLocalEmbeddings(10, true);
+
+      expect(ModelAssetService.ensureModels).not.toHaveBeenCalled();
+      expect(AIService.isProcessing).toBe(false);
+      expect(DeviceEventEmitter.emit).not.toHaveBeenCalledWith(
+        'ai_processing_status', expect.objectContaining({ isProcessing: true })
+      );
+    });
+
+    test('downloads them first when allowed, then indexes', async () => {
+      ModelAssetService.isReady.mockResolvedValueOnce(false);
+      AssetDBService.db = makeEmptyDb();
+
+      await AIService.processLocalEmbeddings(10, true);
+
+      expect(ModelAssetService.ensureModels).toHaveBeenCalledTimes(1);
+      expect(DeviceEventEmitter.emit).toHaveBeenCalledWith(
+        'ai_processing_status', expect.objectContaining({ isProcessing: false })
+      );
+    });
+
+    test('a failed download skips indexing instead of throwing', async () => {
+      ModelAssetService.isReady.mockResolvedValueOnce(false);
+      ModelAssetService.ensureModels.mockRejectedValueOnce(new Error('offline'));
+      AssetDBService.db = makeEmptyDb();
+
+      await expect(AIService.processLocalEmbeddings(10, true)).resolves.toBeUndefined();
+
+      expect(AIService.isProcessing).toBe(false);
+      expect(DeviceEventEmitter.emit).not.toHaveBeenCalledWith(
+        'ai_processing_status', expect.objectContaining({ isProcessing: true })
+      );
+    });
   });
 
   test('completes cleanly and resets isProcessing when there is nothing pending', async () => {

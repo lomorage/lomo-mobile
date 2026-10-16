@@ -8,6 +8,7 @@ import SyncService from '../services/SyncService';
 import AuthService from '../services/AuthService';
 import Logger from '../utils/logger';
 import AIService from '../services/AIService';
+import AiModelsRow from '../components/AiModelsRow';
 import { formatBytesLog } from '../utils/formatters';
 import { Send, Folder, X, PlayCircle } from 'lucide-react-native';
 import * as MediaLibrary from 'expo-media-library';
@@ -683,6 +684,7 @@ export default function SettingsScreen({ navigation, route }) {
 
                 {aiEnabled && (
                     <>
+                        <AiModelsRow style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8, paddingTop: 8 }]} />
                         <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8, paddingTop: 8 }]}>
                             <View style={styles.settingTextContainer}>
                                 <Text style={styles.settingLabel}>Wi-Fi Only</Text>

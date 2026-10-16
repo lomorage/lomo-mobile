@@ -16,6 +16,7 @@ import TaskSchedulerService from './TaskSchedulerService';
 import NetworkQueue from './NetworkQueue';
 import ThumbnailLoadTracker from './ThumbnailLoadTracker';
 import { isAiAllowed } from './liteMode';
+import ModelAssetService from './ModelAssetService';
 import { recognizeText } from '@infinitered/react-native-mlkit-text-recognition';
 import { RNMLKitFaceDetector } from '@infinitered/react-native-mlkit-face-detection';
 import { pinyin } from 'pinyin-pro';
@@ -386,9 +387,9 @@ class AIService {
     try {
       const base64 = await ExpoLomoHasher.encodeTextEmbeddingAsync(
         text,
-        'textual_quant.onnx',
-        'vocab.json',
-        'merges.txt'
+        await ModelAssetService.getModelPath('textual_quant.onnx'),
+        await ModelAssetService.getModelPath('vocab.json'),
+        await ModelAssetService.getModelPath('merges.txt')
       );
       return base64ToFloat32Array(base64);
     } catch (error) {
@@ -754,7 +755,7 @@ class AIService {
       const faceResultObj = await ExpoLomoHasher.encodeFaceEmbeddingAsync(
         tempFileUri,
         coverBBox,
-        'w600k_r50.onnx'
+        await ModelAssetService.getModelPath('w600k_r50.onnx')
       );
       if (faceResultObj && faceResultObj !== "failed" && faceResultObj.embedding) {
         return base64ToFloat32Array(faceResultObj.embedding);
@@ -848,7 +849,7 @@ class AIService {
       if (isFaceTooSmall(boundingBox)) continue;
       attachEyeLandmarks(boundingBox, face);
       try {
-        const faceResultObj = await ExpoLomoHasher.encodeFaceEmbeddingAsync(imageUri, boundingBox, 'w600k_r50.onnx');
+        const faceResultObj = await ExpoLomoHasher.encodeFaceEmbeddingAsync(imageUri, boundingBox, await ModelAssetService.getModelPath('w600k_r50.onnx'));
         if (faceResultObj && faceResultObj !== 'failed' && faceResultObj.croppedImage) {
           candidates.push({
             croppedImageBase64: faceResultObj.croppedImage,
@@ -1062,7 +1063,7 @@ class AIService {
 
       try {
         const faceResultObj = await ExpoLomoHasher.encodeFaceEmbeddingAsync(
-          localPath, boundingBox, 'w600k_r50.onnx'
+          localPath, boundingBox, await ModelAssetService.getModelPath('w600k_r50.onnx')
         );
         if (faceResultObj && faceResultObj !== 'failed') {
           croppedImageBase64 = faceResultObj.croppedImage || null;
@@ -1087,7 +1088,7 @@ class AIService {
   // Generate vector from local image asset
   async getImageEmbedding(imageUri) {
     try {
-      return await ExpoLomoHasher.encodeImageEmbeddingAsync(imageUri, 'visual_quant.onnx');
+      return await ExpoLomoHasher.encodeImageEmbeddingAsync(imageUri, await ModelAssetService.getModelPath('visual_quant.onnx'));
     } catch (error) {
       console.error('[AIService] Failed to get image embedding:', error);
       throw error;
@@ -1129,6 +1130,21 @@ class AIService {
       const isIdle = await this.isIdleForAI();
       if (!isIdle) {
         console.log('[AIService] Skip background local indexing: device is not charging or not on Wi-Fi.');
+        return;
+      }
+    }
+
+    // Models are downloaded on demand (not bundled). A forced run skips the idle check above,
+    // so the Wi-Fi Only setting still has to be honored before a ~300 MB download.
+    if (!(await ModelAssetService.isReady())) {
+      if (!(await ModelAssetService.isDownloadAllowedNow())) {
+        console.log('[AIService] Skip local indexing: AI models not downloaded and Wi-Fi Only is on.');
+        return;
+      }
+      try {
+        await ModelAssetService.ensureModels();
+      } catch (e) {
+        console.warn('[AIService] Skip local indexing: AI models unavailable:', e.message);
         return;
       }
     }
@@ -1377,7 +1393,7 @@ class AIService {
                     const faceResultObj = await ExpoLomoHasher.encodeFaceEmbeddingAsync(
                       localPath,
                       boundingBox,
-                      'w600k_r50.onnx'
+                      await ModelAssetService.getModelPath('w600k_r50.onnx')
                     );
                     // Yield to the iOS run loop so autorelease pools can release face image/tensor memory
                     await new Promise(resolve => setTimeout(resolve, 100));
@@ -2085,7 +2101,7 @@ class AIService {
                         const faceResultObj = await ExpoLomoHasher.encodeFaceEmbeddingAsync(
                           downloadRes.uri,
                           boundingBox,
-                          'w600k_r50.onnx'
+                          await ModelAssetService.getModelPath('w600k_r50.onnx')
                         );
 
                         if (faceResultObj && faceResultObj !== "failed" && faceResultObj.embedding) {
