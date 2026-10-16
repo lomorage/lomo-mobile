@@ -21,6 +21,6 @@ Pod::Spec.new do |s|
     'DEFINES_MODULE' => 'YES',
   }
 
-  s.resources = "assets/*"
+  # AI models are downloaded on demand (see src/services/ModelAssetService.js), not bundled.
   s.source_files = "**/*.{h,m,mm,swift,hpp,cpp}"
 end

@@ -55,6 +55,14 @@ jest.mock('./../MediaService', () => ({
   getPreviewUrl: jest.fn(),
   getAssetInfo: jest.fn(),
 }));
+jest.mock('./../ModelAssetService', () => ({
+  __esModule: true,
+  default: {
+    getModelPath: jest.fn(async (name) => name),
+    isReady: jest.fn(async () => true),
+    ensureModels: jest.fn(async () => true),
+  },
+}));
 jest.mock('./../TaskSchedulerService', () => ({
   waitUntilIdle: jest.fn().mockResolvedValue(),
 }));
