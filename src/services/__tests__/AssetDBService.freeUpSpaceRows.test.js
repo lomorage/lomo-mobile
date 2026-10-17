@@ -167,6 +167,22 @@ describeWithSqlite('markAssetsRemovedLocally (real SQLite)', () => {
     await expect(AssetDBService.getAtHomeCounts()).resolves.toEqual({ photos: 2, videos: 1 });
   });
 
+  test('getAtHomeHashPage hands over the hashes to check, a page at a time', async () => {
+    remote('H1');
+    remote('H2');
+    remote('V1', { mediaType: 'video' });
+    local('phone-1', 'H9'); // on the phone: the phone-side check covers it, not this one
+
+    await expect(AssetDBService.getAtHomeHashPage(2, 0)).resolves.toEqual([
+      { hash: 'H1', mediaType: 'photo' },
+      { hash: 'H2', mediaType: 'photo' },
+    ]);
+    await expect(AssetDBService.getAtHomeHashPage(2, 2)).resolves.toEqual([
+      { hash: 'V1', mediaType: 'video' },
+    ]);
+    await expect(AssetDBService.getAtHomeHashPage(2, 3)).resolves.toEqual([]);
+  });
+
   test('freeing space leaves the at-home count equal to the library, not doubled', async () => {
     for (let i = 0; i < 10; i += 1) {
       local(`phone-${i}`, `H${i}`);

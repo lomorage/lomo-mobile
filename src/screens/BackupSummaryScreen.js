@@ -44,16 +44,42 @@ export default function BackupSummaryScreen({ navigation }) {
 
             const nothingCheckable = items.length > 0 && verification.safe.length === 0
                 && verification.unsafe.every(({ reason }) => CANNOT_CHECK.has(reason));
-            setUnreachable(nothingCheckable);
+            if (nothingCheckable) {
+                setUnreachable(true);
+                return;
+            }
+
+            // Nothing left on the phone means the check above asked the computer nothing, so the
+            // only word for the freed photos would be this phone's own records -- which survive
+            // the computer going offline or losing the files. Ask the computer itself.
+            const atHomeTotal = (atHome?.photos || 0) + (atHome?.videos || 0);
+            let atHomeCheck = { reachable: true, verified: false, photos: 0, videos: 0, unconfirmed: 0 };
+            if (items.length === 0 && atHomeTotal > 0) {
+                setProgress({ done: 0, total: atHomeTotal });
+                atHomeCheck = await BackupSafetyService.checkAtHome((done) => {
+                    if (mounted.current) setProgress({ done, total: atHomeTotal });
+                });
+                if (!mounted.current) return;
+                if (!atHomeCheck.reachable) {
+                    setUnreachable(true);
+                    return;
+                }
+                // An older computer cannot confirm a file, so report the records as unchecked.
+                if (!atHomeCheck.verified) {
+                    atHomeCheck = { ...atHomeCheck, photos: atHome?.photos || 0, videos: atHome?.videos || 0 };
+                }
+            }
             const backup = summarizeBackup(summaryRows);
             const summary = {
                 ...summarizeVerification(items, verification),
                 notBackedUp: backup.notBackedUp,
                 skipped: backup.skipped,
-                // What the computer already has, including photos freed from this phone: the
-                // check above only covers what is still on the phone.
-                atHomePhotos: atHome?.photos || 0,
-                atHomeVideos: atHome?.videos || 0,
+                // What the computer says it has of the photos freed from this phone: the check
+                // above only covers what is still on the phone.
+                atHomePhotos: atHomeCheck.photos,
+                atHomeVideos: atHomeCheck.videos,
+                atHomeVerified: atHomeCheck.verified,
+                atHomeUnconfirmed: atHomeCheck.unconfirmed,
                 computerName: AuthService.getServerName?.() || null,
                 lastBackupAt,
             };
@@ -114,15 +140,23 @@ export default function BackupSummaryScreen({ navigation }) {
         // photos are on the computer only.
         const atHomeCount = result.atHomePhotos + result.atHomeVideos;
         const onlyAtHome = result.safeCount === 0 && atHomeCount > 0 && result.unconfirmedCount === 0;
-        const allSafe = (result.safeCount > 0 || onlyAtHome) && result.unconfirmedCount === 0 && result.notBackedUp === 0;
+        // The computer holds them according to this phone's records, which it could not confirm.
+        const atHomeUnchecked = onlyAtHome && !result.atHomeVerified;
+        // The computer has none of what this phone freed, so there is no count to show.
+        const atHomeLost = atHomeCount === 0 && result.safeCount === 0 && result.atHomeUnconfirmed > 0;
+        const allSafe = (result.safeCount > 0 || onlyAtHome) && result.unconfirmedCount === 0
+            && result.notBackedUp === 0 && result.atHomeUnconfirmed === 0;
         body = (
             <View style={styles.centered}>
                 <View style={styles.iconCircle}>
                     <ShieldCheck size={48} color="#34C759" />
                 </View>
                 <Text style={styles.title}>
-                    {result.safeCount === 0 && !onlyAtHome
+                    {atHomeLost
+                        ? 'Your photos are missing from your computer'
+                        : result.safeCount === 0 && !onlyAtHome
                         ? 'Nothing is backed up yet'
+                        : atHomeUnchecked ? 'Your photos should be safe at home'
                         : allSafe ? 'Your photos are safe at home' : 'Most of your photos are safe at home'}
                 </Text>
                 {result.safeCount > 0 && (
@@ -145,13 +179,20 @@ export default function BackupSummaryScreen({ navigation }) {
                     <>
                         <Text style={styles.bigNumber}>{describeCounts(result.atHomePhotos, result.atHomeVideos)}</Text>
                         <Text style={styles.detail}>
-                            {`on ${result.computerName ? `your computer “${result.computerName}”` : 'your Lomorage computer'}`}
+                            {`${atHomeUnchecked ? 'last backed up to' : 'checked and safe on'} ${result.computerName ? `your computer “${result.computerName}”` : 'your Lomorage computer'}`}
                         </Text>
                         {result.lastBackupAt && (
                             <Text style={styles.detail}>{`Last backup: ${describeWhen(result.lastBackupAt)}`}</Text>
                         )}
                         <Text style={styles.freeable}>Nothing left on this phone to free up</Text>
                     </>
+                )}
+                {result.atHomeUnconfirmed > 0 && (
+                    <Text style={styles.note}>
+                        {result.atHomeUnconfirmed === 1
+                            ? '1 freed from this phone is missing from your Lomorage computer.'
+                            : `${result.atHomeUnconfirmed.toLocaleString('en-US')} freed from this phone are missing from your Lomorage computer.`}
+                    </Text>
                 )}
                 {result.notBackedUp > 0 && (
                     <Text style={styles.note}>
@@ -182,7 +223,7 @@ export default function BackupSummaryScreen({ navigation }) {
                         {`${(result.unconfirmedCount - result.restoringCount - result.missingCount).toLocaleString('en-US')} couldn't be confirmed — they stay on this phone.`}
                     </Text>
                 )}
-                {result.weakEvidence && (
+                {(result.weakEvidence || atHomeUnchecked) && (
                     <Text style={styles.note}>{"Your Lomorage computer is running an older version; updating it lets us confirm each file."}</Text>
                 )}
                 {result.safeCount > 0 && (

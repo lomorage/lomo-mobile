@@ -1,6 +1,7 @@
 jest.mock('axios');
 jest.mock('../AssetDBService', () => ({
   getBackupRowsByIds: jest.fn(),
+  getAtHomeHashPage: jest.fn(async () => []),
   markAssetNotUploaded: jest.fn(() => Promise.resolve()),
 }));
 jest.mock('../AuthService', () => ({
@@ -315,5 +316,76 @@ describe.each([404, 405])('older server without /assets/verify (HTTP %i)', (http
     });
     expect(AssetDBService.markAssetNotUploaded).toHaveBeenCalledWith('b');
     expect(AssetDBService.markAssetNotUploaded).not.toHaveBeenCalledWith('c');
+  });
+});
+
+describe('checkAtHome: what the computer holds of the photos freed from this phone', () => {
+  // Pages of isLocal = 0 rows, 500 at a time, as AssetDBService hands them over.
+  const atHomeRows = (rows) => {
+    AssetDBService.getAtHomeHashPage.mockImplementation(async (limit, offset) => rows.slice(offset, offset + limit));
+  };
+
+  test('counts by type what the computer confirms, and what it no longer has', async () => {
+    atHomeRows([
+      { hash: 'hash-a', mediaType: 'photo' },
+      { hash: 'hash-b', mediaType: 'photo' },
+      { hash: 'hash-c', mediaType: 'video' },
+      { hash: 'hash-d', mediaType: 'photo' },
+    ]);
+    serverReplies({ 'hash-d': 'file_missing' });
+
+    await expect(BackupSafetyService.checkAtHome()).resolves.toEqual({
+      reachable: true, verified: true, photos: 2, videos: 1, unconfirmed: 1,
+    });
+  });
+
+  test('a row with no hash cannot be confirmed', async () => {
+    atHomeRows([{ hash: null, mediaType: 'photo' }, { hash: 'hash-a', mediaType: 'photo' }]);
+    serverReplies();
+
+    const result = await BackupSafetyService.checkAtHome();
+    expect(result).toEqual({ reachable: true, verified: true, photos: 1, videos: 0, unconfirmed: 1 });
+    expect(axios.post).toHaveBeenCalledWith(expect.any(String), { hashes: ['hash-a'] }, expect.anything());
+  });
+
+  test('an unreachable computer confirms nothing, rather than the rows standing in for it', async () => {
+    atHomeRows([{ hash: 'hash-a', mediaType: 'photo' }]);
+    axios.post.mockRejectedValue(new Error('Network Error'));
+
+    await expect(BackupSafetyService.checkAtHome()).resolves.toEqual({
+      reachable: false, verified: false, photos: 0, videos: 0, unconfirmed: 0,
+    });
+  });
+
+  test('a computer without /assets/verify is reachable but confirms nothing', async () => {
+    atHomeRows([{ hash: 'hash-a', mediaType: 'photo' }]);
+    const notFound = new Error('Not Found');
+    notFound.response = { status: 404 };
+    axios.post.mockRejectedValue(notFound);
+
+    await expect(BackupSafetyService.checkAtHome()).resolves.toEqual({
+      reachable: true, verified: false, photos: 0, videos: 0, unconfirmed: 0,
+    });
+  });
+
+  test('goes through the whole library a page at a time, reporting progress', async () => {
+    const rows = Array.from({ length: 1100 }, (_, i) => ({ hash: `hash-${i}`, mediaType: 'photo' }));
+    atHomeRows(rows);
+    serverReplies();
+    const progress = [];
+
+    const result = await BackupSafetyService.checkAtHome((done) => progress.push(done));
+
+    expect(result).toEqual({ reachable: true, verified: true, photos: 1100, videos: 0, unconfirmed: 0 });
+    expect(progress).toEqual([500, 1000, 1100]);
+    expect(AssetDBService.getAtHomeHashPage.mock.calls).toEqual([[500, 0], [500, 500], [500, 1000], [500, 1100]]);
+  });
+
+  test('nothing on the computer: the server is not asked', async () => {
+    atHomeRows([]);
+    await expect(BackupSafetyService.checkAtHome()).resolves.toEqual({
+      reachable: true, verified: true, photos: 0, videos: 0, unconfirmed: 0,
+    });
+    expect(axios.post).not.toHaveBeenCalled();
   });
 });

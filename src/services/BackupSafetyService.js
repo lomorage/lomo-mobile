@@ -127,6 +127,50 @@ class BackupSafetyService {
     return result;
   }
 
+  /**
+   * Asks the computer what it still holds of the assets that are no longer on this phone --
+   * what "Free Up Space" removed. checkAll cannot see them: with no local file there is
+   * nothing to compare, so their only evidence is the row the last sync left behind, and that
+   * row outlives the computer going away or losing the file. Reports onProgress(checked).
+   *
+   * Returns { reachable, verified, photos, videos, unconfirmed }: the counts the computer
+   * vouches for now, so a caller can say they are safe. `verified` is false against a server
+   * with no /assets/verify route, which cannot vouch for a file it is never asked about; the
+   * counts are then zero and the caller says the records are unchecked rather than safe.
+   */
+  async checkAtHome(onProgress) {
+    const none = { photos: 0, videos: 0, unconfirmed: 0 };
+    let photos = 0;
+    let videos = 0;
+    let unconfirmed = 0;
+    let checked = 0;
+    for (;;) {
+      const rows = await AssetDBService.getAtHomeHashPage(VERIFY_BATCH_SIZE, checked);
+      if (!rows || rows.length === 0) break;
+
+      let statusByHash;
+      try {
+        ({ statusByHash } = await this._verifyOnServer(rows.map(r => r.hash).filter(Boolean)));
+      } catch (e) {
+        if (e.response?.status === 404 || e.response?.status === 405) {
+          console.warn('[BackupSafetyService] Server has no /assets/verify; cannot confirm what it holds.');
+          return { reachable: true, verified: false, ...none };
+        }
+        console.warn('[BackupSafetyService] Verify request failed:', e.message);
+        return { reachable: false, verified: false, ...none };
+      }
+
+      for (const { hash, mediaType } of rows) {
+        if (!hash || statusByHash.get(String(hash).toLowerCase()) !== 'ok') unconfirmed++;
+        else if (mediaType === 'video') videos++;
+        else photos++;
+      }
+      checked += rows.length;
+      if (onProgress) onProgress(checked);
+    }
+    return { reachable: true, verified: true, photos, videos, unconfirmed };
+  }
+
   // Returns null when the phone side is fine, otherwise one of UNSAFE_REASONS.
   async _checkLocal(id, row) {
     if (!row || !row.hash || row.uploaded !== 1) return UNSAFE_REASONS.NOT_BACKED_UP;
