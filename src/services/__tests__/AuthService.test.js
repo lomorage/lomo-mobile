@@ -9,6 +9,7 @@ jest.mock('@react-native-community/netinfo', () => ({
 }));
 
 import * as SecureStore from 'expo-secure-store';
+import axios from 'axios';
 import AuthService, { formatServerUrl } from '../AuthService';
 
 describe('formatServerUrl', () => {
@@ -88,5 +89,49 @@ describe('preview codec from /system', () => {
     SecureStore.getItemAsync.mockImplementation(async (key) => (key === 'lomo_webp_preview' ? '1' : null));
     await AuthService.init();
     expect(AuthService.supportsWebpPreview()).toBe(true);
+  });
+});
+
+describe('getAvailableDisks', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  test('is a quick, cancellable probe that never triggers the connection-lost failover', async () => {
+    const get = jest.spyOn(axios, 'get').mockResolvedValue({
+      status: 200,
+      data: [{ Dir: 'media', FreeSize: 6000, TotalSize: 464000 }],
+    });
+    const controller = new AbortController();
+
+    const disks = await AuthService.getAvailableDisks('10.0.0.219:8000', { signal: controller.signal });
+
+    expect(disks).toEqual([{ name: 'media', freeSize: 6000, totalSize: 464000, error: undefined }]);
+    expect(get).toHaveBeenCalledWith(
+      'http://10.0.0.219:8000/mount',
+      expect.objectContaining({ signal: controller.signal, skipAutoProbe: true, timeout: expect.any(Number) })
+    );
+    expect(get.mock.calls[0][1].timeout).toBeLessThanOrEqual(10000);
+  });
+
+  test('works without options (older callers)', async () => {
+    jest.spyOn(axios, 'get').mockResolvedValue({ status: 200, data: [] });
+    await expect(AuthService.getAvailableDisks('10.0.0.219:8000')).resolves.toEqual([]);
+  });
+
+  test('a cancelled lookup is rethrown as a cancel, not reported as a connection problem', async () => {
+    jest.spyOn(axios, 'get').mockRejectedValue(new axios.CanceledError('canceled'));
+    const quiet = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    const error = await AuthService.getAvailableDisks('10.0.0.219:8000').catch((e) => e);
+
+    expect(axios.isCancel(error)).toBe(true);
+    expect(quiet).not.toHaveBeenCalled();
+  });
+
+  test('a network failure becomes the friendly error', async () => {
+    jest.spyOn(axios, 'get').mockRejectedValue(new Error('Network Error'));
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    await expect(AuthService.getAvailableDisks('10.0.0.219:8000')).rejects.toThrow(
+      'Could not connect to server to fetch storage info'
+    );
   });
 });
