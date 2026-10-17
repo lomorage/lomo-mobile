@@ -394,3 +394,95 @@ describe('AIService.syncEmbeddings (smoke)', () => {
     expect(axios.post.mock.calls.some(([callUrl]) => callUrl.includes('/assets/metadata/byid'))).toBe(false);
   });
 });
+
+// Rows here stay pending no matter what (as they do in SQLite when an asset has no server ID
+// yet or a request fails), and pages honor the `id > ?` cursor and LIMIT. A loop that re-reads
+// its own unprocessed rows trips the call cap instead of hanging the test.
+function makePersistentPendingDb({ uploadRows = [], downloadRows = [], remoteIndexRows = [] } = {}) {
+  let calls = 0;
+  const page = (rows, sql, params) => {
+    const limit = Number(/LIMIT (\d+)/.exec(sql)[1]);
+    const after = params?.[0] ?? '';
+    return rows.filter((r) => r.id > after).sort((a, b) => (a.id < b.id ? -1 : 1)).slice(0, limit);
+  };
+  return {
+    getFirstAsync: jest.fn(async (sql) => {
+      if (sql.includes('COUNT(*)') && sql.includes('uploaded = 1')) return { count: uploadRows.length };
+      return { count: 0 };
+    }),
+    getAllAsync: jest.fn(async (sql, params) => {
+      if (++calls > 100) throw new Error('runaway loop: pending rows re-read');
+      if (sql.includes('needsEmbedding')) return page(uploadRows, sql, params);
+      if (sql.includes('faceRecVersion')) return page(remoteIndexRows, sql, params);
+      if (sql.includes('isLocal = 0') && sql.includes('clipEmbedding IS NULL')) return page(downloadRows, sql, params);
+      return [];
+    }),
+    runAsync: jest.fn().mockResolvedValue(),
+  };
+}
+
+describe('AIService.syncEmbeddings with rows that stay pending', () => {
+  const FileSystem = require('expo-file-system/legacy');
+  const ids = (n, prefix) => Array.from({ length: n }, (_, i) => `${prefix}${String(i).padStart(3, '0')}`);
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    AIService.isSyncing = false;
+    SecureStore.getItemAsync.mockResolvedValue(null);
+    AuthService.getServerUrl.mockReturnValue('http://localhost:8000');
+    AuthService.getToken.mockReturnValue('test-token');
+  });
+
+  test('uploads: assets without a server ID are tried once per pass, past the first batch', async () => {
+    // More than one batch (20), none resolvable: no remote mirror row and the server's
+    // metadata reply has no ID -- a fresh install right after its first backup.
+    const uploadRows = ids(25, 'u').map((id) => ({ id, hash: id, clipEmbedding: 'E', phash: 'P', needsEmbedding: 1, needsPHash: 1 }));
+    AssetDBService.db = makePersistentPendingDb({ uploadRows });
+    axios.get.mockResolvedValue({ data: { Name: '1.jpg', Hash: 'x' } });
+
+    await expect(AIService.syncEmbeddings(true)).resolves.toBeUndefined();
+
+    const lookups = axios.get.mock.calls.filter(([u]) => u.includes('/asset/metadata/'));
+    expect(lookups.map(([u]) => u.split('/').pop())).toEqual(uploadRows.map((r) => r.hash));
+    const progress = DeviceEventEmitter.emit.mock.calls
+      .filter(([evt, s]) => evt === 'ai_processing_status' && s.message?.startsWith('Uploading photo features'))
+      .map(([, s]) => s.current);
+    expect(Math.max(...progress)).toBe(25);
+  });
+
+  test('uploads: a failing POST is sent once per batch, not retried in a loop', async () => {
+    const uploadRows = ids(3, 'u').map((id, i) => ({ id, hash: id, clipEmbedding: 'E', phash: 'P', needsEmbedding: 1, needsPHash: 0, filename: `${i + 1}.jpg` }));
+    AssetDBService.db = makePersistentPendingDb({ uploadRows });
+    AssetDBService.db.getFirstAsync.mockImplementation(async (sql) =>
+      sql.includes('SELECT filename') ? { filename: '7.jpg' } : { count: uploadRows.length });
+    axios.post.mockRejectedValue(new Error('500'));
+
+    await expect(AIService.syncEmbeddings(true)).resolves.toBeUndefined();
+
+    expect(axios.post.mock.calls.filter(([u]) => u.includes('/assets/metadata?force=1'))).toHaveLength(1);
+  });
+
+  test('downloads: a failing /assets/metadata/byid is sent once per batch', async () => {
+    const downloadRows = ids(3, 'd').map((id) => ({ id, hash: id }));
+    AssetDBService.db = makePersistentPendingDb({ downloadRows });
+    AssetDBService.db.getFirstAsync.mockImplementation(async (sql) =>
+      sql.includes('SELECT filename') ? { filename: '7.jpg' } : { count: 0 });
+    axios.post.mockRejectedValue(new Error('500'));
+
+    await expect(AIService.syncEmbeddings(true)).resolves.toBeUndefined();
+
+    expect(axios.post.mock.calls.filter(([u]) => u.includes('/assets/metadata/byid'))).toHaveLength(1);
+  });
+
+  test('remote photos: a preview that fails to download is fetched once per pass', async () => {
+    // A HEIC the server can't make previews for; its embedding came from the local copy,
+    // only face detection is pending.
+    const remoteIndexRows = [{ id: 'r1', hash: 'r1', clipEmbedding: 'E', faceRecVersion: null }];
+    AssetDBService.db = makePersistentPendingDb({ remoteIndexRows });
+    FileSystem.downloadAsync.mockResolvedValue({ status: 500 });
+
+    await expect(AIService.syncEmbeddings(true)).resolves.toBeUndefined();
+
+    expect(FileSystem.downloadAsync).toHaveBeenCalledTimes(1);
+  });
+});

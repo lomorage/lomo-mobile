@@ -78,6 +78,11 @@ jest.mock('../../../modules/expo-background-keepalive', () => ({
   stopKeepAlive: jest.fn(),
 }));
 
+jest.mock('../SyncService', () => ({
+  __esModule: true,
+  default: { fetchRemoteOverview: jest.fn(() => Promise.resolve()), localHashCache: {} },
+}));
+
 describe('AutoBackupManager', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -113,6 +118,56 @@ describe('AutoBackupManager', () => {
     // Verify it reached the end of the queue
     expect(UploadService.uploadAsset).toHaveBeenCalledTimes(1);
     expect(UploadService.uploadAsset).toHaveBeenCalledWith(assets[1], expect.any(Function));
+  });
+
+  test('refreshes the remote tree once uploads finish, so AI sync can find the new server IDs', async () => {
+    const SyncService = require('../SyncService').default;
+    const asset = { id: '2', status: 'local', hash: 'h2' };
+    UploadService.uploadAsset.mockResolvedValue({ success: true, hash: 'h2' });
+    AutoBackupManager.queue = [asset];
+
+    await AutoBackupManager.startBackup();
+
+    expect(SyncService.fetchRemoteOverview).toHaveBeenCalledTimes(1);
+  });
+
+  test('refreshes the remote tree even when the session restarts for photos added meanwhile', async () => {
+    const SyncService = require('../SyncService').default;
+    const enabled = AutoBackupManager.autoBackupEnabled;
+    AutoBackupManager.autoBackupEnabled = true;
+    // A photo that showed up during the backup: the session restarts for it, which resets
+    // completedSessionCount. Its upload never finishes, so only the first session can refresh.
+    GalleryStore.setAssets([{ id: '3', status: 'local', hash: 'h3' }]);
+    UploadService.uploadAsset.mockImplementation((asset) =>
+      asset.id === '2' ? Promise.resolve({ success: true, hash: 'h2' }) : new Promise(() => {}));
+    AutoBackupManager.queue = [{ id: '2', status: 'local', hash: 'h2' }];
+
+    try {
+      await AutoBackupManager.startBackup();
+
+      expect(AutoBackupManager.isBackingUp).toBe(true); // the restarted session
+      expect(SyncService.fetchRemoteOverview).toHaveBeenCalledTimes(1);
+    } finally {
+      AutoBackupManager.autoBackupEnabled = enabled;
+    }
+  });
+
+  test('does not refresh the remote tree when nothing was uploaded', async () => {
+    const SyncService = require('../SyncService').default;
+    AutoBackupManager.queue = [{ id: '1', status: 'synced', hash: 'h1' }];
+
+    await AutoBackupManager.startBackup();
+
+    expect(SyncService.fetchRemoteOverview).not.toHaveBeenCalled();
+  });
+
+  test('a failed remote tree refresh does not fail the backup', async () => {
+    const SyncService = require('../SyncService').default;
+    SyncService.fetchRemoteOverview.mockRejectedValueOnce(new Error('offline'));
+    UploadService.uploadAsset.mockResolvedValue({ success: true, hash: 'h2' });
+    AutoBackupManager.queue = [{ id: '2', status: 'local', hash: 'h2' }];
+
+    await expect(AutoBackupManager.startBackup()).resolves.toBeUndefined();
   });
 
   test('uses iOS keep-alive automatically during the first backup', async () => {

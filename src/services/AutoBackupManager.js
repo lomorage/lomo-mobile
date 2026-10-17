@@ -466,6 +466,8 @@ class AutoBackupManager {
             // Kick off the dispatcher
             processNext();
         }).then(() => {
+            // Read before syncQueueWithGallery() below: restarting a session resets the count.
+            const uploaded = this.completedSessionCount;
             this.isBackingUp = false;
 
             // If we finished the sequence but the gallery still has local items (added during backup), restart.
@@ -495,7 +497,22 @@ class AutoBackupManager {
             // notification is left stuck showing "backing up" forever).
             this.updateNotification();
             stopKeepAlive();
+            if (uploaded > 0) return this._refreshRemoteTree();
         });
+    }
+
+    /**
+     * Pull the server's asset tree after uploads so the new assets get their remote mirror
+     * rows (and server IDs). Until then AIService can't upload features for them. Awaited by
+     * startBackup so the background tasks finish it before iOS suspends them.
+     */
+    async _refreshRemoteTree() {
+        try {
+            const SyncService = require('./SyncService').default;
+            await SyncService.fetchRemoteOverview();
+        } catch (e) {
+            console.warn('[AutoBackupManager] Failed to refresh remote tree after backup:', e.message);
+        }
     }
 
     /**
@@ -838,14 +855,7 @@ TaskManager.defineTask(BACKGROUND_BACKUP_TASK, async () => {
                     console.error('[BackgroundTask] iOS notification error:', e);
                 }
             }
-
-            // Refresh and save the remote tree to disk so the foreground app has the updated state immediately!
-            try {
-                await SyncService.fetchRemoteOverview();
-                console.log('[BackgroundTask] Updated remote tree cache on disk.');
-            } catch (e) {
-                console.warn('[BackgroundTask] Failed to update remote tree cache:', e.message);
-            }
+            // startBackup has already refreshed the remote tree on disk if anything was uploaded.
         } else {
             console.log('[BackgroundTask] No new assets found to upload.');
         }
