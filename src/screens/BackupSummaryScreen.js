@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'rea
 import { ShieldCheck, ChevronLeft } from 'lucide-react-native';
 import AssetDBService from '../services/AssetDBService';
 import BackupSafetyService, { UNSAFE_REASONS } from '../services/BackupSafetyService';
+import SyncService from '../services/SyncService';
 import AuthService from '../services/AuthService';
 import { getLastBackupAt } from '../services/backupHistory';
 import { describeCounts, describeWhen, summarizeBackup, summarizeVerification } from '../utils/backupSummary';
@@ -27,7 +28,7 @@ export default function BackupSummaryScreen({ navigation }) {
         setUnreachable(false);
         setProgress({ done: 0, total: 0 });
         try {
-            const [videos, photos, summaryRows, atHome, lastBackupAt] = await Promise.all([
+            const [videos, photos, summaryRows, atHomeBefore, lastBackupAt] = await Promise.all([
                 AssetDBService.getFreeUpSpaceCandidates('video'),
                 AssetDBService.getFreeUpSpaceCandidates('photo'),
                 AssetDBService.getBackupSummaryRows(),
@@ -50,36 +51,38 @@ export default function BackupSummaryScreen({ navigation }) {
             }
 
             // Nothing left on the phone means the check above asked the computer nothing, so the
-            // only word for the freed photos would be this phone's own records -- which survive
-            // the computer going offline or losing the files. Ask the computer itself.
-            const atHomeTotal = (atHome?.photos || 0) + (atHome?.videos || 0);
-            let atHomeCheck = { reachable: true, verified: false, photos: 0, videos: 0, unconfirmed: 0 };
-            if (items.length === 0 && atHomeTotal > 0) {
-                setProgress({ done: 0, total: atHomeTotal });
-                atHomeCheck = await BackupSafetyService.checkAtHome((done) => {
-                    if (mounted.current) setProgress({ done, total: atHomeTotal });
-                });
-                if (!mounted.current) return;
-                if (!atHomeCheck.reachable) {
-                    setUnreachable(true);
+            // freed photos would rest on this phone's records alone, and those outlive the
+            // computer going offline or dropping them. The backup's own Merkle sync is that
+            // question already answered: it compares the computer's tree with the mirror and
+            // drops the rows the computer no longer lists, normally in one request.
+            let atHome = atHomeBefore;
+            let atHomeLost = 0;
+            if (items.length === 0) {
+                try {
+                    await SyncService.fetchRemoteOverview();
+                } catch (e) {
+                    console.warn('[BackupSummaryScreen] Could not ask the computer what it holds:', e.message);
+                    if (mounted.current) setUnreachable(true);
                     return;
                 }
-                // An older computer cannot confirm a file, so report the records as unchecked.
-                if (!atHomeCheck.verified) {
-                    atHomeCheck = { ...atHomeCheck, photos: atHome?.photos || 0, videos: atHome?.videos || 0 };
-                }
+                if (!mounted.current) return;
+                atHome = await AssetDBService.getAtHomeCounts();
+                if (!mounted.current) return;
+                // The refresh pruned rows the computer no longer lists: those files are gone
+                // from it, and gone from this phone too.
+                const before = (atHomeBefore?.photos || 0) + (atHomeBefore?.videos || 0);
+                atHomeLost = Math.max(0, before - ((atHome?.photos || 0) + (atHome?.videos || 0)));
             }
             const backup = summarizeBackup(summaryRows);
             const summary = {
                 ...summarizeVerification(items, verification),
                 notBackedUp: backup.notBackedUp,
                 skipped: backup.skipped,
-                // What the computer says it has of the photos freed from this phone: the check
-                // above only covers what is still on the phone.
-                atHomePhotos: atHomeCheck.photos,
-                atHomeVideos: atHomeCheck.videos,
-                atHomeVerified: atHomeCheck.verified,
-                atHomeUnconfirmed: atHomeCheck.unconfirmed,
+                // What the computer listed just now for the photos freed from this phone: the
+                // check above only covers what is still on the phone.
+                atHomePhotos: atHome?.photos || 0,
+                atHomeVideos: atHome?.videos || 0,
+                atHomeLost,
                 computerName: AuthService.getServerName?.() || null,
                 lastBackupAt,
             };
@@ -140,23 +143,20 @@ export default function BackupSummaryScreen({ navigation }) {
         // photos are on the computer only.
         const atHomeCount = result.atHomePhotos + result.atHomeVideos;
         const onlyAtHome = result.safeCount === 0 && atHomeCount > 0 && result.unconfirmedCount === 0;
-        // The computer holds them according to this phone's records, which it could not confirm.
-        const atHomeUnchecked = onlyAtHome && !result.atHomeVerified;
-        // The computer has none of what this phone freed, so there is no count to show.
-        const atHomeLost = atHomeCount === 0 && result.safeCount === 0 && result.atHomeUnconfirmed > 0;
+        // The computer listed none of what this phone freed, so there is no count to show.
+        const allAtHomeLost = atHomeCount === 0 && result.safeCount === 0 && result.atHomeLost > 0;
         const allSafe = (result.safeCount > 0 || onlyAtHome) && result.unconfirmedCount === 0
-            && result.notBackedUp === 0 && result.atHomeUnconfirmed === 0;
+            && result.notBackedUp === 0 && result.atHomeLost === 0;
         body = (
             <View style={styles.centered}>
                 <View style={styles.iconCircle}>
                     <ShieldCheck size={48} color="#34C759" />
                 </View>
                 <Text style={styles.title}>
-                    {atHomeLost
+                    {allAtHomeLost
                         ? 'Your photos are missing from your computer'
                         : result.safeCount === 0 && !onlyAtHome
                         ? 'Nothing is backed up yet'
-                        : atHomeUnchecked ? 'Your photos should be safe at home'
                         : allSafe ? 'Your photos are safe at home' : 'Most of your photos are safe at home'}
                 </Text>
                 {result.safeCount > 0 && (
@@ -179,7 +179,7 @@ export default function BackupSummaryScreen({ navigation }) {
                     <>
                         <Text style={styles.bigNumber}>{describeCounts(result.atHomePhotos, result.atHomeVideos)}</Text>
                         <Text style={styles.detail}>
-                            {`${atHomeUnchecked ? 'last backed up to' : 'checked and safe on'} ${result.computerName ? `your computer “${result.computerName}”` : 'your Lomorage computer'}`}
+                            {`checked and safe on ${result.computerName ? `your computer “${result.computerName}”` : 'your Lomorage computer'}`}
                         </Text>
                         {result.lastBackupAt && (
                             <Text style={styles.detail}>{`Last backup: ${describeWhen(result.lastBackupAt)}`}</Text>
@@ -187,11 +187,11 @@ export default function BackupSummaryScreen({ navigation }) {
                         <Text style={styles.freeable}>Nothing left on this phone to free up</Text>
                     </>
                 )}
-                {result.atHomeUnconfirmed > 0 && (
+                {result.atHomeLost > 0 && (
                     <Text style={styles.note}>
-                        {result.atHomeUnconfirmed === 1
-                            ? '1 freed from this phone is missing from your Lomorage computer.'
-                            : `${result.atHomeUnconfirmed.toLocaleString('en-US')} freed from this phone are missing from your Lomorage computer.`}
+                        {result.atHomeLost === 1
+                            ? '1 freed from this phone is no longer on your Lomorage computer.'
+                            : `${result.atHomeLost.toLocaleString('en-US')} freed from this phone are no longer on your Lomorage computer.`}
                     </Text>
                 )}
                 {result.notBackedUp > 0 && (
@@ -223,7 +223,7 @@ export default function BackupSummaryScreen({ navigation }) {
                         {`${(result.unconfirmedCount - result.restoringCount - result.missingCount).toLocaleString('en-US')} couldn't be confirmed — they stay on this phone.`}
                     </Text>
                 )}
-                {(result.weakEvidence || atHomeUnchecked) && (
+                {result.weakEvidence && (
                     <Text style={styles.note}>{"Your Lomorage computer is running an older version; updating it lets us confirm each file."}</Text>
                 )}
                 {result.safeCount > 0 && (

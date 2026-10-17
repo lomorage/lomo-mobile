@@ -624,16 +624,6 @@ class AssetDBService {
     return { photos, videos };
   }
 
-  // The hash and type of what the computer holds that is no longer on this phone, a page at a
-  // time: after freeing space this is the whole library, too much to hold in memory at once.
-  async getAtHomeHashPage(limit, offset) {
-    if (!this.db) return [];
-    return await this.db.getAllAsync(
-      `SELECT hash, mediaType FROM MediaAsset WHERE isLocal = 0 ORDER BY id LIMIT ? OFFSET ?`,
-      [limit, offset]
-    );
-  }
-
   async markAssetNotUploaded(id) {
     if (!this.db) return;
     await this.db.runAsync(
