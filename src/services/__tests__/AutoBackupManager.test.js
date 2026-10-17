@@ -131,6 +131,27 @@ describe('AutoBackupManager', () => {
     expect(SyncService.fetchRemoteOverview).toHaveBeenCalledTimes(1);
   });
 
+  test('refreshes the remote tree even when the session restarts for photos added meanwhile', async () => {
+    const SyncService = require('../SyncService').default;
+    const enabled = AutoBackupManager.autoBackupEnabled;
+    AutoBackupManager.autoBackupEnabled = true;
+    // A photo that showed up during the backup: the session restarts for it, which resets
+    // completedSessionCount. Its upload never finishes, so only the first session can refresh.
+    GalleryStore.setAssets([{ id: '3', status: 'local', hash: 'h3' }]);
+    UploadService.uploadAsset.mockImplementation((asset) =>
+      asset.id === '2' ? Promise.resolve({ success: true, hash: 'h2' }) : new Promise(() => {}));
+    AutoBackupManager.queue = [{ id: '2', status: 'local', hash: 'h2' }];
+
+    try {
+      await AutoBackupManager.startBackup();
+
+      expect(AutoBackupManager.isBackingUp).toBe(true); // the restarted session
+      expect(SyncService.fetchRemoteOverview).toHaveBeenCalledTimes(1);
+    } finally {
+      AutoBackupManager.autoBackupEnabled = enabled;
+    }
+  });
+
   test('does not refresh the remote tree when nothing was uploaded', async () => {
     const SyncService = require('../SyncService').default;
     AutoBackupManager.queue = [{ id: '1', status: 'synced', hash: 'h1' }];

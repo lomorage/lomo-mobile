@@ -466,6 +466,8 @@ class AutoBackupManager {
             // Kick off the dispatcher
             processNext();
         }).then(() => {
+            // Read before syncQueueWithGallery() below: restarting a session resets the count.
+            const uploaded = this.completedSessionCount;
             this.isBackingUp = false;
 
             // If we finished the sequence but the gallery still has local items (added during backup), restart.
@@ -495,7 +497,7 @@ class AutoBackupManager {
             // notification is left stuck showing "backing up" forever).
             this.updateNotification();
             stopKeepAlive();
-            if (this.completedSessionCount > 0) return this._refreshRemoteTree();
+            if (uploaded > 0) return this._refreshRemoteTree();
         });
     }
 
