@@ -559,16 +559,69 @@ class AssetDBService {
     }
   }
 
-  // After the originals were deleted from the phone; the rows stay as remote assets.
+  // After the originals were deleted from the phone: each local row becomes (or is folded into)
+  // the remote row for the same file.
+  //
+  // Remote rows are keyed by the file's hash. Flipping a local row to isLocal = 0 while keeping
+  // its phone-side id left TWO remote rows for every freed photo until the next full sync
+  // pruned the stray one, so the grid doubled and counts were wrong right after freeing space.
+  //  1. a remote row for the hash already exists: copy over what was worked out on the phone
+  //     (perceptual hash, CLIP embedding, OCR text) where it has none, then drop the local row;
+  //  2. none yet (not synced down so far): re-key the local row to the hash;
+  //  3. whatever is left (e.g. two phone copies of one file) is dropped, since its file is gone.
+  // Each step is safe to repeat, and a local row left behind by a crash between steps is
+  // removed by the next scan (pruneDeletedLocalAssets), so no transaction is needed.
   async markAssetsRemovedLocally(ids) {
     if (!this.db || !ids || ids.length === 0) return;
-    for (let i = 0; i < ids.length; i += 500) {
-      const chunk = ids.slice(i, i + 500);
+    const CHUNK = 200;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunk = ids.slice(i, i + CHUNK);
+      const marks = chunk.map(() => '?').join(',');
+      const missing = (column) => `${column} IS NULL OR ${column} IN ('', 'failed')`;
+      const fromLocal = (column) => `(SELECT l.${column} FROM MediaAsset l
+          WHERE l.isLocal = 1 AND l.id IN (${marks}) AND l.hash = MediaAsset.id
+            AND l.${column} IS NOT NULL AND l.${column} NOT IN ('', 'failed') LIMIT 1)`;
       await this.db.runAsync(
-        `UPDATE MediaAsset SET isLocal = 0 WHERE id IN (${chunk.map(() => '?').join(',')})`,
+        `UPDATE MediaAsset SET
+           phash = CASE WHEN ${missing('phash')} THEN COALESCE(${fromLocal('phash')}, phash) ELSE phash END,
+           clipEmbedding = CASE WHEN ${missing('clipEmbedding')} THEN COALESCE(${fromLocal('clipEmbedding')}, clipEmbedding) ELSE clipEmbedding END,
+           ocrText = CASE WHEN ${missing('ocrText')} THEN COALESCE(${fromLocal('ocrText')}, ocrText) ELSE ocrText END
+         WHERE isLocal = 0
+           AND id IN (SELECT hash FROM MediaAsset WHERE isLocal = 1 AND id IN (${marks}) AND hash IS NOT NULL)`,
+        [...chunk, ...chunk, ...chunk, ...chunk]
+      );
+      await this.db.runAsync(
+        `DELETE FROM MediaAsset
+         WHERE isLocal = 1 AND id IN (${marks})
+           AND hash IN (SELECT id FROM MediaAsset WHERE isLocal = 0)`,
+        chunk
+      );
+      await this.db.runAsync(
+        `UPDATE OR IGNORE MediaAsset SET id = hash, isLocal = 0
+         WHERE isLocal = 1 AND id IN (${marks}) AND hash IS NOT NULL`,
+        chunk
+      );
+      await this.db.runAsync(
+        `DELETE FROM MediaAsset WHERE isLocal = 1 AND id IN (${marks})`,
         chunk
       );
     }
+  }
+
+  // How many photos and videos the computer already has (rows mirrored from the server,
+  // including ones freed from this phone). Local rows are not counted.
+  async getAtHomeCounts() {
+    if (!this.db) return { photos: 0, videos: 0 };
+    const rows = await this.db.getAllAsync(
+      `SELECT mediaType, COUNT(*) AS total FROM MediaAsset WHERE isLocal = 0 GROUP BY mediaType`
+    );
+    let photos = 0;
+    let videos = 0;
+    for (const row of rows || []) {
+      if (row.mediaType === 'video') videos += row.total || 0;
+      else photos += row.total || 0;
+    }
+    return { photos, videos };
   }
 
   async markAssetNotUploaded(id) {

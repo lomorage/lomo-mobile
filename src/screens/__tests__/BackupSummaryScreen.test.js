@@ -10,7 +10,7 @@ jest.mock('lucide-react-native', () => {
 });
 jest.mock('../../services/AssetDBService', () => ({
   __esModule: true,
-  default: { getFreeUpSpaceCandidates: jest.fn(), getBackupSummaryRows: jest.fn() },
+  default: { getFreeUpSpaceCandidates: jest.fn(), getBackupSummaryRows: jest.fn(), getAtHomeCounts: jest.fn() },
 }));
 jest.mock('../../services/BackupSafetyService', () => ({
   __esModule: true,
@@ -25,12 +25,14 @@ jest.mock('../../services/BackupSafetyService', () => ({
   },
 }));
 const mockRestoredListeners = new Set();
+jest.mock('../../services/SyncService', () => ({ __esModule: true, default: { fetchRemoteOverview: jest.fn() } }));
 jest.mock('../../utils/scaleMetrics', () => ({ logSincePairedOnce: jest.fn() }));
 jest.mock('../../services/AuthService', () => ({ __esModule: true, default: { getServerName: jest.fn(() => 'windows') } }));
 jest.mock('../../services/backupHistory', () => ({ getLastBackupAt: jest.fn(async () => Date.now() - 60 * 1000) }));
 
 const AssetDBService = require('../../services/AssetDBService').default;
 const BackupSafetyService = require('../../services/BackupSafetyService').default;
+const SyncService = require('../../services/SyncService').default;
 const { logSincePairedOnce } = require('../../utils/scaleMetrics');
 import BackupSummaryScreen from '../BackupSummaryScreen';
 
@@ -59,6 +61,8 @@ const summaryRows = (photo, video) => [
 beforeEach(() => {
   jest.clearAllMocks();
   mockRestoredListeners.clear(); // earlier tests' screens stay mounted
+  AssetDBService.getAtHomeCounts.mockResolvedValue({ photos: 0, videos: 0 });
+  SyncService.fetchRemoteOverview.mockResolvedValue({});
   AssetDBService.getFreeUpSpaceCandidates.mockImplementation(async (type) => (type === 'video'
     ? [{ id: 'v1', mediaType: 'video', fileSize: 3000 }]
     : [{ id: 'p1', mediaType: 'photo', fileSize: 1000 }, { id: 'p2', mediaType: 'photo', fileSize: 1000 }]));
@@ -94,6 +98,101 @@ test('some not backed up, skipped or unconfirmed: says so and does not log Time 
   expect(text).toContain('1 is missing from your Lomorage computer — it stays on this phone.');
   expect(text).toContain("1 couldn't be confirmed");
   expect(logSincePairedOnce).not.toHaveBeenCalled();
+});
+
+describe('after freeing space, when nothing is left on the phone to check', () => {
+  // The rows left behind say the computer holds them. Only the computer can say it still does,
+  // and the backup's Merkle sync is what asks: it drops the rows the computer no longer lists.
+  const computerHolds = ({ photos = 0, videos = 0, lost = 0 }) => {
+    AssetDBService.getAtHomeCounts
+      .mockResolvedValueOnce({ photos: photos + lost, videos }) // the mirror, before the refresh
+      .mockResolvedValue({ photos, videos }); // what the computer listed just now
+  };
+
+  beforeEach(() => {
+    AssetDBService.getFreeUpSpaceCandidates.mockResolvedValue([]);
+    BackupSafetyService.checkAll.mockResolvedValue({ safe: [], unsafe: [], weakEvidence: false });
+  });
+
+  test('asks the computer once, then says the photos are safe at home', async () => {
+    AssetDBService.getBackupSummaryRows.mockResolvedValue([]); // no local rows any more
+    computerHolds({ photos: 100, videos: 2 });
+    const tree = await render();
+
+    const text = allText(tree);
+    expect(SyncService.fetchRemoteOverview).toHaveBeenCalledTimes(1);
+    expect(text).toContain('Your photos are safe at home');
+    expect(text).toContain('100 photos and 2 videos');
+    expect(text).toContain('on your computer “windows”');
+    expect(text).toContain('Nothing left on this phone to free up');
+    expect(text).not.toContain('Nothing is backed up yet');
+    expect(() => allText(tree) && pressText(tree, 'Free Up Space')).toThrow('No button "Free Up Space"');
+  });
+
+  test('the computer cannot be reached: says so instead of calling the photos safe', async () => {
+    AssetDBService.getBackupSummaryRows.mockResolvedValue([]);
+    AssetDBService.getAtHomeCounts.mockResolvedValue({ photos: 100, videos: 2 });
+    const offline = new Error('Could not reach server. Check your connection and try again.');
+    offline.isNetworkError = true;
+    SyncService.fetchRemoteOverview.mockRejectedValue(offline);
+    const tree = await render();
+
+    const text = allText(tree);
+    expect(text).toContain("Couldn't reach your Lomorage computer");
+    expect(text).not.toContain('safe at home');
+    expect(text).not.toContain('100 photos');
+  });
+
+  test('photos the computer no longer lists are counted as gone, not as safe', async () => {
+    AssetDBService.getBackupSummaryRows.mockResolvedValue([]);
+    computerHolds({ photos: 98, videos: 0, lost: 2 });
+    const tree = await render();
+
+    const text = allText(tree);
+    expect(text).toContain('98 photos');
+    expect(text).not.toContain('100 photos');
+    expect(text).toContain('2 freed from this phone are no longer on your Lomorage computer');
+    expect(text).toContain('Most of your photos are safe at home');
+    expect(text).not.toContain('Your photos are safe at home');
+  });
+
+  test('the computer has lost everything this phone freed: says they are missing', async () => {
+    AssetDBService.getBackupSummaryRows.mockResolvedValue([]);
+    computerHolds({ photos: 0, videos: 0, lost: 100 });
+    const tree = await render();
+
+    const text = allText(tree);
+    expect(text).toContain('Your photos are missing from your computer');
+    expect(text).toContain('100 freed from this phone are no longer on your Lomorage computer');
+    expect(text).not.toContain('safe at home');
+    expect(text).not.toContain('Nothing is backed up yet');
+  });
+
+  test('items still to back up are mentioned, and the title is softened', async () => {
+    AssetDBService.getBackupSummaryRows.mockResolvedValue(summaryRows({ total: 3, backedUp: 0, excluded: 0 }, { total: 0, backedUp: 0 }));
+    computerHolds({ photos: 100, videos: 2 });
+    const tree = await render();
+
+    const text = allText(tree);
+    expect(text).toContain('Most of your photos are safe at home');
+    expect(text).toContain('3 still to back up');
+    expect(text).not.toContain('Nothing is backed up yet');
+  });
+
+  test('a phone that has genuinely backed up nothing yet still says so', async () => {
+    AssetDBService.getBackupSummaryRows.mockResolvedValue(summaryRows({ total: 5, backedUp: 0, excluded: 0 }, { total: 0, backedUp: 0 }));
+    AssetDBService.getAtHomeCounts.mockResolvedValue({ photos: 0, videos: 0 });
+    const tree = await render();
+
+    expect(allText(tree)).toContain('Nothing is backed up yet');
+  });
+
+  test('does not log Time to Safe (that is for the first backup)', async () => {
+    AssetDBService.getBackupSummaryRows.mockResolvedValue([]);
+    computerHolds({ photos: 4, videos: 0 });
+    await render();
+    expect(logSincePairedOnce).not.toHaveBeenCalled();
+  });
 });
 
 test('computer unreachable: offers to try again, which re-checks', async () => {
