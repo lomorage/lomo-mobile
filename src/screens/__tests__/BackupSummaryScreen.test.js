@@ -10,7 +10,7 @@ jest.mock('lucide-react-native', () => {
 });
 jest.mock('../../services/AssetDBService', () => ({
   __esModule: true,
-  default: { getFreeUpSpaceCandidates: jest.fn(), getBackupSummaryRows: jest.fn() },
+  default: { getFreeUpSpaceCandidates: jest.fn(), getBackupSummaryRows: jest.fn(), getAtHomeCounts: jest.fn() },
 }));
 jest.mock('../../services/BackupSafetyService', () => ({
   __esModule: true,
@@ -59,6 +59,7 @@ const summaryRows = (photo, video) => [
 beforeEach(() => {
   jest.clearAllMocks();
   mockRestoredListeners.clear(); // earlier tests' screens stay mounted
+  AssetDBService.getAtHomeCounts.mockResolvedValue({ photos: 0, videos: 0 });
   AssetDBService.getFreeUpSpaceCandidates.mockImplementation(async (type) => (type === 'video'
     ? [{ id: 'v1', mediaType: 'video', fileSize: 3000 }]
     : [{ id: 'p1', mediaType: 'photo', fileSize: 1000 }, { id: 'p2', mediaType: 'photo', fileSize: 1000 }]));
@@ -94,6 +95,53 @@ test('some not backed up, skipped or unconfirmed: says so and does not log Time 
   expect(text).toContain('1 is missing from your Lomorage computer — it stays on this phone.');
   expect(text).toContain("1 couldn't be confirmed");
   expect(logSincePairedOnce).not.toHaveBeenCalled();
+});
+
+describe('after freeing space, when nothing is left on the phone to check', () => {
+  beforeEach(() => {
+    AssetDBService.getFreeUpSpaceCandidates.mockResolvedValue([]);
+    BackupSafetyService.checkAll.mockResolvedValue({ safe: [], unsafe: [], weakEvidence: false });
+  });
+
+  test('still says the photos are safe at home, with what the computer holds', async () => {
+    AssetDBService.getBackupSummaryRows.mockResolvedValue([]); // no local rows any more
+    AssetDBService.getAtHomeCounts.mockResolvedValue({ photos: 100, videos: 2 });
+    const tree = await render();
+
+    const text = allText(tree);
+    expect(text).toContain('Your photos are safe at home');
+    expect(text).toContain('100 photos and 2 videos');
+    expect(text).toContain('on your computer “windows”');
+    expect(text).toContain('Nothing left on this phone to free up');
+    expect(text).not.toContain('Nothing is backed up yet');
+    expect(() => allText(tree) && pressText(tree, 'Free Up Space')).toThrow('No button "Free Up Space"');
+  });
+
+  test('items still to back up are mentioned, and the title is softened', async () => {
+    AssetDBService.getBackupSummaryRows.mockResolvedValue(summaryRows({ total: 3, backedUp: 0, excluded: 0 }, { total: 0, backedUp: 0 }));
+    AssetDBService.getAtHomeCounts.mockResolvedValue({ photos: 100, videos: 2 });
+    const tree = await render();
+
+    const text = allText(tree);
+    expect(text).toContain('Most of your photos are safe at home');
+    expect(text).toContain('3 still to back up');
+    expect(text).not.toContain('Nothing is backed up yet');
+  });
+
+  test('a phone that has genuinely backed up nothing yet still says so', async () => {
+    AssetDBService.getBackupSummaryRows.mockResolvedValue(summaryRows({ total: 5, backedUp: 0, excluded: 0 }, { total: 0, backedUp: 0 }));
+    AssetDBService.getAtHomeCounts.mockResolvedValue({ photos: 0, videos: 0 });
+    const tree = await render();
+
+    expect(allText(tree)).toContain('Nothing is backed up yet');
+  });
+
+  test('does not log Time to Safe (that is for the first backup)', async () => {
+    AssetDBService.getBackupSummaryRows.mockResolvedValue([]);
+    AssetDBService.getAtHomeCounts.mockResolvedValue({ photos: 4, videos: 0 });
+    await render();
+    expect(logSincePairedOnce).not.toHaveBeenCalled();
+  });
 });
 
 test('computer unreachable: offers to try again, which re-checks', async () => {

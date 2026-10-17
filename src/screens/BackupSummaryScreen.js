@@ -27,10 +27,11 @@ export default function BackupSummaryScreen({ navigation }) {
         setUnreachable(false);
         setProgress({ done: 0, total: 0 });
         try {
-            const [videos, photos, summaryRows, lastBackupAt] = await Promise.all([
+            const [videos, photos, summaryRows, atHome, lastBackupAt] = await Promise.all([
                 AssetDBService.getFreeUpSpaceCandidates('video'),
                 AssetDBService.getFreeUpSpaceCandidates('photo'),
                 AssetDBService.getBackupSummaryRows(),
+                AssetDBService.getAtHomeCounts(),
                 getLastBackupAt(),
             ]);
             const items = [...photos, ...videos].map(asset => ({ ...asset, sizeBytes: asset.fileSize || 0 }));
@@ -49,6 +50,10 @@ export default function BackupSummaryScreen({ navigation }) {
                 ...summarizeVerification(items, verification),
                 notBackedUp: backup.notBackedUp,
                 skipped: backup.skipped,
+                // What the computer already has, including photos freed from this phone: the
+                // check above only covers what is still on the phone.
+                atHomePhotos: atHome?.photos || 0,
+                atHomeVideos: atHome?.videos || 0,
                 computerName: AuthService.getServerName?.() || null,
                 lastBackupAt,
             };
@@ -105,14 +110,18 @@ export default function BackupSummaryScreen({ navigation }) {
             </View>
         );
     } else if (result) {
-        const allSafe = result.safeCount > 0 && result.unconfirmedCount === 0 && result.notBackedUp === 0;
+        // Nothing left on the phone to check is not "nothing backed up": after freeing space the
+        // photos are on the computer only.
+        const atHomeCount = result.atHomePhotos + result.atHomeVideos;
+        const onlyAtHome = result.safeCount === 0 && atHomeCount > 0 && result.unconfirmedCount === 0;
+        const allSafe = (result.safeCount > 0 || onlyAtHome) && result.unconfirmedCount === 0 && result.notBackedUp === 0;
         body = (
             <View style={styles.centered}>
                 <View style={styles.iconCircle}>
                     <ShieldCheck size={48} color="#34C759" />
                 </View>
                 <Text style={styles.title}>
-                    {result.safeCount === 0
+                    {result.safeCount === 0 && !onlyAtHome
                         ? 'Nothing is backed up yet'
                         : allSafe ? 'Your photos are safe at home' : 'Most of your photos are safe at home'}
                 </Text>
@@ -130,6 +139,18 @@ export default function BackupSummaryScreen({ navigation }) {
                                 {result.sizeIsPartial ? 'At least ' : ''}{formatSize(result.safeBytes)} can be freed from this phone
                             </Text>
                         )}
+                    </>
+                )}
+                {onlyAtHome && (
+                    <>
+                        <Text style={styles.bigNumber}>{describeCounts(result.atHomePhotos, result.atHomeVideos)}</Text>
+                        <Text style={styles.detail}>
+                            {`on ${result.computerName ? `your computer “${result.computerName}”` : 'your Lomorage computer'}`}
+                        </Text>
+                        {result.lastBackupAt && (
+                            <Text style={styles.detail}>{`Last backup: ${describeWhen(result.lastBackupAt)}`}</Text>
+                        )}
+                        <Text style={styles.freeable}>Nothing left on this phone to free up</Text>
                     </>
                 )}
                 {result.notBackedUp > 0 && (
