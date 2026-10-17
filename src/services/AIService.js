@@ -1694,6 +1694,10 @@ class AIService {
       const totalUploadsRow = await db.getFirstAsync(`SELECT COUNT(*) as count FROM MediaAsset WHERE ${uploadPendingWhere}`);
       const totalUploads = totalUploadsRow?.count || 0;
       let processedUploads = 0;
+      // Walk the pending rows by id so each pass visits every row once. Rows that come back
+      // unchanged (no server ID yet, failed request) are retried on the next syncEmbeddings()
+      // pass; re-reading them here re-selected the same batch forever.
+      let lastUploadId = '';
 
       while (hasMoreUploads) {
         // Yield to user interactions to prevent scroll stuttering
@@ -1709,14 +1713,16 @@ class AIService {
                   AND hash NOT IN (SELECT hash FROM MediaAsset WHERE isLocal = 0 AND phash IS NOT NULL AND phash != "")
                  THEN 1 ELSE 0 END AS needsPHash
           FROM MediaAsset
-          WHERE ${uploadPendingWhere}
+          WHERE ${uploadPendingWhere} AND id > ?
+          ORDER BY id
           LIMIT ${AI_UPLOAD_BATCH_SIZE}
-        `);
+        `, [lastUploadId]);
 
         if (localPendingUpload.length === 0) {
           hasMoreUploads = false;
           break;
         }
+        lastUploadId = localPendingUpload[localPendingUpload.length - 1].id;
 
         console.log(`[AIService] Uploading batch of ${localPendingUpload.length} local embeddings/pHashes to server...`);
         const device = Platform.OS === 'ios' ? 'ios' : 'android';
@@ -1827,6 +1833,9 @@ class AIService {
         let processedDownloads = 0;
 
         let hasMoreDownloads = true;
+        // By id, like Part A, so a failed request or unresolved rows don't re-select the same
+        // batch; they're retried on the next syncEmbeddings() pass.
+        let lastDownloadId = '';
         // Server hard-caps a single /assets/metadata/byid request at 100 ids. The handler
         // no longer does the synchronous per-asset exiftool GPS probing that used to pin
         // this NAS's single lomod process (see lomo-backend handler/metadata.go), but on
@@ -1851,13 +1860,16 @@ class AIService {
             FROM MediaAsset
             WHERE isLocal = 0
               AND ((clipEmbedding IS NULL OR clipEmbedding = "") OR (phash IS NULL OR phash = ""))
+              AND id > ?
+            ORDER BY id
             LIMIT ${AI_DOWNLOAD_BATCH_SIZE}
-          `);
+          `, [lastDownloadId]);
 
           if (remotePendingDownload.length === 0) {
             hasMoreDownloads = false;
             break;
           }
+          lastDownloadId = remotePendingDownload[remotePendingDownload.length - 1].id;
 
           console.log(`[AIService] Syncing batch of ${remotePendingDownload.length} remote embeddings & phash from server...`);
           const pHashUpdates = [];
@@ -1885,12 +1897,7 @@ class AIService {
             hashToAsset.set(asset.hash, asset);
           }
 
-          if (ids.length === 0) {
-            // Nothing in this chunk was resolvable -- stop instead of looping forever
-            // re-fetching the same unresolved rows.
-            hasMoreDownloads = false;
-            break;
-          }
+          if (ids.length === 0) continue;
 
           const downloadBatchStart = Date.now();
           let downloadBatchElapsedMs = 0;
@@ -2004,6 +2011,9 @@ class AIService {
           let processedRemote = 0;
 
           let hasMoreRemoteIndex = true;
+          // By id, like Part A: a row whose preview fails to download stays pending, and
+          // re-reading it here re-downloaded the same preview in a tight loop.
+          let lastRemoteIndexId = '';
           while (hasMoreRemoteIndex) {
             // Fetch remote assets that don't have embeddings on server (marked as 'none')
             const remotePendingIndex = await db.getAllAsync(`
@@ -2011,13 +2021,16 @@ class AIService {
               FROM MediaAsset 
               WHERE isLocal = 0 
                 AND (clipEmbedding = "none" OR faceRecVersion IS NULL OR faceRecVersion < 1)
+                AND id > ?
+              ORDER BY id
               LIMIT 10
-            `);
+            `, [lastRemoteIndexId]);
 
             if (remotePendingIndex.length === 0) {
               hasMoreRemoteIndex = false;
               break;
             }
+            lastRemoteIndexId = remotePendingIndex[remotePendingIndex.length - 1].id;
 
             console.log(`[AIService] Scheme B: Indexing ${remotePendingIndex.length} remote photos locally...`);
             for (const asset of remotePendingIndex) {
