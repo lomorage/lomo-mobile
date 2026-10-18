@@ -294,7 +294,11 @@ def scenario_26():
     n_photos = int(os.environ.get('N_PHOTOS', '6'))
     for _ in range(10):  # let the launcher settle after a cold boot
         clear_system_anr(); time.sleep(3)
-    adb(f"shell am start -a android.intent.action.VIEW -d 'https://lomorage.com/s/#server=10.0.2.2%3A8000&name=CI-lomod' {PKG}")
+    # the setup link a server's QR code carries; -p sends it to the app (not Chrome). One argv
+    # string so the device shell sees the quotes around '#' and '&'.
+    out = subprocess.run(['adb', 'shell', f"am start -W -a android.intent.action.VIEW -p {PKG} -d 'https://lomorage.com/s/#server=10.0.2.2%3A8000&name=CI-lomod'"],
+                         capture_output=True, text=True, timeout=120)
+    log('setup link sent', out=out.stdout[-400:], err=out.stderr[-400:])
     if not wait_for(r'Connect to this server', 120):
         shot('no-setup-prompt'); raise SystemExit('setup prompt not shown')
     shot('setup-prompt')
