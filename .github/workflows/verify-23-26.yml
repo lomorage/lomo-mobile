@@ -1,0 +1,178 @@
+# Verification of PR #23 (Register: disk lookup on every keystroke) and PR #26 (duplicates /
+# "Nothing is backed up yet" after Free Up Space). Runs only on pushes to this CI branch.
+# base = master, prNN = refs/pull/NN/merge (master + the PR, what merging would produce).
+name: verify-23-26
+
+on:
+  push:
+    branches: [ci/lomo-verify-23-26]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pr: [23, 26]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ matrix.pr }}/merge
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: npm }
+      - run: npm ci
+      - name: PR tests on the PR merge ref
+        run: |
+          mkdir -p out
+          git rev-parse HEAD > out/pr-merge-sha.txt
+          git rev-parse origin/master > out/base-sha.txt
+          git diff --name-only origin/master...HEAD > out/changed-files.txt
+          grep '__tests__/' out/changed-files.txt > out/test-files.txt
+          npx jest --ci --json --outputFile=out/pr-tests.json $(cat out/test-files.txt) > out/pr-tests.log 2>&1; echo "exit=$?" >> out/pr-tests.log
+          npx jest --ci > out/pr-full-suite.log 2>&1; echo "exit=$?" >> out/pr-full-suite.log
+      - name: Same tests with the PR's source changes reverted to master (new helper files kept)
+        run: |
+          for f in $(grep -v '__tests__/' out/changed-files.txt); do
+            if git cat-file -e origin/master:"$f" 2>/dev/null; then git checkout origin/master -- "$f"; echo "reverted $f" >> out/base-reverted.txt; fi
+          done
+          npx jest --ci --json --outputFile=out/base-tests.json $(cat out/test-files.txt) > out/base-tests.log 2>&1; echo "exit=$?" >> out/base-tests.log
+          node -e '
+            const s = f => { const j = require(f); return { passed: j.numPassedTests, failed: j.numFailedTests, total: j.numTotalTests,
+              failedTests: j.testResults.flatMap(r => r.assertionResults.filter(a => a.status === "failed").map(a => a.fullName)) }; };
+            const r = { pr: s("./out/pr-tests.json"), base: s("./out/base-tests.json") };
+            require("fs").writeFileSync("out/summary.json", JSON.stringify(r, null, 2)); console.log(JSON.stringify(r, null, 2));'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: 'unit-pr${{ matrix.pr }}', path: out/ }
+
+  integration-26:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { variant: base, ref: master }
+          - { variant: pr26, ref: refs/pull/26/merge }
+    container:
+      image: ${{ vars.LOMOD_IMAGE || 'ghcr.io/lomorage/lomod-test:latest' }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      LOMOD_BIN: /opt/lomorage/bin/lomod
+      VARIANT: ${{ matrix.variant }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: ci }
+      - uses: actions/checkout@v4
+        with: { ref: '${{ matrix.ref }}', path: app }
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - working-directory: app
+        run: |
+          npm ci
+          cp ../ci/ci-verify/verify26FreeUpSpace.test.js integration/tests/
+          git rev-parse HEAD > ../sha.txt
+          LOMO_IT_VERBOSE=0 npx jest -c integration/jest.config.js integration/tests/verify26FreeUpSpace.test.js --ci > ../it.log 2>&1; echo "exit=$?" >> ../it.log
+          cat ../it.log
+          mkdir -p ../out && cp -r integration/.artifacts/. ../out/ ; cp ../it.log ../sha.txt ../out/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: 'integration26-${{ matrix.variant }}', path: out/ }
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { variant: base, ref: master }
+          - { variant: pr23, ref: refs/pull/23/merge }
+          - { variant: pr26, ref: refs/pull/26/merge }
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: '${{ matrix.ref }}' }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - uses: gradle/actions/setup-gradle@v4
+      - run: npm ci
+      - run: npx expo prebuild -p android --no-install
+      - name: assembleRelease (debug-signed, x86_64 only, for the emulator)
+        working-directory: android
+        run: ./gradlew assembleRelease -PreactNativeArchitectures=x86_64 --no-daemon
+      - run: |
+          mkdir -p out
+          cp android/app/build/outputs/apk/release/app-release.apk out/lomo-${{ matrix.variant }}.apk
+          git rev-parse HEAD > out/sha.txt
+          sha256sum out/*.apk >> out/sha.txt
+      - uses: actions/upload-artifact@v4
+        with: { name: 'apk-${{ matrix.variant }}', path: out/ }
+
+  e2e:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { scenario: '23', variant: base }
+          - { scenario: '23', variant: pr23 }
+          - { scenario: '26', variant: base }
+          - { scenario: '26', variant: pr26 }
+    env:
+      SCENARIO: ${{ matrix.scenario }}
+      VARIANT: ${{ matrix.variant }}
+      OUT: ${{ github.workspace }}/out
+      NETLOG: /tmp/netlog
+      N_PHOTOS: '6'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: 'apk-${{ matrix.variant }}', path: apk }
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: Real lomod (lomo-backend test image) on :8001, logging proxy on :8000
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          mkdir -p /tmp/lomod/base /tmp/lomod/media && chmod -R 777 /tmp/lomod
+          docker run -d --name lomod --network host -v /tmp/lomod:/data ${{ vars.LOMOD_IMAGE || 'ghcr.io/lomorage/lomod-test:latest' }} \
+            /opt/lomorage/bin/lomod -b /data/base --mount-dir /data/media -p 8001 --port-https 8444 --port-webdev 8082 --no-mdns
+          for i in $(seq 60); do curl -sf http://127.0.0.1:8001/system && break; sleep 1; done
+          HANG=$([ "$SCENARIO" = "23" ] && echo 1 || echo 0)
+          sudo -E env HANG=$HANG OUT_DIR=$NETLOG nohup node ci-verify/netlog.js > /tmp/netlog.out 2>&1 &
+          sleep 2; curl -sf http://127.0.0.1:8000/system; cat /tmp/netlog.out
+      - name: Emulator run
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: APK=$(ls apk/*.apk) bash ci-verify/e2e.sh
+      - name: Collect
+        if: always()
+        run: |
+          mkdir -p out
+          cp -r /tmp/netlog out/netlog || true
+          docker logs lomod > out/lomod.log 2>&1 || true
+          cp apk/sha.txt out/apk-sha.txt || true
+          sudo chown -R $USER out || true
+          python3 -c "import json;r=json.load(open('out/result.json'));[r.pop(k,None) for k in ('steps','requests','backup_status_texts')];print(json.dumps(r,indent=1))" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: 'e2e-${{ matrix.scenario }}-${{ matrix.variant }}', path: out/ }
