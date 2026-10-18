@@ -68,10 +68,26 @@ def find(pattern, attr=('text', 'desc'), root=None, flags=re.I):
     rx = re.compile(pattern, flags)
     return [n for n in nodes(root) if any(rx.search(n[a] or '') for a in attr)]
 
+def clear_system_anr(root=None):
+    """The emulator's own apps (Pixel Launcher, System UI) sometimes ANR on a cold CI boot; their
+    dialog sits on top of everything. Press "Wait" on it (never touches the app under test)."""
+    if root is None:
+        root, _ = dump()
+    ns = nodes(root)
+    if any(re.search(r"isn.t responding", n['text'] or '') and PKG not in (n['text'] or '') for n in ns):
+        w = [n for n in ns if re.fullmatch(r'(?i)wait', n['text'] or '')]
+        if w:
+            tap(w[0]); result.setdefault('system_anr_dismissed', 0); result['system_anr_dismissed'] += 1
+            time.sleep(2); return True
+    return False
+
 def wait_for(pattern, timeout=60, attr=('text', 'desc')):
     end = time.time() + timeout
     while time.time() < end:
-        hits = find(pattern, attr)
+        root, _ = dump()
+        if clear_system_anr(root):
+            continue
+        hits = find(pattern, attr, root=root)
         if hits:
             return hits
         time.sleep(1.5)
@@ -190,6 +206,8 @@ def screen_size():
 
 # ---------------------------------------------------------------- scenario #23
 def scenario_23():
+    for _ in range(5):
+        clear_system_anr(); time.sleep(2)
     start_app()
     if not wait_for(r'Enter details manually', 120):
         shot('no-login-screen'); raise SystemExit('login screen not shown')
@@ -274,6 +292,8 @@ def dismiss_dialogs(rounds=3):
 
 def scenario_26():
     n_photos = int(os.environ.get('N_PHOTOS', '6'))
+    for _ in range(10):  # let the launcher settle after a cold boot
+        clear_system_anr(); time.sleep(3)
     adb(f"shell am start -a android.intent.action.VIEW -d 'https://lomorage.com/s/#server=10.0.2.2%3A8000&name=CI-lomod' {PKG}")
     if not wait_for(r'Connect to this server', 120):
         shot('no-setup-prompt'); raise SystemExit('setup prompt not shown')
