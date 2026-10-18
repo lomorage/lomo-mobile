@@ -178,10 +178,12 @@ jobs:
           mkdir -p /tmp/lomod/base /tmp/lomod/media && chmod -R 777 /tmp/lomod
           docker run -d --name lomod --network host -v /tmp/lomod:/data ${{ vars.LOMOD_IMAGE || 'ghcr.io/lomorage/lomod-test:latest' }} \
             /opt/lomorage/bin/lomod -b /data/base --mount-dir /data/media -p 8001 --port-https 8444 --port-webdev 8082 --no-mdns
-          for i in $(seq 60); do curl -sf http://127.0.0.1:8001/system && break; sleep 1; done
+          for i in $(seq 90); do curl -sf http://127.0.0.1:8001/system && break; sleep 1; done
           HANG=$([ "$SCENARIO" = "23" ] && echo 1 || echo 0)
-          sudo -E env HANG=$HANG OUT_DIR=$NETLOG nohup node ci-verify/netlog.js > /tmp/netlog.out 2>&1 &
-          sleep 2; curl -sf http://127.0.0.1:8000/system; cat /tmp/netlog.out
+          sudo -E env HANG=$HANG OUT_DIR=$NETLOG nohup "$(which node)" ci-verify/netlog.js > /tmp/netlog.out 2>&1 &
+          ok=0; for i in $(seq 60); do if curl -sf http://127.0.0.1:8000/system; then ok=1; break; fi; sleep 1; done
+          cat /tmp/netlog.out; docker ps -a; docker logs lomod 2>&1 | tail -20
+          [ "$ok" = 1 ]
       - name: Emulator run
         uses: reactivecircus/android-emulator-runner@v2
         with:
