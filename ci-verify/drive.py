@@ -34,15 +34,18 @@ def adb(args, **kw):
 
 SCREEN = [1080, 2400]
 
-def dump():
+def dump(_anr_retry=3):
     for _ in range(5):
         out = adb('exec-out uiautomator dump /dev/tty', timeout=60)
         m = re.search(r'(<\?xml.*</hierarchy>)', out, re.S)
         if m:
             try:
-                return ET.fromstring(m.group(1)), m.group(1)
+                root = ET.fromstring(m.group(1))
             except ET.ParseError:
-                pass
+                time.sleep(1); continue
+            if _anr_retry and clear_system_anr(root):
+                return dump(_anr_retry - 1)
+            return root, m.group(1)
         time.sleep(1)
     return None, ''
 
@@ -72,7 +75,7 @@ def clear_system_anr(root=None):
     """The emulator's own apps (Pixel Launcher, System UI) sometimes ANR on a cold CI boot; their
     dialog sits on top of everything. Press "Wait" on it (never touches the app under test)."""
     if root is None:
-        root, _ = dump()
+        root, _ = dump(0)
     ns = nodes(root)
     if any(re.search(r"isn.t responding", n['text'] or '') and PKG not in (n['text'] or '') for n in ns):
         w = [n for n in ns if re.fullmatch(r'(?i)wait', n['text'] or '')]

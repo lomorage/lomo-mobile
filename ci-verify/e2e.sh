@@ -4,6 +4,10 @@ set -x
 OUT=${OUT:-$PWD/out}; mkdir -p "$OUT"
 adb wait-for-device
 adb shell getprop ro.build.version.release > "$OUT/android-version.txt"
+# The CI emulator is slow enough that Pixel Launcher ANRs and its dialog covers the app; the app
+# is started with monkey/am, so no launcher is needed.
+adb shell pm disable-user --user 0 com.google.android.apps.nexuslauncher || true
+adb shell settings put secure anr_show_background 0 || true
 adb install -r -g "$APK" || exit 1
 adb shell pm grant com.wtao.lomo android.permission.POST_NOTIFICATIONS || true
 adb shell dumpsys package com.wtao.lomo | grep -E "versionName|versionCode" > "$OUT/installed-version.txt"
