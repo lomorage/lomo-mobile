@@ -123,14 +123,14 @@ def texts_from(xml):
 rec = {'n': 0, 'proc': None}
 def rec_start():
     rec['n'] += 1
-    rec['proc'] = subprocess.Popen(f"adb shell screenrecord --bit-rate 3000000 --time-limit 175 /sdcard/rec{rec['n']}.mp4", shell=True)
+    rec['proc'] = subprocess.Popen(f"adb shell screenrecord --bit-rate 3000000 --time-limit 175 /data/local/tmp/rec{rec['n']}.mp4", shell=True)
 def rec_stop():
     if rec['proc']:
         adb('shell pkill -INT screenrecord')
         try: rec['proc'].wait(10)
         except Exception: pass
         time.sleep(2)
-        adb(f"pull /sdcard/rec{rec['n']}.mp4 {OUT}/screenrecord-{rec['n']}.mp4")
+        adb(f"pull /data/local/tmp/rec{rec['n']}.mp4 {OUT}/screenrecord-{rec['n']}.mp4")
         rec['proc'] = None
 def rec_roll():
     rec_stop(); rec_start()
@@ -323,9 +323,14 @@ def scenario_26():
         dismiss_dialogs(1)
         time.sleep(5)
     log('uploads seen', count=len({u['url'] for u in ups}))
-    time.sleep(45)
-    rec_roll()
+    time.sleep(30)
     shot('home-backed-up')
+    # Reopen the app once, as a person would, so the post-backup sync has mirrored the computer's
+    # (hash-keyed) rows before Free Up Space runs, the state the audit was in.
+    adb(f'shell am force-stop {PKG}'); time.sleep(2); start_app()
+    wait_for(r'^\d[\d,]* items?', 90); time.sleep(40); dismiss_dialogs()
+    rec_roll()
+    shot('home-reopened-before-free-up')
     result['items_before_free_up'] = items_count()
     if not nav_settings():
         shot('no-settings'); raise SystemExit('settings not reached')
@@ -335,10 +340,11 @@ def scenario_26():
     wait_for(r'Select All', 60)
     time.sleep(3)
     shot('free-up-space')
-    tap_text(r'^Photos? \(')
-    time.sleep(2)
-    tap_text(r'^Select All')
-    time.sleep(1)
+    for tabrx in (r'^Photos? \((?!0\))', r'^Videos? \((?!0\))'):
+        if find(tabrx):
+            tap_text(tabrx); time.sleep(2)
+            tap_text(r'^Select All'); time.sleep(1)
+    shot('free-up-selected')
     dels = [n for n in find(r'^Delete$') if n['pkg'] == PKG]
     tap(dels[-1]); log('tapped Delete')
     if wait_for(r'Delete from Device', 90):
@@ -365,6 +371,11 @@ def scenario_26():
     time.sleep(30)
     shot('home-30s-after-free-up')
     result['items_30s_after_free_up'] = items_count()
+    # and once more after reopening the app
+    adb(f'shell am force-stop {PKG}'); time.sleep(2); start_app()
+    wait_for(r'^\d[\d,]* items?', 90); time.sleep(30); dismiss_dialogs()
+    shot('home-reopened-after-free-up')
+    result['items_after_reopen'] = items_count()
     nav_settings()
     hits = scroll_to(r'^Backup Status$')
     tap(hits[0]); log('opened Backup Status')
