@@ -11,6 +11,7 @@ on:
 permissions:
   contents: read
   packages: read
+  actions: read
 
 jobs:
   unit:
@@ -34,14 +35,14 @@ jobs:
           git rev-parse origin/master > out/base-sha.txt
           git diff --name-only origin/master...HEAD > out/changed-files.txt
           grep '__tests__/' out/changed-files.txt > out/test-files.txt
-          npx jest --ci --json --outputFile=out/pr-tests.json $(cat out/test-files.txt) > out/pr-tests.log 2>&1; echo "exit=$?" >> out/pr-tests.log
-          npx jest --ci > out/pr-full-suite.log 2>&1; echo "exit=$?" >> out/pr-full-suite.log
+          npx jest --ci --json --outputFile=out/pr-tests.json $(cat out/test-files.txt) > out/pr-tests.log 2>&1 && echo "exit=0" >> out/pr-tests.log || echo "exit=$?" >> out/pr-tests.log
+          npx jest --ci > out/pr-full-suite.log 2>&1 && echo "exit=0" >> out/pr-full-suite.log || echo "exit=$?" >> out/pr-full-suite.log
       - name: Same tests with the PR's source changes reverted to master (new helper files kept)
         run: |
           for f in $(grep -v '__tests__/' out/changed-files.txt); do
             if git cat-file -e origin/master:"$f" 2>/dev/null; then git checkout origin/master -- "$f"; echo "reverted $f" >> out/base-reverted.txt; fi
           done
-          npx jest --ci --json --outputFile=out/base-tests.json $(cat out/test-files.txt) > out/base-tests.log 2>&1; echo "exit=$?" >> out/base-tests.log
+          npx jest --ci --json --outputFile=out/base-tests.json $(cat out/test-files.txt) > out/base-tests.log 2>&1 && echo "exit=0" >> out/base-tests.log || echo "exit=$?" >> out/base-tests.log
           node -e '
             const s = f => { const j = require(f); return { passed: j.numPassedTests, failed: j.numFailedTests, total: j.numTotalTests,
               failedTests: j.testResults.flatMap(r => r.assertionResults.filter(a => a.status === "failed").map(a => a.fullName)) }; };
@@ -80,7 +81,7 @@ jobs:
           npm ci
           cp ../ci/ci-verify/verify26FreeUpSpace.test.js.tpl integration/tests/verify26FreeUpSpace.test.js
           git rev-parse HEAD > ../sha.txt
-          LOMO_IT_VERBOSE=0 npx jest -c integration/jest.config.js integration/tests/verify26FreeUpSpace.test.js --ci > ../it.log 2>&1; echo "exit=$?" >> ../it.log
+          LOMO_IT_VERBOSE=0 npx jest -c integration/jest.config.js integration/tests/verify26FreeUpSpace.test.js --ci > ../it.log 2>&1 && echo "exit=0" >> ../it.log || echo "exit=$?" >> ../it.log
           cat ../it.log
           mkdir -p ../out && cp -r integration/.artifacts/. ../out/ ; cp ../it.log ../sha.txt ../out/
       - uses: actions/upload-artifact@v4
@@ -90,6 +91,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    outputs:
+      reuse_run_id: ${{ steps.reuse.outputs.run_id }}
     strategy:
       fail-fast: false
       matrix:
@@ -99,23 +102,38 @@ jobs:
           - { variant: pr26, ref: refs/pull/26/merge }
     steps:
       - uses: actions/checkout@v4
+        with: { path: ci }
+      - id: reuse
+        run: echo "run_id=$(cat ci/ci-verify/apk-run-id.txt 2>/dev/null | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+      - if: steps.reuse.outputs.run_id != ''
+        run: echo "Reusing APKs from run ${{ steps.reuse.outputs.run_id }}"
+      - uses: actions/checkout@v4
+        if: steps.reuse.outputs.run_id == ''
         with: { ref: '${{ matrix.ref }}' }
       - uses: actions/setup-java@v4
+        if: steps.reuse.outputs.run_id == ''
         with: { distribution: temurin, java-version: 17 }
       - uses: actions/setup-node@v4
+        if: steps.reuse.outputs.run_id == ''
         with: { node-version: 20, cache: npm }
       - uses: gradle/actions/setup-gradle@v4
-      - run: npm ci
-      - run: npx expo prebuild -p android --no-install
+        if: steps.reuse.outputs.run_id == ''
+      - if: steps.reuse.outputs.run_id == ''
+        run: npm ci
+      - if: steps.reuse.outputs.run_id == ''
+        run: npx expo prebuild -p android --no-install
       - name: assembleRelease (debug-signed, x86_64 only, for the emulator)
+        if: steps.reuse.outputs.run_id == ''
         working-directory: android
         run: ./gradlew assembleRelease -PreactNativeArchitectures=x86_64 --no-daemon
-      - run: |
+      - if: steps.reuse.outputs.run_id == ''
+        run: |
           mkdir -p out
           cp android/app/build/outputs/apk/release/app-release.apk out/lomo-${{ matrix.variant }}.apk
           git rev-parse HEAD > out/sha.txt
           sha256sum out/*.apk >> out/sha.txt
       - uses: actions/upload-artifact@v4
+        if: steps.reuse.outputs.run_id == ''
         with: { name: 'apk-${{ matrix.variant }}', path: out/ }
 
   e2e:
@@ -138,8 +156,18 @@ jobs:
       N_PHOTOS: '6'
     steps:
       - uses: actions/checkout@v4
+      - id: reuse
+        run: echo "run_id=$(cat ci-verify/apk-run-id.txt 2>/dev/null | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
+        if: steps.reuse.outputs.run_id == ''
         with: { name: 'apk-${{ matrix.variant }}', path: apk }
+      - uses: actions/download-artifact@v4
+        if: steps.reuse.outputs.run_id != ''
+        with:
+          name: 'apk-${{ matrix.variant }}'
+          path: apk
+          run-id: ${{ steps.reuse.outputs.run_id }}
+          github-token: ${{ github.token }}
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules

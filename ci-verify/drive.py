@@ -131,37 +131,54 @@ def edit_texts():
 def type_into(n, text, slow=False):
     tap(n); time.sleep(0.8)
     if slow:
-        # one adb shell session, one `input text` per character, timestamps logged on the device
-        chars = ' '.join(f"'{c}'" for c in text)
-        out = adb(f"shell 'for c in {chars}; do echo \"$(date +%s.%N) $c\"; input text \"$c\"; done'", timeout=180)
+        # one adb shell session, one `input text` per character (a person typing), timestamps
+        # taken on the device before each character
+        dev = 'for c in ' + ' '.join(text) + '; do echo "$(date +%s.%N) $c"; input text "$c"; done'
+        out = subprocess.run(['adb', 'shell', dev], capture_output=True, text=True, timeout=180).stdout
         stamps = [l.split() for l in out.strip().splitlines() if l.strip()]
         result['keystrokes'] = stamps
         try:
             ts = [float(s[0]) for s in stamps]
-            gaps = [round(b - a, 3) for a, b in zip(ts, ts[1:])]
-            result['keystroke_gaps_s'] = gaps
-        except Exception:
-            pass
+            result['keystroke_gaps_s'] = [round(b - a, 3) for a, b in zip(ts, ts[1:])]
+            result['typing_duration_s'] = round(ts[-1] - ts[0], 2)
+        except Exception as e:
+            result['keystroke_gaps_err'] = repr(e)
     else:
-        adb(f"shell input text '{text}'")
+        subprocess.run(['adb', 'shell', 'input', 'text', text], timeout=60)
     time.sleep(0.5)
 
 def hide_keyboard():
     # Only press BACK when the IME is actually up, otherwise BACK would leave the screen.
-    if 'mInputShown=true' in adb('shell dumpsys input_method'):
+    d = adb('shell dumpsys input_method')
+    if re.search(r'(mInputShown|isInputViewShown|mIsInputViewShown)=true', d):
         adb('shell input keyevent 4'); time.sleep(0.8)
 
+def field_for(label):
+    """The EditText right below the text label `label` (exact match), scrolling it into view."""
+    for _ in range(8):
+        root, _ = dump()
+        ns = nodes(root)
+        labels = [n for n in ns if re.fullmatch(label, n['text'] or '')]
+        eds = [n for n in ns if n['cls'] == 'android.widget.EditText']
+        if labels:
+            lb = labels[0]
+            below = [e for e in eds if lb['bounds'][3] - 5 <= e['bounds'][1] <= lb['bounds'][3] + 300]
+            if below and 150 < below[0]['cy'] < SCREEN[1] * 0.85:
+                return min(below, key=lambda e: e['bounds'][1])
+            if lb['cy'] < 300:
+                adb('shell input swipe 540 900 540 1500 400'); time.sleep(1); continue
+        adb('shell input swipe 540 1600 540 1000 400'); time.sleep(1)
+    return None
+
 def fill_by_order(values):
-    """Fills the EditTexts after the first (server) one, scrolling as needed."""
-    for i, v in enumerate(values, start=1):
-        for _ in range(4):
-            eds = edit_texts()
-            if len(eds) > i and eds[i]['bounds'][3] < SCREEN[1] * 0.8 and eds[i]['bounds'][1] > 200:
-                break
-            adb(f'shell input swipe 540 1600 540 1000 400'); time.sleep(1)
-        eds = edit_texts()
-        type_into(eds[i], v)
+    """Fills Username / Password / Confirm Password (located by their labels)."""
+    for label, v in zip([r'Username', r'Password', r'Confirm Password'], values):
+        e = field_for(label)
+        if not e:
+            log('field not found', label=label); shot('field-missing'); continue
+        type_into(e, v)
         hide_keyboard()
+        log('filled', label=label)
 
 def start_app():
     adb(f'shell monkey -p {PKG} -c android.intent.category.LAUNCHER 1')
@@ -183,10 +200,10 @@ def scenario_23():
         shot('no-register'); raise SystemExit('register screen not shown')
     time.sleep(2)
     shot('register-empty')
-    eds = edit_texts()
+    srv = field_for(r'Server Address')
     t_type = time.time()
     log('typing server address character by character', address=ADDR)
-    type_into(eds[0], ADDR, slow=True)
+    type_into(srv, ADDR, slow=True)
     log('typed address', seconds=round(time.time() - t_type, 1))
     hide_keyboard()
     time.sleep(3)
@@ -294,6 +311,8 @@ def scenario_26():
     wait_for(r'Select All', 60)
     time.sleep(3)
     shot('free-up-space')
+    tap_text(r'^Photos? \(')
+    time.sleep(2)
     tap_text(r'^Select All')
     time.sleep(1)
     dels = [n for n in find(r'^Delete$') if n['pkg'] == PKG]
