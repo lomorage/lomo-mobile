@@ -88,6 +88,8 @@ const formatServerUrl = (address) => {
   return (isLocalOrIp || hasNonHttpsPort) ? `http://${address}` : `https://${address}`;
 };
 
+const DISK_LOOKUP_TIMEOUT_MS = 8000;
+
 class AuthService {
   constructor() {
     this.token = null;
@@ -480,7 +482,10 @@ class AuthService {
     }
   }
 
-  async getAvailableDisks(serverAddress) {
+  // `signal` lets the caller cancel a lookup that went stale (the address was edited again).
+  // These lookups are speculative, so they time out quickly and never trigger the
+  // "Connection Lost" failover dialog: a miss while someone is still typing is expected.
+  async getAvailableDisks(serverAddress, { signal } = {}) {
     if (!serverAddress) throw new Error('Server address is required');
     const url = formatServerUrl(serverAddress);
     
@@ -490,7 +495,12 @@ class AuthService {
       if (this.token) {
         headers['Authorization'] = `token=${this.token}`;
       }
-      const response = await axios.get(`${url}/mount`, { headers });
+      const response = await axios.get(`${url}/mount`, {
+        headers,
+        signal,
+        timeout: DISK_LOOKUP_TIMEOUT_MS,
+        skipAutoProbe: true,
+      });
       
       if (response.status === 200 && Array.isArray(response.data)) {
         return response.data.map(d => ({
@@ -502,6 +512,7 @@ class AuthService {
       }
       return [];
     } catch (error) {
+      if (axios.isCancel(error)) throw error;
       console.error('Failed to get disks:', error.message);
       throw new Error('Could not connect to server to fetch storage info');
     }

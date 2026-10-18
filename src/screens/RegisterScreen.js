@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { StyleSheet, View, Text, TextInput, TouchableOpacity, ActivityIndicator, KeyboardAvoidingView, Platform, Alert, ScrollView } from 'react-native';
 import AuthService from '../services/AuthService';
 import DiscoveryService from '../services/DiscoveryService';
@@ -6,6 +6,10 @@ import { Eye, EyeOff, ArrowLeft, HardDrive, CheckCircle, QrCode } from 'lucide-r
 import { useAuth } from '../context/AuthContext';
 import { PAIRING_QR_TYPE } from '../constants/pairing';
 import PairingQRModal from '../components/PairingQRModal';
+import { isCompleteServerAddress } from '../utils/serverAddress';
+
+// How long the address field must sit still before we look for disks on that server.
+export const SERVER_LOOKUP_DEBOUNCE_MS = 600;
 
 export default function RegisterScreen({ navigation, route }) {
     const { register: contextRegister } = useAuth();
@@ -55,10 +59,29 @@ export default function RegisterScreen({ navigation, route }) {
         };
     }, [scannedServer]);
 
+    // Only the newest lookup may touch state: an older, slower one is cancelled and, if it
+    // still resolves, ignored.
+    const lookupTimer = useRef(null);
+    const lookupAbort = useRef(null);
+    const lookupSeq = useRef(0);
+
+    const cancelPendingLookup = () => {
+        clearTimeout(lookupTimer.current);
+        lookupAbort.current?.abort();
+        lookupSeq.current += 1;
+    };
+
+    useEffect(() => cancelPendingLookup, []);
+
     const fetchDisks = async (serverUrl) => {
+        cancelPendingLookup();
+        const controller = new AbortController();
+        lookupAbort.current = controller;
+        const seq = lookupSeq.current;
         setFetchingDisks(true);
         try {
-            const availableDisks = await AuthService.getAvailableDisks(serverUrl);
+            const availableDisks = await AuthService.getAvailableDisks(serverUrl, { signal: controller.signal });
+            if (seq !== lookupSeq.current) return;
             setDisks(availableDisks);
             if (availableDisks.length > 0) {
                 // Auto-select disk with most free space (mirroring iOS logic)
@@ -66,9 +89,22 @@ export default function RegisterScreen({ navigation, route }) {
                 setSelectedDisk(recommended.name);
             }
         } catch (error) {
-            console.error('Disk fetch error:', error);
+            if (seq === lookupSeq.current) console.error('Disk fetch error:', error);
         } finally {
-            setFetchingDisks(false);
+            if (seq === lookupSeq.current) setFetchingDisks(false);
+        }
+    };
+
+    // Typing: wait until the address is complete and the user has paused, then look once.
+    const handleServerChange = (val) => {
+        setServer(val);
+        cancelPendingLookup();
+        // Disks listed for the previous text belong to a different server.
+        setDisks([]);
+        setSelectedDisk(null);
+        setFetchingDisks(false);
+        if (isCompleteServerAddress(val)) {
+            lookupTimer.current = setTimeout(() => fetchDisks(val), SERVER_LOOKUP_DEBOUNCE_MS);
         }
     };
 
@@ -159,10 +195,7 @@ export default function RegisterScreen({ navigation, route }) {
                             style={styles.input}
                             placeholder="e.g., 192.168.1.100:8000"
                             value={server}
-                            onChangeText={(val) => {
-                                setServer(val);
-                                if (val.includes(':')) fetchDisks(val);
-                            }}
+                            onChangeText={handleServerChange}
                             autoCapitalize="none"
                         />
                         <TouchableOpacity
