@@ -93,7 +93,7 @@ export default function LoginScreen({ navigation }) {
                                 <QrCode size={40} color="#007AFF" />
                             </View>
                             <Text style={styles.scanHeroText}>
-                                Ask whoever set up Lomorage to open Settings and show you your sign-in code, then scan it here.
+                                Joining a Lomorage someone else set up? Ask them to open Settings and show you your sign-in code, then scan it here.
                             </Text>
 
                             <TouchableOpacity
@@ -103,13 +103,12 @@ export default function LoginScreen({ navigation }) {
                                 <Text style={styles.buttonText}>Open Camera to Scan</Text>
                             </TouchableOpacity>
 
+                            <Text style={styles.setupHeading}>Setting up Lomorage yourself?</Text>
                             <TouchableOpacity
-                                style={styles.registerLink}
+                                style={styles.secondaryButton}
                                 onPress={() => setMode('manual')}
                             >
-                                <Text style={styles.registerText}>
-                                    Setting this up for the first time? <Text style={styles.registerTextBold}>Enter details manually</Text>
-                                </Text>
+                                <Text style={styles.secondaryButtonText}>Enter details manually</Text>
                             </TouchableOpacity>
                         </View>
                     ) : (
@@ -335,6 +334,27 @@ const styles = StyleSheet.create({
     },
     registerTextBold: {
         color: '#007AFF',
+        fontWeight: '700',
+    },
+    setupHeading: {
+        marginTop: 28,
+        marginBottom: 4,
+        textAlign: 'center',
+        fontSize: 14,
+        color: '#718096',
+    },
+    secondaryButton: {
+        height: 52,
+        borderRadius: 12,
+        borderWidth: 1.5,
+        borderColor: '#007AFF',
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginTop: 8,
+    },
+    secondaryButtonText: {
+        color: '#007AFF',
+        fontSize: 16,
         fontWeight: '700',
     },
     scanIconCircle: {

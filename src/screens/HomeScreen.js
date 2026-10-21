@@ -115,6 +115,9 @@ const LivePhotoIcon = ({ color = '#fff', size = 14 }) => {
 };
 
 const SwipeableBanner = ({ info, onPress, onDismiss, styles }) => {
+    // One driver for every animation on `pan`: the drag below must run on JS (it reads gesture
+    // state), and a value cannot be driven from JS and natively at once -- mixing them logged
+    // "connectAnimatedNodes: Animated node ... does not exist" and could ANR.
     const pan = useRef(new Animated.ValueXY()).current;
     const panResponder = useRef(
         PanResponder.create({
@@ -130,14 +133,14 @@ const SwipeableBanner = ({ info, onPress, onDismiss, styles }) => {
                     Animated.timing(pan, {
                         toValue: { x: gestureState.dx > 0 ? width : -width, y: 0 },
                         duration: 200,
-                        useNativeDriver: true
+                        useNativeDriver: false
                     }).start(() => {
                         if (onDismiss) onDismiss();
                     });
                 } else {
                     Animated.spring(pan, {
                         toValue: { x: 0, y: 0 },
-                        useNativeDriver: true
+                        useNativeDriver: false
                     }).start();
                 }
             }

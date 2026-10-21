@@ -133,6 +133,11 @@ export default function RegisterScreen({ navigation, route }) {
         setLoading(true);
         try {
             await contextRegister(server, username, password, selectedDisk, !fromSettings, serverName);
+            if (!fromSettings) {
+                // contextRegister has signed in, so RootNavigator swaps to the app and this screen
+                // goes away; without this the new user lands there with nothing saying it worked.
+                Alert.alert('Account created', `You're signed in as ${username.trim()}. Next, allow access to your photos so Lomorage can back them up.`);
+            }
             if (fromSettings) {
                 // Offer a QR code so the account holder can hand their device to the
                 // family member and have them scan-to-sign-in, instead of relaying
@@ -210,6 +215,9 @@ export default function RegisterScreen({ navigation, route }) {
                     {/* Disk Selection */}
                     <View style={styles.inputGroup}>
                         <Text style={styles.label}>Storage Location</Text>
+                        <Text style={styles.hint}>
+                            The drive on your computer where your photos will be saved. The one with the most free space is picked for you.
+                        </Text>
                         {fetchingDisks ? (
                             <ActivityIndicator style={{marginVertical: 10}} color="#007AFF" />
                         ) : disks.length > 0 ? (
@@ -315,7 +323,7 @@ export default function RegisterScreen({ navigation, route }) {
 
 const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#F7F9FC' },
-    scrollContent: { paddingHorizontal: 24, paddingBottom: 40 },
+    scrollContent: { paddingHorizontal: 24, paddingBottom: 160 },
     header: { marginTop: 60, marginBottom: 30 },
     backButton: { marginBottom: 20 },
     title: { fontSize: 32, fontWeight: '800', color: '#1A202C' },
@@ -329,6 +337,7 @@ const styles = StyleSheet.create({
     input: { height: 52, borderWidth: 1.5, borderColor: '#E2E8F0', borderRadius: 12, paddingHorizontal: 16, fontSize: 16, backgroundColor: '#F8FAFC', color: '#1A202C' },
     passwordContainer: { flexDirection: 'row', alignItems: 'center', height: 52, borderWidth: 1.5, borderColor: '#E2E8F0', borderRadius: 12, paddingHorizontal: 16, backgroundColor: '#F8FAFC' },
     passwordInput: { flex: 1, fontSize: 16, color: '#1A202C' },
+    hint: { fontSize: 12, lineHeight: 17, color: '#718096', marginTop: -4, marginBottom: 8 },
     diskList: { marginTop: 4 },
     diskCard: { flexDirection: 'row', alignItems: 'center', padding: 12, borderWidth: 1.5, borderColor: '#E2E8F0', borderRadius: 12, marginBottom: 8, backgroundColor: '#fff' },
     diskCardSelected: { borderColor: '#007AFF', backgroundColor: '#F0F7FF' },
