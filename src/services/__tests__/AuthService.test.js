@@ -135,3 +135,42 @@ describe('getAvailableDisks', () => {
     );
   });
 });
+
+describe('getOriginalsLocation', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+    AuthService.serverUrl = null;
+    AuthService.token = null;
+  });
+  const signedIn = (users) => {
+    AuthService.serverUrl = 'http://10.0.0.219:8000';
+    AuthService.token = 'tok';
+    SecureStore.getItemAsync.mockImplementation(async (key) => (key === 'lomo_username' ? 'alice' : null));
+    return jest.spyOn(axios, 'get').mockResolvedValue({ status: 200, data: { Users: users } });
+  };
+
+  test("is the signed-in account's home folder plus Photos/master, with the computer's separator", async () => {
+    const get = signedIn([
+      { Name: 'bob', HomeDir: 'C:\\Users\\me\\Pictures\\Lomorage\\bob' },
+      { Name: 'alice', HomeDir: 'C:\\Users\\me\\Pictures\\Lomorage\\alice' },
+    ]);
+    await expect(AuthService.getOriginalsLocation()).resolves.toBe('C:\\Users\\me\\Pictures\\Lomorage\\alice\\Photos\\master');
+    expect(get).toHaveBeenCalledWith(
+      'http://10.0.0.219:8000/user',
+      expect.objectContaining({ headers: { Authorization: 'token=tok' } })
+    );
+  });
+
+  test('uses slashes for a Linux/NAS path and ignores a trailing slash', async () => {
+    signedIn([{ Name: 'alice', HomeDir: '/media/disk1/alice/' }]);
+    await expect(AuthService.getOriginalsLocation()).resolves.toBe('/media/disk1/alice/Photos/master');
+  });
+
+  test('null when signed out, when the account is not listed, or when the request fails', async () => {
+    await expect(AuthService.getOriginalsLocation()).resolves.toBeNull();
+    signedIn([{ Name: 'bob', HomeDir: '/media/bob' }]);
+    await expect(AuthService.getOriginalsLocation()).resolves.toBeNull();
+    jest.spyOn(axios, 'get').mockRejectedValue(new Error('Network Error'));
+    await expect(AuthService.getOriginalsLocation()).resolves.toBeNull();
+  });
+});

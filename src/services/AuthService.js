@@ -609,6 +609,28 @@ class AuthService {
     }
   }
 
+  // Where this account's original photos live on the Lomorage computer, e.g.
+  // "C:\Users\me\Pictures\Lomorage\alice\Photos\master" (lomod keeps originals in
+  // <home dir>/Photos/master/<year>). Null when it can't be read; it is only shown as a hint.
+  async getOriginalsLocation() {
+    if (!this.serverUrl || !this.token) return null;
+    try {
+      const username = await SecureStore.getItemAsync(USERNAME_KEY);
+      const response = await axios.get(`${this.serverUrl}/user`, {
+        headers: { 'Authorization': `token=${this.token}` },
+        timeout: 5000,
+        skipAutoProbe: true,
+      });
+      const me = (response.data?.Users || []).find((u) => u.Name === username);
+      if (!me?.HomeDir) return null;
+      const sep = me.HomeDir.includes('\\') ? '\\' : '/';
+      return [me.HomeDir.replace(/[/\\]+$/, ''), 'Photos', 'master'].join(sep);
+    } catch (e) {
+      console.log('[AuthService] Could not read the originals location:', e.message);
+      return null;
+    }
+  }
+
   async deleteAccount() {
     if (!this.serverUrl || !this.token) {
       throw new Error('Not authenticated');
