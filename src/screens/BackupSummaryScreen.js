@@ -101,6 +101,14 @@ export default function BackupSummaryScreen({ navigation }) {
         }
     }, []);
 
+    // Where the originals are on the computer; a hint, so a failed lookup just shows nothing.
+    const [originalsPath, setOriginalsPath] = useState(null);
+    useEffect(() => {
+        let live = true;
+        Promise.resolve(AuthService.getOriginalsLocation?.()).then((p) => { if (live) setOriginalsPath(p || null); }).catch(() => {});
+        return () => { live = false; };
+    }, []);
+
     useEffect(() => {
         mounted.current = true;
         check();
@@ -186,6 +194,9 @@ export default function BackupSummaryScreen({ navigation }) {
                         )}
                         <Text style={styles.freeable}>Nothing left on this phone to free up</Text>
                     </>
+                )}
+                {originalsPath && (result.safeCount > 0 || onlyAtHome) && (
+                    <Text style={styles.detail}>{`Originals are kept on that computer in ${originalsPath}`}</Text>
                 )}
                 {result.atHomeLost > 0 && (
                     <Text style={styles.note}>

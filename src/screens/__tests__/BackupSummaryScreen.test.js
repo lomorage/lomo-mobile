@@ -27,10 +27,11 @@ jest.mock('../../services/BackupSafetyService', () => ({
 const mockRestoredListeners = new Set();
 jest.mock('../../services/SyncService', () => ({ __esModule: true, default: { fetchRemoteOverview: jest.fn() } }));
 jest.mock('../../utils/scaleMetrics', () => ({ logSincePairedOnce: jest.fn() }));
-jest.mock('../../services/AuthService', () => ({ __esModule: true, default: { getServerName: jest.fn(() => 'windows') } }));
+jest.mock('../../services/AuthService', () => ({ __esModule: true, default: { getServerName: jest.fn(() => 'windows'), getOriginalsLocation: jest.fn(async () => null) } }));
 jest.mock('../../services/backupHistory', () => ({ getLastBackupAt: jest.fn(async () => Date.now() - 60 * 1000) }));
 
 const AssetDBService = require('../../services/AssetDBService').default;
+const AuthService = require('../../services/AuthService').default;
 const BackupSafetyService = require('../../services/BackupSafetyService').default;
 const SyncService = require('../../services/SyncService').default;
 const { logSincePairedOnce } = require('../../utils/scaleMetrics');
@@ -239,4 +240,21 @@ test('several lost files: restoring and missing counted apart, in plural', async
   expect(text).toContain("Restoring 2 to your computer — it had lost them. They stay on this phone until that's done.");
   expect(text).toContain('1 is missing from your Lomorage computer — it stays on this phone.');
   expect(text).not.toContain("couldn't be confirmed");
+});
+
+test('says where the originals are kept on the computer, when the computer tells us', async () => {
+  AssetDBService.getBackupSummaryRows.mockResolvedValue(summaryRows({ total: 2, backedUp: 2, excluded: 0 }, { total: 0, backedUp: 0, excluded: 0 }));
+  BackupSafetyService.checkAll.mockResolvedValue({ safe: ['p1', 'p2'], unsafe: [], weakEvidence: false });
+  AuthService.getOriginalsLocation.mockResolvedValueOnce('/media/disk1/alice/Photos/master');
+  const tree = await render();
+
+  expect(allText(tree)).toContain('Originals are kept on that computer in /media/disk1/alice/Photos/master');
+});
+
+test('no originals line when the location cannot be read', async () => {
+  AssetDBService.getBackupSummaryRows.mockResolvedValue(summaryRows({ total: 2, backedUp: 2, excluded: 0 }, { total: 0, backedUp: 0, excluded: 0 }));
+  BackupSafetyService.checkAll.mockResolvedValue({ safe: ['p1', 'p2'], unsafe: [], weakEvidence: false });
+  const tree = await render();
+
+  expect(allText(tree)).not.toContain('Originals are kept');
 });
