@@ -216,7 +216,7 @@ export default function RegisterScreen({ navigation, route }) {
                     <View style={styles.inputGroup}>
                         <Text style={styles.label}>Storage Location</Text>
                         <Text style={styles.hint}>
-                            The drive on your computer where your photos will be saved. The one with the most free space is picked for you.
+                            The drive on your computer where your photos will be saved, in a folder named after your username (Photos › master, sorted by year). The one with the most free space is picked for you.
                         </Text>
                         {fetchingDisks ? (
                             <ActivityIndicator style={{marginVertical: 10}} color="#007AFF" />
