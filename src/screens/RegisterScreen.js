@@ -136,7 +136,9 @@ export default function RegisterScreen({ navigation, route }) {
             if (!fromSettings) {
                 // contextRegister has signed in, so RootNavigator swaps to the app and this screen
                 // goes away; without this the new user lands there with nothing saying it worked.
-                Alert.alert('Account created', `You're signed in as ${username.trim()}. Next, allow access to your photos so Lomorage can back them up.`);
+                // Worded as "signed in" because registering a name that already exists with the
+                // same password also ends here, and then nothing was created.
+                Alert.alert('Signed in', `You're signed in as ${username.trim()}. Next, allow access to your photos so Lomorage can back them up.`);
             }
             if (fromSettings) {
                 // Offer a QR code so the account holder can hand their device to the

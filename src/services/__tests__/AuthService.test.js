@@ -139,13 +139,14 @@ describe('getAvailableDisks', () => {
 describe('getOriginalsLocation', () => {
   afterEach(() => {
     jest.restoreAllMocks();
+    SecureStore.getItemAsync.mockReset();
     AuthService.serverUrl = null;
     AuthService.token = null;
   });
   const signedIn = (users) => {
     AuthService.serverUrl = 'http://10.0.0.219:8000';
     AuthService.token = 'tok';
-    SecureStore.getItemAsync.mockImplementation(async (key) => (key === 'lomo_username' ? 'alice' : null));
+    SecureStore.getItemAsync.mockImplementation(async (key) => (key === 'lomo_username' ? 'Alice' : null));
     return jest.spyOn(axios, 'get').mockResolvedValue({ status: 200, data: { Users: users } });
   };
 

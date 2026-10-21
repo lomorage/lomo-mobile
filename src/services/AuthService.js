@@ -621,7 +621,7 @@ class AuthService {
         timeout: 5000,
         skipAutoProbe: true,
       });
-      const me = (response.data?.Users || []).find((u) => u.Name === username);
+      const me = (response.data?.Users || []).find((u) => u.Name?.toLowerCase() === username?.toLowerCase());
       if (!me?.HomeDir) return null;
       const sep = me.HomeDir.includes('\\') ? '\\' : '/';
       return [me.HomeDir.replace(/[/\\]+$/, ''), 'Photos', 'master'].join(sep);

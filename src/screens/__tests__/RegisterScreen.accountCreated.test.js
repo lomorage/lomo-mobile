@@ -47,21 +47,21 @@ beforeEach(() => {
 });
 afterEach(() => act(() => root.unmount()));
 
-test('a first-time setup tells the new user the account was created and what comes next', async () => {
+test('a first-time setup tells the new user they are signed in and what comes next', async () => {
   mockRegister.mockResolvedValue(undefined);
   await fillAndSubmit({ server: '10.0.0.219:8000' });
-  expect(Alert.alert).toHaveBeenCalledWith('Account created', expect.stringContaining('alice'));
+  expect(Alert.alert).toHaveBeenCalledWith('Signed in', expect.stringContaining('alice'));
 });
 
-test('no "created" message when registration fails', async () => {
+test('no "signed in" message when registration fails', async () => {
   mockRegister.mockRejectedValue(new Error('boom'));
   await fillAndSubmit({ server: '10.0.0.219:8000' });
-  expect(Alert.alert).not.toHaveBeenCalledWith('Account created', expect.anything());
+  expect(Alert.alert).not.toHaveBeenCalledWith('Signed in', expect.anything());
   expect(Alert.alert).toHaveBeenCalledWith('Registration Failed', 'boom');
 });
 
 test('adding a family member from Settings keeps its own QR hand-over, not this message', async () => {
   mockRegister.mockResolvedValue(undefined);
   await fillAndSubmit({ server: '10.0.0.219:8000', fromSettings: true });
-  expect(Alert.alert).not.toHaveBeenCalledWith('Account created', expect.anything());
+  expect(Alert.alert).not.toHaveBeenCalledWith('Signed in', expect.anything());
 });
