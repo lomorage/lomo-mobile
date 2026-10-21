@@ -58,7 +58,7 @@ Build and upload a new release to the Google Play Console (defaults to the inter
 [bundle exec] fastlane android promote_to_production
 ```
 
-Promote the current internal release to production at 100% rollout
+Promote one version code from the internal track to production at 100% rollout (version_code defaults to android.versionCode in app.json)
 
 ----
 
