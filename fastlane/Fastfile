@@ -24,6 +24,45 @@ platform :ios do
   end
 end
 
+# Release signing credentials are never stored in the repo. They come from LOMO_KEYSTORE_PASSWORD,
+# LOMO_KEY_PASSWORD, LOMO_KEY_ALIAS and LOMO_KEYSTORE_PATH, or from an untracked key.properties in
+# the repo root (see key.properties.example); environment variables win. If no password is
+# configured, no signing properties are passed and the generated android/ project's own signing
+# config is used, as before.
+def release_signing_properties
+  repo_root = File.expand_path("..", FastlaneCore::FastlaneFolder.path)
+  props = {}
+  key_file = File.join(repo_root, "key.properties")
+  if File.exist?(key_file)
+    File.foreach(key_file) do |line|
+      line = line.strip
+      next if line.empty? || line.start_with?("#")
+      key, value = line.split("=", 2)
+      props[key.strip] = value.to_s.strip if key
+    end
+  end
+  pick = ->(env, key) { ENV[env].to_s.empty? ? props[key].to_s : ENV[env] }
+
+  store_password = pick.call("LOMO_KEYSTORE_PASSWORD", "storePassword")
+  if store_password.empty?
+    UI.important("No LOMO_KEYSTORE_PASSWORD / key.properties found; using the android/ project's own signing config.")
+    return {}
+  end
+  key_password = pick.call("LOMO_KEY_PASSWORD", "keyPassword")
+  key_alias = pick.call("LOMO_KEY_ALIAS", "keyAlias")
+  store_file = pick.call("LOMO_KEYSTORE_PATH", "storeFile")
+  store_file = "lomo-mobile.jks" if store_file.empty?
+  store_file = File.expand_path(store_file, repo_root)
+  UI.user_error!("Keystore not found: #{store_file} (set LOMO_KEYSTORE_PATH or storeFile in key.properties)") unless File.exist?(store_file)
+
+  {
+    "android.injected.signing.store.file" => store_file,
+    "android.injected.signing.store.password" => store_password,
+    "android.injected.signing.key.alias" => key_alias.empty? ? "lomo-mobile-key" : key_alias,
+    "android.injected.signing.key.password" => key_password.empty? ? store_password : key_password
+  }
+end
+
 platform :android do
   desc "Build the release AAB"
   lane :build_release do
@@ -34,7 +73,10 @@ platform :android do
     # node_modules/*/android/build (and .cxx) directory manually, then run this lane.
     gradle(
       task: "bundleRelease",
-      project_dir: "android/"
+      project_dir: "android/",
+      properties: release_signing_properties,
+      # Keep the signing passwords out of fastlane's printed gradle command.
+      print_command: false
     )
   end
 

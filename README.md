@@ -218,7 +218,7 @@ If you prefer to build locally on your own hardware without EAS, you can use the
 ## Publishing to Google Play Store
 
 ### 1. Compile the Production App Bundle (.aab) Locally
-Google Play requires an Android App Bundle (`.aab`) rather than an `.apk` for new releases. This project is fully configured to generate a production-signed `.aab` locally using the bundled release keystore.
+Google Play requires an Android App Bundle (`.aab`) rather than an `.apk` for new releases. The build scripts generate a production-signed `.aab` locally with the release keystore (`lomo-mobile.jks`, kept outside git). Configure the signing credentials first (see [Release signing credentials](#release-signing-credentials) below).
 
 ```bash
 # Windows
@@ -227,6 +227,42 @@ Google Play requires an Android App Bundle (`.aab`) rather than an `.apk` for ne
 # Mac/Linux
 ./build-android.sh
 ```
+
+#### Release signing credentials
+
+Keystore passwords are **never** committed to this repo. `build-android.bat`, `build-android.sh` and `fastlane android build_release` read them from environment variables, or from an untracked `key.properties` file in the repo root. Environment variables take precedence.
+
+| Environment variable | `key.properties` key | Required | Default |
+|---|---|---|---|
+| `LOMO_KEYSTORE_PASSWORD` | `storePassword` | yes | — |
+| `LOMO_KEY_PASSWORD` | `keyPassword` | no | same as the store password |
+| `LOMO_KEY_ALIAS` | `keyAlias` | no | `lomo-mobile-key` |
+| `LOMO_KEYSTORE_PATH` | `storeFile` | no | `lomo-mobile.jks` in the repo root (relative paths resolve against the repo root) |
+
+Option 1: a local `key.properties` (git-ignored):
+
+```bash
+cp key.properties.example key.properties     # Windows: copy key.properties.example key.properties
+# then edit key.properties and replace the CHANGE_ME placeholders
+```
+
+Option 2: environment variables (e.g. in CI, or from a password manager):
+
+```bash
+# Mac/Linux
+export LOMO_KEYSTORE_PASSWORD='...'
+export LOMO_KEY_PASSWORD='...'
+export LOMO_KEYSTORE_PATH=/path/to/lomo-mobile.jks
+```
+
+```bat
+:: Windows (cmd)
+set "LOMO_KEYSTORE_PASSWORD=..."
+set "LOMO_KEY_PASSWORD=..."
+set "LOMO_KEYSTORE_PATH=C:\path\to\lomo-mobile.jks"
+```
+
+The build scripts stop with an error if no store password is configured or the keystore file is missing. `fastlane android build_release` (used by `scripts/release-android-prod.sh`) passes the credentials to Gradle when they are configured, and otherwise falls back to the generated `android/` project's own signing config. Never commit `key.properties`, the keystore, or a script containing the passwords; never paste them into issues, PRs or logs.
 The compiled output file will be located at:
 `android/app/build/outputs/bundle/release/app-release.aab`
 

@@ -1,0 +1,19 @@
+# Release signing credentials for build-android.bat / build-android.sh / `fastlane android build_release`.
+#
+# Copy this file to key.properties in the repo root and fill in your own values:
+#   cp key.properties.example key.properties        (Windows: copy key.properties.example key.properties)
+#
+# key.properties is git-ignored. NEVER commit it, and never commit the keystore (*.jks).
+# Environment variables override these values: LOMO_KEYSTORE_PASSWORD, LOMO_KEY_PASSWORD,
+# LOMO_KEY_ALIAS, LOMO_KEYSTORE_PATH.
+#
+# Format: key=value, one per line, no spaces around "=", no quotes.
+
+# Keystore (store) password. Required.
+storePassword=CHANGE_ME_STORE_PASSWORD
+# Key password. Optional; defaults to storePassword (PKCS12 keystores use the same password).
+keyPassword=CHANGE_ME_KEY_PASSWORD
+# Key alias. Optional; defaults to lomo-mobile-key.
+keyAlias=lomo-mobile-key
+# Keystore path, absolute or relative to the repo root. Optional; defaults to lomo-mobile.jks.
+storeFile=lomo-mobile.jks

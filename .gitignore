@@ -60,6 +60,10 @@ ocr_test_result.json
 
 # Local Credentials
 lomo-mobile.jks
+# Release signing passwords (see key.properties.example); never commit
+key.properties
+**/key.properties
+*.keystore
 credentials.json
 upload_certificate.pem
 
