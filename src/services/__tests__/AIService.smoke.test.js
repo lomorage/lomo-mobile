@@ -246,6 +246,7 @@ describe('AIService.syncEmbeddings (smoke)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     AIService.isSyncing = false;
+    AIService._metadataWithoutIdServer = null;
     AssetDBService.db = null;
     SecureStore.getItemAsync.mockResolvedValue(null);
     AuthService.getServerUrl.mockReturnValue('http://localhost:8000');
@@ -428,12 +429,16 @@ describe('AIService.syncEmbeddings with rows that stay pending', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     AIService.isSyncing = false;
+    AIService._metadataWithoutIdServer = null;
     SecureStore.getItemAsync.mockResolvedValue(null);
     AuthService.getServerUrl.mockReturnValue('http://localhost:8000');
     AuthService.getToken.mockReturnValue('test-token');
   });
 
-  test('uploads: assets without a server ID are tried once per pass, past the first batch', async () => {
+  const metadataLookups = () =>
+    axios.get.mock.calls.filter(([u]) => u.includes('/asset/metadata/')).map(([u]) => u);
+
+  test('uploads: assets without a server ID are visited once per pass, past the first batch', async () => {
     // More than one batch (20), none resolvable: no remote mirror row and the server's
     // metadata reply has no ID -- a fresh install right after its first backup.
     const uploadRows = ids(25, 'u').map((id) => ({ id, hash: id, clipEmbedding: 'E', phash: 'P', needsEmbedding: 1, needsPHash: 1 }));
@@ -442,12 +447,48 @@ describe('AIService.syncEmbeddings with rows that stay pending', () => {
 
     await expect(AIService.syncEmbeddings(true)).resolves.toBeUndefined();
 
-    const lookups = axios.get.mock.calls.filter(([u]) => u.includes('/asset/metadata/'));
-    expect(lookups.map(([u]) => u.split('/').pop())).toEqual(uploadRows.map((r) => r.hash));
+    // The first reply shows this server leaves the ID out (a Hash, no Id), so the
+    // remaining 24 rows skip the lookup instead of each paying a request for nothing.
+    expect(metadataLookups()).toEqual(['http://localhost:8000/asset/metadata/u000']);
+    // Every row is still walked exactly once -- the pass doesn't stall on the first batch.
     const progress = DeviceEventEmitter.emit.mock.calls
       .filter(([evt, s]) => evt === 'ai_processing_status' && s.message?.startsWith('Uploading photo features'))
       .map(([, s]) => s.current);
     expect(Math.max(...progress)).toBe(25);
+  });
+
+  test('uploads: a server that does answer with IDs is asked for every unresolved hash', async () => {
+    const uploadRows = ids(3, 'u').map((id) => ({ id, hash: id, clipEmbedding: 'E', phash: 'P', needsEmbedding: 1, needsPHash: 1 }));
+    AssetDBService.db = makePersistentPendingDb({ uploadRows });
+    axios.get.mockResolvedValue({ data: { Name: '1.jpg', Hash: 'x', Id: 7 } });
+    axios.post.mockResolvedValue({ data: {} });
+
+    await expect(AIService.syncEmbeddings(true)).resolves.toBeUndefined();
+
+    // The skip is only for servers that reply without an ID; a working fallback
+    // must not be latched off by it.
+    expect(metadataLookups().map((u) => u.split('/').pop())).toEqual(['u000', 'u001', 'u002']);
+    expect(AIService._metadataWithoutIdServer).toBeNull();
+  });
+
+  test('uploads: the skip is per server -- pointing at another one resumes lookups', async () => {
+    const rows = () => ids(2, 'u').map((id) => ({ id, hash: id, clipEmbedding: 'E', phash: 'P', needsEmbedding: 1, needsPHash: 1 }));
+    axios.get.mockResolvedValue({ data: { Name: '1.jpg', Hash: 'x' } });
+
+    AssetDBService.db = makePersistentPendingDb({ uploadRows: rows() });
+    await AIService.syncEmbeddings(true);
+    expect(metadataLookups()).toHaveLength(1);
+
+    // Same app, different box (a second Lomorage server, or one that got upgraded).
+    AuthService.getServerUrl.mockReturnValue('http://other-server:8000');
+    AIService.isSyncing = false;
+    AssetDBService.db = makePersistentPendingDb({ uploadRows: rows() });
+    await AIService.syncEmbeddings(true);
+
+    expect(metadataLookups()).toEqual([
+      'http://localhost:8000/asset/metadata/u000',
+      'http://other-server:8000/asset/metadata/u000',
+    ]);
   });
 
   test('uploads: a failing POST is sent once per batch, not retried in a loop', async () => {

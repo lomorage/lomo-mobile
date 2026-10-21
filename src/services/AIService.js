@@ -2381,7 +2381,9 @@ class AIService {
       // Fallback: If parsing the filename fails, fetch the ID directly from the server using the hash
       const url = AuthService.getServerUrl();
       const token = AuthService.getToken();
-      if (url && token) {
+      // Skipped on a server already seen to leave the ID out of its reply (lomod before
+      // lomorage/lomod#13): every lookup there costs a request and still finds nothing.
+      if (url && token && this._metadataWithoutIdServer !== url) {
         try {
           const res = await axios.get(`${url}/asset/metadata/${hash}`, {
             headers: { Authorization: `token=${token}` },
@@ -2394,6 +2396,10 @@ class AIService {
             if (data.Id !== undefined) return parseInt(data.Id, 10);
             if (data.ID !== undefined) return parseInt(data.ID, 10);
             if (data.id !== undefined) return parseInt(data.id, 10);
+            if (data.Hash) {
+              console.log('[AIService] Server metadata replies carry no asset ID; skipping hash lookups on this server.');
+              this._metadataWithoutIdServer = url;
+            }
           }
         } catch (fetchErr) {
           console.warn(`[AIService] Fallback failed to fetch server asset ID for hash ${hash}:`, fetchErr.message);
