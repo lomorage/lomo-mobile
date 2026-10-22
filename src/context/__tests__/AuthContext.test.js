@@ -24,6 +24,7 @@ const { markPaired } = require('../../utils/scaleMetrics');
 const { clearLastBackupAt } = require('../../services/backupHistory');
 const FirstBackupService = require('../../services/FirstBackupService').default;
 import { AuthProvider, useAuth } from '../AuthContext';
+import { getRegisterDraft, setRegisterDraft } from '../../utils/registerDraft';
 
 let latestAuth;
 function Consumer() {
@@ -120,6 +121,15 @@ describe('login / register / logout', () => {
     });
     expect(AuthService.logout).toHaveBeenCalled();
     expect(latestAuth.isAuthenticated).toBe(false);
+  });
+  test('logout() forgets what was typed on Create Account', async () => {
+    AuthService.init.mockResolvedValue(true);
+    setRegisterDraft({ server: '10.0.0.219:8000', username: 'sarah' });
+    await renderAuthProvider();
+    await act(async () => {
+      await latestAuth.logout();
+    });
+    expect(getRegisterDraft()).toEqual({ server: '', username: '' });
   });
 });
 

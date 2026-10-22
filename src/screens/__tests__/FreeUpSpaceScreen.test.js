@@ -129,6 +129,19 @@ test('deletes only what the computer confirmed, after the user confirms', async 
   expect(MediaService.deleteLocalAssets).toHaveBeenCalledWith(['v1']);
   expect(AssetDBService.markAssetsRemovedLocally).toHaveBeenCalledWith(['v1']);
   expect(allText(tree)).toContain('Videos (1)');
+
+  expect(Alert.alert).toHaveBeenLastCalledWith('Space freed', expect.stringMatching(/^Freed 4\.9 KB.*1 item is safe on your Lomorage computer\.$/));
+});
+
+test('says "at least" when some freed items had no known size', async () => {
+  MediaService.getAssetSize.mockResolvedValue(null);
+  BackupSafetyService.checkAll.mockResolvedValue({ safe: ['v1', 'v2'], unsafe: [], weakEvidence: false });
+  const tree = await render();
+  await pressText(tree, 'Select All');
+  await pressText(tree, 'Delete');
+  const buttons = Alert.alert.mock.calls[0][2];
+  await act(async () => { await buttons.find(b => b.text === 'Delete').onPress(); });
+  expect(Alert.alert).toHaveBeenLastCalledWith('Space freed', expect.stringMatching(/^Freed at least 4\.9 KB.*2 items are safe/));
 });
 
 test('nothing is deleted when nothing could be confirmed', async () => {

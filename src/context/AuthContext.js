@@ -3,6 +3,7 @@ import AuthService from '../services/AuthService';
 import FirstBackupService from '../services/FirstBackupService';
 import { markPaired } from '../utils/scaleMetrics';
 import { clearLastBackupAt } from '../services/backupHistory';
+import { clearRegisterDraft } from '../utils/registerDraft';
 
 const AuthContext = createContext();
 
@@ -65,6 +66,7 @@ export const AuthProvider = ({ children }) => {
 
   const logout = async () => {
     await AuthService.logout();
+    clearRegisterDraft();
     setIsAuthenticated(false);
   };
 

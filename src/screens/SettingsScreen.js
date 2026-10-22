@@ -621,7 +621,7 @@ export default function SettingsScreen({ navigation, route }) {
                         <View style={styles.settingTextContainer}>
                             <Text style={styles.settingLabel}>Ignore Battery Optimizations</Text>
                             <Text style={styles.settingDescription}>
-                                Recommended. Keeps background uploads running reliably when the device is asleep or locked.
+                                Recommended. Lets backups keep running when your phone is locked or asleep.
                             </Text>
                         </View>
                         <ChevronRight color="#007AFF" size={20} />
@@ -1168,7 +1168,7 @@ export default function SettingsScreen({ navigation, route }) {
                     <View style={styles.settingTextContainer}>
                         <Text style={styles.settingLabel}>Re-scan Network</Text>
                         <Text style={styles.settingDescription}>
-                            {isScanning ? 'Scanning for servers...' : 'Search for your Lomorage server via mDNS.'}
+                            {isScanning ? 'Scanning for servers...' : 'Look for your Lomorage computer on this Wi-Fi again.'}
                         </Text>
                     </View>
                     {isScanning
@@ -1186,7 +1186,7 @@ export default function SettingsScreen({ navigation, route }) {
                 >
                     <View style={styles.settingTextContainer}>
                         <Text style={styles.settingLabel}>Set Remote Address</Text>
-                        <Text style={styles.settingDescription}>Configure your domain for remote access.</Text>
+                        <Text style={styles.settingDescription}>Reach your Lomorage computer when you are away from home.</Text>
                     </View>
                     <Globe color="#007AFF" size={20} />
                 </TouchableOpacity>

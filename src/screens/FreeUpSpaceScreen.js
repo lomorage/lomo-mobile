@@ -144,6 +144,9 @@ export default function FreeUpSpaceScreen({ navigation }) {
             );
 
             const gone = new Set(deleted);
+            const freedItems = allItems.filter(item => gone.has(item.id));
+            const freedBytes = freedItems.reduce((sum, item) => sum + item.sizeBytes, 0);
+            const freedIsPartial = freedItems.some(item => !item.sizeBytes);
             setItemsByType(prev => ({
                 video: prev.video.filter(item => !gone.has(item.id)),
                 photo: prev.photo.filter(item => !gone.has(item.id)),
@@ -152,7 +155,10 @@ export default function FreeUpSpaceScreen({ navigation }) {
             loadSummary();
 
             if (!error) {
-                Alert.alert("Success", "Successfully freed up space!");
+                Alert.alert(
+                    "Space freed",
+                    `${freedBytes > 0 ? `Freed ${freedIsPartial ? 'at least ' : ''}${formatSize(freedBytes)} on this phone. ` : ''}${deleted.length.toLocaleString('en-US')} ${deleted.length === 1 ? 'item is' : 'items are'} safe on your Lomorage computer.`
+                );
             } else if (deleted.length > 0) {
                 Alert.alert("Partly Done", `${deleted.length.toLocaleString('en-US')} removed from this phone. The rest were not deleted: ${error.message || 'cancelled'}`);
             } else {

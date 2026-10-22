@@ -6,10 +6,11 @@ import DiscoveryService from '../services/DiscoveryService';
 import { Eye, EyeOff, QrCode, ArrowLeft } from 'lucide-react-native';
 
 import { useAuth } from '../context/AuthContext';
+import { getRegisterDraft } from '../utils/registerDraft';
 
 export default function LoginScreen({ navigation }) {
     const { login: contextLogin } = useAuth();
-    const [mode, setMode] = useState('scan'); // 'scan' | 'manual' — scanning is the default path for family members
+    const [mode, setMode] = useState('scan'); // 'scan' (start screen) | 'manual' (username + password)
     const [server, setServer] = useState('');
     const [serverName, setServerName] = useState('');
     const [username, setUsername] = useState('');
@@ -23,7 +24,9 @@ export default function LoginScreen({ navigation }) {
         const loadPreviousData = async () => {
             const savedServer = await SecureStore.getItemAsync('lomo_server_url');
             const savedUser = await SecureStore.getItemAsync('lomo_username');
-            if (savedServer) setServer(savedServer.replace(/^https?:\/\//, ''));
+            // No previous session: reuse an address already typed or scanned on Create Account.
+            const known = savedServer ? savedServer.replace(/^https?:\/\//, '') : getRegisterDraft().server;
+            if (known) setServer(known);
             if (savedUser) setUsername(savedUser);
         };
         loadPreviousData();
@@ -83,7 +86,7 @@ export default function LoginScreen({ navigation }) {
                     <View style={styles.headerContainer}>
                         <Text style={styles.title} numberOfLines={1} adjustsFontSizeToFit>Lomorage</Text>
                         <Text style={styles.subtitle}>
-                            {mode === 'scan' ? 'Sign in with a code from your family' : 'Sign in to your private photo backup'}
+                            {mode === 'scan' ? 'Back up your photos to your own computer' : 'Sign in to your private photo backup'}
                         </Text>
                     </View>
 
@@ -93,29 +96,35 @@ export default function LoginScreen({ navigation }) {
                                 <QrCode size={40} color="#007AFF" />
                             </View>
                             <Text style={styles.scanHeroText}>
-                                Joining a Lomorage someone else set up? Ask them to open Settings and show you your sign-in code, then scan it here.
+                                First time? Install Lomorage on your computer, then set it up here. Your photos are saved on that computer.
                             </Text>
 
                             <TouchableOpacity
                                 style={styles.button}
-                                onPress={() => navigation.navigate('ScanLogin')}
+                                onPress={() => navigation.navigate('Register')}
                             >
-                                <Text style={styles.buttonText}>Open Camera to Scan</Text>
+                                <Text style={styles.buttonText}>Set up Lomorage</Text>
                             </TouchableOpacity>
 
-                            <Text style={styles.setupHeading}>Setting up Lomorage yourself?</Text>
+                            <Text style={styles.setupHeading}>Already set up?</Text>
                             <TouchableOpacity
                                 style={styles.secondaryButton}
+                                onPress={() => navigation.navigate('ScanLogin')}
+                            >
+                                <Text style={styles.secondaryButtonText}>Scan a code (from your computer or a family member)</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                style={[styles.secondaryButton, { marginTop: 12 }]}
                                 onPress={() => setMode('manual')}
                             >
-                                <Text style={styles.secondaryButtonText}>Enter details manually</Text>
+                                <Text style={styles.secondaryButtonText}>Sign in with username and password</Text>
                             </TouchableOpacity>
                         </View>
                     ) : (
                         <View style={styles.formContainer}>
                             <TouchableOpacity style={styles.backLink} onPress={() => setMode('scan')}>
                                 <ArrowLeft size={16} color="#718096" />
-                                <Text style={styles.backLinkText}>Have a sign-in code? Scan it instead</Text>
+                                <Text style={styles.backLinkText}>Back to other ways to start</Text>
                             </TouchableOpacity>
 
                             <View style={styles.inputGroup}>
@@ -344,7 +353,9 @@ const styles = StyleSheet.create({
         color: '#718096',
     },
     secondaryButton: {
-        height: 52,
+        minHeight: 52,
+        paddingVertical: 8,
+        paddingHorizontal: 12,
         borderRadius: 12,
         borderWidth: 1.5,
         borderColor: '#007AFF',
@@ -353,6 +364,7 @@ const styles = StyleSheet.create({
         marginTop: 8,
     },
     secondaryButtonText: {
+        textAlign: 'center',
         color: '#007AFF',
         fontSize: 16,
         fontWeight: '700',

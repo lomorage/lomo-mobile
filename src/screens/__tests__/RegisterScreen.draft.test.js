@@ -19,9 +19,10 @@ jest.mock('../../services/AuthService', () => ({
   default: { getAvailableDisks: jest.fn().mockResolvedValue([]) },
 }));
 
-import RegisterScreen, { resetRegisterDraft } from '../RegisterScreen';
+import RegisterScreen from '../RegisterScreen';
+import { clearRegisterDraft } from '../../utils/registerDraft';
 
-beforeEach(() => resetRegisterDraft());
+beforeEach(() => clearRegisterDraft());
 const nav = { navigate: jest.fn(), goBack: jest.fn() };
 const mount = async (params = {}) => {
   let r;

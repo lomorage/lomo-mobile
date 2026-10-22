@@ -20,7 +20,8 @@ jest.mock('../../services/AuthService', () => ({
 }));
 
 import AuthService from '../../services/AuthService';
-import RegisterScreen, { resetRegisterDraft, SERVER_LOOKUP_DEBOUNCE_MS } from '../RegisterScreen';
+import RegisterScreen, { SERVER_LOOKUP_DEBOUNCE_MS } from '../RegisterScreen';
+import { clearRegisterDraft } from '../../utils/registerDraft';
 
 const DISK = { name: 'media', freeSize: 6000, totalSize: 464000 };
 
@@ -57,7 +58,7 @@ const advance = (ms) =>
 const screenText = () => JSON.stringify(root.toJSON());
 
 beforeEach(() => {
-  resetRegisterDraft();
+  clearRegisterDraft();
   jest.useFakeTimers();
   jest.clearAllMocks();
   AuthService.getAvailableDisks.mockResolvedValue([DISK]);
