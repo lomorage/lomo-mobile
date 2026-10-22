@@ -11,6 +11,10 @@ import { isCompleteServerAddress } from '../utils/serverAddress';
 // How long the address field must sit still before we look for disks on that server.
 export const SERVER_LOOKUP_DEBOUNCE_MS = 600;
 
+// Survives the screen unmounting, so Back (which Android users press to hide the
+// keyboard) doesn't wipe what was typed. Passwords are deliberately not kept.
+let draft = { username: '', disk: null };
+
 export default function RegisterScreen({ navigation, route }) {
     const { register: contextRegister } = useAuth();
     const fromSettings = route?.params?.fromSettings || false;
@@ -18,16 +22,21 @@ export default function RegisterScreen({ navigation, route }) {
     const serverName = route?.params?.serverName || null;
     const [server, setServer] = useState(scannedServer || '');
     const [disks, setDisks] = useState([]);
-    const [selectedDisk, setSelectedDisk] = useState(null);
-    const [username, setUsername] = useState('');
+    const [selectedDisk, setSelectedDisk] = useState(draft.disk);
+    const [username, setUsername] = useState(draft.username);
     const [password, setPassword] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
     
+    const registered = useRef(false);
     const [loading, setLoading] = useState(false);
     const [isScanning, setIsScanning] = useState(false);
     const [fetchingDisks, setFetchingDisks] = useState(false);
     const [showPassword, setShowPassword] = useState(false);
     const [pairingPayload, setPairingPayload] = useState(null);
+
+    useEffect(() => {
+        if (!registered.current) draft = { username, disk: selectedDisk };
+    }, [username, selectedDisk]);
 
     useEffect(() => {
         if (scannedServer) {
@@ -133,6 +142,8 @@ export default function RegisterScreen({ navigation, route }) {
         setLoading(true);
         try {
             await contextRegister(server, username, password, selectedDisk, !fromSettings, serverName);
+            registered.current = true;
+            draft = { username: '', disk: null };
             if (!fromSettings) {
                 // contextRegister has signed in, so RootNavigator swaps to the app and this screen
                 // goes away; without this the new user lands there with nothing saying it worked.

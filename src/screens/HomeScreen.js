@@ -2441,7 +2441,14 @@ export default function HomeScreen({ navigation, route }) {
                                     <Text style={{ fontSize: 13, color: '#888', marginTop: 4 }}>
                                         Keeping your originals safe on your Lomorage server
                                     </Text>
-                                ) : null}
+                                ) : (
+                                    <TouchableOpacity
+                                        onPress={() => { setBottomSheetVisible(false); navigation.navigate('BackupSummary'); }}
+                                        accessibilityRole="button"
+                                    >
+                                        <Text style={{ fontSize: 14, color: '#007AFF', marginTop: 6 }}>See what's safe on your computer ›</Text>
+                                    </TouchableOpacity>
+                                )}
                             </View>
                             {backupState.pendingCount > 0 && (
                                 backupState.isPaused ? (
