@@ -20,7 +20,8 @@ jest.mock('../../services/AuthService', () => ({
   default: { getAvailableDisks: jest.fn().mockResolvedValue([{ name: 'media', freeSize: 6000, totalSize: 464000 }]) },
 }));
 
-import RegisterScreen, { resetRegisterDraft } from '../RegisterScreen';
+import RegisterScreen from '../RegisterScreen';
+import { clearRegisterDraft } from '../../utils/registerDraft';
 
 let root;
 async function fillAndSubmit(params) {
@@ -42,7 +43,7 @@ async function fillAndSubmit(params) {
 }
 
 beforeEach(() => {
-  resetRegisterDraft();
+  clearRegisterDraft();
   jest.clearAllMocks();
   jest.spyOn(Alert, 'alert').mockImplementation(() => {});
 });

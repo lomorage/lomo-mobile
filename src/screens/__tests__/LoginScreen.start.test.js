@@ -15,7 +15,7 @@ jest.mock('../../services/DiscoveryService', () => ({
   default: { onDiscovered: jest.fn(() => jest.fn()), scan: jest.fn(() => new Promise(() => {})) },
 }));
 jest.mock('../../context/AuthContext', () => ({ useAuth: () => ({ login: jest.fn() }) }));
-jest.mock('../RegisterScreen', () => ({ getRegisterDraft: () => ({ server: '10.0.0.219:8000', username: '' }) }));
+jest.mock('../../utils/registerDraft', () => ({ getRegisterDraft: () => ({ server: '10.0.0.219:8000', username: '' }) }));
 
 import LoginScreen from '../LoginScreen';
 
@@ -41,7 +41,7 @@ test('the first screen leads with setting up, which goes straight to Create Acco
 
 test('joining with a code and signing in are offered as "already set up"', async () => {
   const tree = await render();
-  await press(tree, 'Scan a sign-in code from your family');
+  await press(tree, 'Scan a code (from your computer or a family member)');
   expect(navigation.navigate).toHaveBeenCalledWith('ScanLogin');
 });
 

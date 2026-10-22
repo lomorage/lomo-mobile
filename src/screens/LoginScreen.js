@@ -6,7 +6,7 @@ import DiscoveryService from '../services/DiscoveryService';
 import { Eye, EyeOff, QrCode, ArrowLeft } from 'lucide-react-native';
 
 import { useAuth } from '../context/AuthContext';
-import { getRegisterDraft } from './RegisterScreen';
+import { getRegisterDraft } from '../utils/registerDraft';
 
 export default function LoginScreen({ navigation }) {
     const { login: contextLogin } = useAuth();
@@ -111,7 +111,7 @@ export default function LoginScreen({ navigation }) {
                                 style={styles.secondaryButton}
                                 onPress={() => navigation.navigate('ScanLogin')}
                             >
-                                <Text style={styles.secondaryButtonText}>Scan a sign-in code from your family</Text>
+                                <Text style={styles.secondaryButtonText}>Scan a code (from your computer or a family member)</Text>
                             </TouchableOpacity>
                             <TouchableOpacity
                                 style={[styles.secondaryButton, { marginTop: 12 }]}
