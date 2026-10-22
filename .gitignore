@@ -78,7 +78,10 @@ fastlane/play-store-credentials.json
 # integration test logs (lomod output per test file)
 integration/.artifacts/
 
-# local agent tooling
-.claude/
+# local agent tooling -- everything but the shared skills under .claude/skills/
+# (a plain `.claude/` would exclude the directory, and git cannot re-include a
+# path whose parent directory is excluded, so the contents are listed instead)
+.claude/*
+!.claude/skills/
 .agents/skills/
 skills-lock.json
