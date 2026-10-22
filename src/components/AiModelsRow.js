@@ -39,7 +39,7 @@ export default function AiModelsRow({ style }) {
     } else if (dl.status === 'error') {
         description = `Download failed. Check your connection and try again. (${dl.error})`;
     } else {
-        description = `One-time download of about ${formatBytesLog(total, { decimals: 0 })}, needed for search and faces. Wi-Fi recommended.`;
+        description = `One-time download of about ${formatBytesLog(total, { decimals: 0 })}, needed for search and faces. Wi-Fi recommended. If your phone is nearly full, back up and free up space first.`;
     }
 
     return (
