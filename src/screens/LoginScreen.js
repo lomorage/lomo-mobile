@@ -353,7 +353,9 @@ const styles = StyleSheet.create({
         color: '#718096',
     },
     secondaryButton: {
-        height: 52,
+        minHeight: 52,
+        paddingVertical: 8,
+        paddingHorizontal: 12,
         borderRadius: 12,
         borderWidth: 1.5,
         borderColor: '#007AFF',
@@ -362,6 +364,7 @@ const styles = StyleSheet.create({
         marginTop: 8,
     },
     secondaryButtonText: {
+        textAlign: 'center',
         color: '#007AFF',
         fontSize: 16,
         fontWeight: '700',
