@@ -19,20 +19,21 @@ jest.mock('../../services/AuthService', () => ({
   default: { getAvailableDisks: jest.fn().mockResolvedValue([]) },
 }));
 
-import RegisterScreen from '../RegisterScreen';
+import RegisterScreen, { resetRegisterDraft } from '../RegisterScreen';
 
+beforeEach(() => resetRegisterDraft());
 const nav = { navigate: jest.fn(), goBack: jest.fn() };
-const mount = async () => {
+const mount = async (params = {}) => {
   let r;
   await act(async () => {
-    r = renderer.create(<RegisterScreen navigation={nav} route={{ params: { server: '10.0.0.219:8000' } }} />);
+    r = renderer.create(<RegisterScreen navigation={nav} route={{ params }} />);
   });
   return r;
 };
 const input = (r, placeholder) => r.root.findAllByType(TextInput).find((i) => i.props.placeholder === placeholder);
 
 test('pressing Back and coming back keeps the username but never the passwords', async () => {
-  let r = await mount();
+  let r = await mount({ server: '10.0.0.219:8000' });
   await act(async () => {
     input(r, 'Choose a username').props.onChangeText('sarah');
     input(r, 'Min 6 characters').props.onChangeText('secret1');
@@ -40,7 +41,18 @@ test('pressing Back and coming back keeps the username but never the passwords',
   await act(async () => r.unmount());
 
   r = await mount();
+  expect(input(r, 'e.g., 192.168.1.100:8000').props.value).toBe('10.0.0.219:8000');
   expect(input(r, 'Choose a username').props.value).toBe('sarah');
   expect(input(r, 'Min 6 characters').props.value).toBe('');
+  await act(async () => r.unmount());
+});
+
+test('adding a family member from Settings starts from a blank form', async () => {
+  let r = await mount({ server: '10.0.0.219:8000' });
+  await act(async () => { input(r, 'Choose a username').props.onChangeText('sarah'); });
+  await act(async () => r.unmount());
+
+  r = await mount({ fromSettings: true });
+  expect(input(r, 'Choose a username').props.value).toBe('');
   await act(async () => r.unmount());
 });
