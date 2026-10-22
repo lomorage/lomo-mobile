@@ -56,3 +56,16 @@ test('adding a family member from Settings starts from a blank form', async () =
   expect(input(r, 'Choose a username').props.value).toBe('');
   await act(async () => r.unmount());
 });
+
+test('a half-typed address is restored but not looked up', async () => {
+  const AuthService = require('../../services/AuthService').default;
+  let r = await mount();
+  await act(async () => { input(r, 'e.g., 192.168.1.100:8000').props.onChangeText('10.0.'); });
+  await act(async () => r.unmount());
+  AuthService.getAvailableDisks.mockClear();
+
+  r = await mount();
+  expect(input(r, 'e.g., 192.168.1.100:8000').props.value).toBe('10.0.');
+  expect(AuthService.getAvailableDisks).not.toHaveBeenCalled();
+  await act(async () => r.unmount());
+});

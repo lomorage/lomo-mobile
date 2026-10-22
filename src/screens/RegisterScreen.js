@@ -55,7 +55,7 @@ export default function RegisterScreen({ navigation, route }) {
         }
 
         // Back to a form whose address was typed or scanned earlier: look up its disks again.
-        if (server) fetchDisks(server);
+        if (server && isCompleteServerAddress(server)) fetchDisks(server);
 
         setIsScanning(true);
         const unsubscribe = DiscoveryService.onDiscovered((service) => {
