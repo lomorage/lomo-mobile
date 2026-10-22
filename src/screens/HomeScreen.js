@@ -2446,7 +2446,7 @@ export default function HomeScreen({ navigation, route }) {
                                         onPress={() => { setBottomSheetVisible(false); navigation.navigate('BackupSummary'); }}
                                         accessibilityRole="button"
                                     >
-                                        <Text style={{ fontSize: 14, color: '#007AFF', marginTop: 6 }}>See what's safe on your computer ›</Text>
+                                        <Text style={{ fontSize: 14, color: '#007AFF', marginTop: 6 }}>See what&apos;s safe on your computer ›</Text>
                                     </TouchableOpacity>
                                 )}
                             </View>
