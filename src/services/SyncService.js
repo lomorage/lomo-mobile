@@ -329,6 +329,9 @@ class SyncService {
     // every launch treated the tree as empty, forcing a full resync of every
     // month even when nothing had changed.
     this._remoteTreeLoadedFromDisk = false;
+    // fetchRemoteOverview(): the fetch running now, and the one queued behind it.
+    this._overviewRunning = null;
+    this._overviewQueued = null;
   }
 
   async clearCache() {
@@ -807,8 +810,29 @@ class SyncService {
    * 4. Reuse cached subtrees for UNCHANGED months
    * 
    * On first run (empty cache), this falls back to fetching all months.
+   *
+   * Calls don't overlap (two at once would both write the remote rows): a call made while
+   * one is running waits for it and then runs once more, since the caller may need changes
+   * the running fetch started too early to see (e.g. a backup that just finished). Every
+   * call made meanwhile shares that one extra run.
    */
-  async fetchRemoteOverview() {
+  fetchRemoteOverview() {
+    if (this._overviewRunning) {
+      if (!this._overviewQueued) {
+        this._overviewQueued = this._overviewRunning.catch(() => {}).then(() => {
+          this._overviewQueued = null;
+          return this.fetchRemoteOverview();
+        });
+      }
+      return this._overviewQueued;
+    }
+    this._overviewRunning = this._fetchRemoteOverviewNow().finally(() => {
+      this._overviewRunning = null;
+    });
+    return this._overviewRunning;
+  }
+
+  async _fetchRemoteOverviewNow() {
     this._sortedRemoteAssetsCache = null; // Invalidate cache before updating tree
     return await MetricsTracker.measure('SyncService_fetchRemoteOverview', async () => {
       // Lazy-load remote tree cache from disk if it hasn't been loaded into memory yet
