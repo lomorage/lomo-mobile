@@ -11,15 +11,22 @@ import { isCompleteServerAddress } from '../utils/serverAddress';
 // How long the address field must sit still before we look for disks on that server.
 export const SERVER_LOOKUP_DEBOUNCE_MS = 600;
 
+// Survives the screen unmounting, so Back (which Android users press to hide the
+// keyboard) doesn't wipe what was typed. Passwords are deliberately not kept.
+let draft = { server: '', username: '' };
+export const resetRegisterDraft = () => { draft = { server: '', username: '' }; };
+
 export default function RegisterScreen({ navigation, route }) {
     const { register: contextRegister } = useAuth();
     const fromSettings = route?.params?.fromSettings || false;
     const scannedServer = route?.params?.server || null;
     const serverName = route?.params?.serverName || null;
-    const [server, setServer] = useState(scannedServer || '');
+    const restored = fromSettings ? { server: '', username: '' } : draft;
+    const [server, setServer] = useState(scannedServer || restored.server);
     const [disks, setDisks] = useState([]);
     const [selectedDisk, setSelectedDisk] = useState(null);
-    const [username, setUsername] = useState('');
+    const [username, setUsername] = useState(restored.username);
+    const registered = useRef(false);
     const [password, setPassword] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
     
@@ -28,6 +35,10 @@ export default function RegisterScreen({ navigation, route }) {
     const [fetchingDisks, setFetchingDisks] = useState(false);
     const [showPassword, setShowPassword] = useState(false);
     const [pairingPayload, setPairingPayload] = useState(null);
+
+    useEffect(() => {
+        if (!registered.current && !fromSettings) draft = { server, username };
+    }, [server, username]);
 
     useEffect(() => {
         if (scannedServer) {
@@ -42,6 +53,9 @@ export default function RegisterScreen({ navigation, route }) {
             fetchDisks(scannedServer);
             return;
         }
+
+        // Back to a form whose address was typed or scanned earlier: look up its disks again.
+        if (server) fetchDisks(server);
 
         setIsScanning(true);
         const unsubscribe = DiscoveryService.onDiscovered((service) => {
@@ -133,6 +147,8 @@ export default function RegisterScreen({ navigation, route }) {
         setLoading(true);
         try {
             await contextRegister(server, username, password, selectedDisk, !fromSettings, serverName);
+            registered.current = true;
+            draft = { server: '', username: '' };
             if (!fromSettings) {
                 // contextRegister has signed in, so RootNavigator swaps to the app and this screen
                 // goes away; without this the new user lands there with nothing saying it worked.

@@ -672,3 +672,28 @@ describe('HomeScreen EXIF taken dates on library load', () => {
     act(() => component.unmount());
   });
 });
+
+describe('HomeScreen backup sheet', () => {
+  test('when nothing is left to upload it links to the Backup Status screen', async () => {
+    const { DeviceEventEmitter } = require('react-native');
+    const navigation = { navigate: jest.fn(), addListener: jest.fn(() => () => {}) };
+    let component;
+    await act(async () => { component = renderer.create(<HomeScreen navigation={navigation} />); });
+    await act(async () => {
+      DeviceEventEmitter.emit('backupState', {
+        isBackingUp: false, isPaused: false, pendingCount: 0, completedCount: 10, totalCount: 10,
+        activeAssetIds: [], activeUploads: {}, uploadStats: {},
+      });
+      await flushPromises();
+    });
+
+    const cloud = component.root.findAll(n => n.type === TouchableOpacity && n.props.style && n.props.style.width === 36 && n.props.style.height === 36)[0];
+    await act(async () => { cloud.props.onPress(); });
+    const link = component.root.findAllByType(TouchableOpacity).find(b =>
+      b.findAllByType(Text).some(t => [].concat(t.props.children).join('').includes("See what's safe on your computer")));
+    expect(link).toBeTruthy();
+    await act(async () => { link.props.onPress(); });
+    expect(navigation.navigate).toHaveBeenCalledWith('BackupSummary');
+    act(() => component.unmount());
+  });
+});
