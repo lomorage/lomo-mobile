@@ -129,6 +129,8 @@ test('deletes only what the computer confirmed, after the user confirms', async 
   expect(MediaService.deleteLocalAssets).toHaveBeenCalledWith(['v1']);
   expect(AssetDBService.markAssetsRemovedLocally).toHaveBeenCalledWith(['v1']);
   expect(allText(tree)).toContain('Videos (1)');
+
+  expect(Alert.alert).toHaveBeenLastCalledWith('Space freed', expect.stringMatching(/^Freed 4\.9 KB.*1 item is safe on your Lomorage computer\.$/));
 });
 
 test('nothing is deleted when nothing could be confirmed', async () => {

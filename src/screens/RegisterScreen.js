@@ -14,6 +14,8 @@ export const SERVER_LOOKUP_DEBOUNCE_MS = 600;
 // Survives the screen unmounting, so Back (which Android users press to hide the
 // keyboard) doesn't wipe what was typed. Passwords are deliberately not kept.
 let draft = { server: '', username: '' };
+export const getRegisterDraft = () => draft;
+// Test-only: the draft outlives the screen, so tests start each case from a blank one.
 export const resetRegisterDraft = () => { draft = { server: '', username: '' }; };
 
 export default function RegisterScreen({ navigation, route }) {
@@ -312,6 +314,7 @@ export default function RegisterScreen({ navigation, route }) {
                             onChangeText={setConfirmPassword}
                             secureTextEntry={!showPassword}
                         />
+                        <Text style={[styles.hint, { marginTop: 6 }]}>Lomorage doesn&apos;t ask for an email address, so choose a password you will remember.</Text>
                     </View>
 
                     <TouchableOpacity 
