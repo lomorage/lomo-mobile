@@ -97,12 +97,24 @@ platform :android do
     )
   end
 
-  desc "Promote the current internal release to production at 100% rollout"
-  lane :promote_to_production do
+  desc "Promote one version code from the internal track to production at 100% rollout (version_code defaults to android.versionCode in app.json)"
+  lane :promote_to_production do |options|
+    # Without version_code, Play promotes the internal track's *current* release, which is not
+    # necessarily the one just uploaded (a draft upload isn't current): it picked an older build
+    # than production's and was refused ("does not allow any existing users to upgrade").
+    version_code = options[:version_code]
+    if version_code.to_s.empty?
+      app_json = File.join(File.expand_path("..", FastlaneCore::FastlaneFolder.path), "app.json")
+      version_code = JSON.parse(File.read(app_json)).dig("expo", "android", "versionCode")
+    end
+    UI.user_error!("No version_code given and none found in app.json") if version_code.to_s.empty?
+    UI.message("Promoting version code #{version_code} from internal to production")
+
     upload_to_play_store(
       track: "internal",
       track_promote_to: "production",
       track_promote_release_status: "completed",
+      version_code: version_code.to_i,
       skip_upload_aab: true,
       skip_upload_apk: true,
       skip_upload_metadata: true,
