@@ -1,0 +1,30 @@
+# Builds the release AAB without the release keystore (signature stripped: NOT uploadable as-is).
+name: aab-unsigned
+on:
+  push:
+    branches: ['ci/aab-*']
+jobs:
+  aab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 20, cache: npm}
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: 17}
+      - run: npm ci
+      - run: npx expo prebuild --platform android --no-install --clean
+      - run: ./gradlew bundleRelease --no-daemon
+        working-directory: android
+      - name: Strip debug signature, verify version
+        run: |
+          AAB=android/app/build/outputs/bundle/release/app-release.aab
+          zip -d "$AAB" 'META-INF/*.RSA' 'META-INF/*.SF' 'META-INF/*.MF' 'META-INF/*.EC' 'META-INF/*.DSA' || true
+          unzip -l "$AAB" | grep META-INF || true
+          curl -sL -o bundletool.jar https://github.com/google/bundletool/releases/download/1.17.2/bundletool-all-1.17.2.jar
+          java -jar bundletool.jar dump manifest --bundle "$AAB" | head -5
+          cp "$AAB" lomorage-1.0.156-unsigned.aab
+          sha256sum lomorage-1.0.156-unsigned.aab
+      - uses: actions/upload-artifact@v4
+        with: {name: aab-1.0.156-unsigned, path: lomorage-1.0.156-unsigned.aab}
