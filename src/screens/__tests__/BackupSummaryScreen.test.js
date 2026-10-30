@@ -10,7 +10,10 @@ jest.mock('lucide-react-native', () => {
 });
 jest.mock('../../services/AssetDBService', () => ({
   __esModule: true,
-  default: { getFreeUpSpaceCandidates: jest.fn(), getBackupSummaryRows: jest.fn(), getAtHomeCounts: jest.fn() },
+  default: {
+    getFreeUpSpaceCandidates: jest.fn(), getBackupSummaryRows: jest.fn(), getAtHomeCounts: jest.fn(),
+    getUploadRejected: jest.fn(async () => []),
+  },
 }));
 jest.mock('../../services/BackupSafetyService', () => ({
   __esModule: true,
@@ -29,8 +32,13 @@ jest.mock('../../services/SyncService', () => ({ __esModule: true, default: { fe
 jest.mock('../../utils/scaleMetrics', () => ({ logSincePairedOnce: jest.fn() }));
 jest.mock('../../services/AuthService', () => ({ __esModule: true, default: { getServerName: jest.fn(() => 'windows'), getOriginalsLocation: jest.fn(async () => null) } }));
 jest.mock('../../services/backupHistory', () => ({ getLastBackupAt: jest.fn(async () => Date.now() - 60 * 1000) }));
+jest.mock('../../services/AutoBackupManager', () => ({
+  __esModule: true,
+  default: { retryRejectedUploads: jest.fn(async () => 0) },
+}));
 
 const AssetDBService = require('../../services/AssetDBService').default;
+const AutoBackupManager = require('../../services/AutoBackupManager').default;
 const AuthService = require('../../services/AuthService').default;
 const BackupSafetyService = require('../../services/BackupSafetyService').default;
 const SyncService = require('../../services/SyncService').default;
@@ -99,6 +107,62 @@ test('some not backed up, skipped or unconfirmed: says so and does not log Time 
   expect(text).toContain('1 is missing from your Lomorage computer — it stays on this phone.');
   expect(text).toContain("1 couldn't be confirmed");
   expect(logSincePairedOnce).not.toHaveBeenCalled();
+});
+
+describe('files the computer refused', () => {
+  // They are not "still to back up": nothing will happen to them until the user asks again or
+  // the computer is updated, so the screen has to say that and offer the way out.
+  const refused = (rows = [{ filename: 'IMG_1.avif' }, { filename: 'IMG_2.avif' }]) => {
+    AssetDBService.getBackupSummaryRows.mockResolvedValue(
+      summaryRows({ total: 5, backedUp: 3, excluded: 0, rejected: 2 }, { total: 0, backedUp: 0 }));
+    AssetDBService.getUploadRejected.mockResolvedValue(rows);
+    BackupSafetyService.checkAll.mockResolvedValue({ safe: ['p1'], unsafe: [], weakEvidence: false });
+  };
+
+  test('are reported apart from the ones still waiting, naming the kind of file', async () => {
+    refused();
+    const tree = await render();
+
+    const text = allText(tree);
+    expect(text).toContain("2 (.avif) your Lomorage computer couldn't accept");
+    expect(text).toContain("Updating the computer's Lomorage may let them in");
+    expect(text).not.toContain('still to back up'); // 5 total - 3 backed up - 2 refused = 0
+  });
+
+  test('still reads sensibly when no filename was recorded', async () => {
+    refused([{ filename: null }, { filename: null }]);
+    const tree = await render();
+
+    expect(allText(tree)).toContain("2 your Lomorage computer couldn't accept");
+  });
+
+  test('does not ask for the refused rows when there are none', async () => {
+    AssetDBService.getBackupSummaryRows.mockResolvedValue(summaryRows({ total: 1, backedUp: 1 }, { total: 0, backedUp: 0 }));
+    BackupSafetyService.checkAll.mockResolvedValue({ safe: ['p1'], unsafe: [], weakEvidence: false });
+    await render();
+
+    expect(AssetDBService.getUploadRejected).not.toHaveBeenCalled();
+  });
+
+  test('can be handed back to the backup queue, and the count is re-checked after', async () => {
+    refused();
+    const tree = await render();
+    AssetDBService.getBackupSummaryRows.mockClear();
+
+    await pressText(tree, 'Try these again');
+
+    expect(AutoBackupManager.retryRejectedUploads).toHaveBeenCalledTimes(1);
+    expect(AssetDBService.getBackupSummaryRows).toHaveBeenCalled(); // the check ran again
+  });
+
+  test('no refusals, no retry button', async () => {
+    AssetDBService.getBackupSummaryRows.mockResolvedValue(summaryRows({ total: 1, backedUp: 1 }, { total: 0, backedUp: 0 }));
+    BackupSafetyService.checkAll.mockResolvedValue({ safe: ['p1'], unsafe: [], weakEvidence: false });
+    const tree = await render();
+
+    expect(allText(tree)).not.toContain("couldn't accept");
+    expect(() => pressText(tree, 'Try these again')).toThrow();
+  });
 });
 
 describe('after freeing space, when nothing is left on the phone to check', () => {

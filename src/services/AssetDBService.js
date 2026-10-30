@@ -314,6 +314,43 @@ class AssetDBService {
         console.log('[AssetDBService] Database migrated to version 16 (Added exifTakenTime).');
       }
 
+      if (currentVersion < 17) {
+        // Version 17: assets the server refused for good -- today, an extension this lomod has no
+        // handler for. Without this the refusal lived only in memory, every library compare put
+        // the asset straight back in the upload queue, and it was re-sent for as long as the app
+        // ran (3070 attempts in 2h50m for one AVIF file).
+        // 0 = never refused, 1 = refused; uploadRejectedReason keeps the server's own wording.
+        //
+        // Unlike the migrations above, the version is bumped only once both columns are really
+        // there, and init records the answer in hasUploadRejected so the queries that name these
+        // columns can leave them out when they are absent. Claiming a version whose columns are
+        // missing is what would break getLocalHashesMap -- the query every asset's backed-up
+        // status comes from. Left un-bumped, this simply runs again next launch.
+        for (const column of ['uploadRejected INTEGER DEFAULT 0', 'uploadRejectedReason TEXT']) {
+          try {
+            await db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN ${column};`);
+          } catch (e) {
+            // Already added by a half-applied earlier run: that is a success for our purposes,
+            // and the check below is what actually decides.
+            console.warn(`[AssetDBService] Could not add ${column.split(' ')[0]}:`, e.message);
+          }
+        }
+        if (await this.hasColumns(db, ['uploadRejected', 'uploadRejectedReason'])) {
+          await db.execAsync('PRAGMA user_version = 17');
+          currentVersion = 17;
+          console.log('[AssetDBService] Database migrated to version 17 (Added uploadRejected).');
+        } else {
+          console.warn('[AssetDBService] Version 17 columns missing; staying on version ' +
+            `${currentVersion} and retrying on the next launch.`);
+        }
+      }
+
+      // Whether the refused-upload columns can be named in a query. Checked rather than assumed
+      // from user_version so a database that did not take the migration degrades to the old
+      // behaviour (refusals not remembered, so uploads are retried as before) instead of failing
+      // every status read.
+      this.hasUploadRejected = await this.hasColumns(db, ['uploadRejected', 'uploadRejectedReason']);
+
       // Smooth migration: if local_hash_cache_v2.json exists, migrate it to SQLite
       await this.migrateLocalHashCache(db);
 
@@ -428,18 +465,83 @@ class AssetDBService {
     }
   }
 
+  // Whether MediaAsset really has these columns. A failed ALTER TABLE would otherwise leave
+  // queries naming a column that isn't there, which fails the whole query.
+  async hasColumns(db, names) {
+    try {
+      const rows = await db.getAllAsync('PRAGMA table_info(MediaAsset)');
+      const present = new Set((rows || []).map(r => r.name));
+      return names.every(name => present.has(name));
+    } catch (e) {
+      console.warn('[AssetDBService] Could not read the MediaAsset columns:', e.message);
+      return false;
+    }
+  }
+
   async getLocalHashesMap() {
     if (!this.db) return {};
-    const rows = await this.db.getAllAsync('SELECT id, hash, hashModificationTime, uploaded FROM MediaAsset WHERE isLocal = 1 AND hash IS NOT NULL');
+    const rejectedCols = this.hasUploadRejected ? ', uploadRejected, uploadRejectedReason' : '';
+    const rows = await this.db.getAllAsync(`SELECT id, hash, hashModificationTime, uploaded${rejectedCols} FROM MediaAsset WHERE isLocal = 1 AND hash IS NOT NULL`);
     const map = {};
     for (const row of rows) {
       map[row.id] = { 
         hash: row.hash, 
         modificationTime: row.hashModificationTime, 
-        uploaded: row.uploaded === 1 
+        uploaded: row.uploaded === 1,
+        // Set means the backup queue skips it: this server already refused the file and would
+        // refuse it again. Cleared by AutoBackupManager.retryRejectedUploads().
+        uploadRejected: row.uploadRejected === 1,
+        uploadRejectedReason: row.uploadRejectedReason || null
       };
     }
     return map;
+  }
+
+  // The server refused this asset for a reason resending it cannot fix (UploadService
+  // isPermanentReject). Recorded so the backup queue stops offering it: in memory the refusal
+  // was erased by the next library compare and the asset went straight back on the queue.
+  async markUploadRejected(id, reason) {
+    if (!this.db || !this.hasUploadRejected) return;
+    try {
+      await this.db.runAsync(
+        'UPDATE MediaAsset SET uploadRejected = 1, uploadRejectedReason = ? WHERE id = ?',
+        [reason || null, id]
+      );
+    } catch (e) {
+      console.error('[AssetDBService] Failed to mark upload rejected:', e);
+    }
+  }
+
+  // Offer the refused assets to the backup queue again: for one asset, or for all of them when
+  // no id is given (the user retrying after updating the server, say).
+  async clearUploadRejected(id = null) {
+    if (!this.db || !this.hasUploadRejected) return 0;
+    try {
+      const result = id
+        ? await this.db.runAsync(
+            'UPDATE MediaAsset SET uploadRejected = 0, uploadRejectedReason = NULL WHERE id = ?', [id])
+        : await this.db.runAsync(
+            'UPDATE MediaAsset SET uploadRejected = 0, uploadRejectedReason = NULL WHERE uploadRejected = 1');
+      return result?.changes || 0;
+    } catch (e) {
+      console.error('[AssetDBService] Failed to clear upload rejected:', e);
+      return 0;
+    }
+  }
+
+  // The refused assets still on this phone, with the server's own wording, so the UI can say
+  // which files need attention instead of only how many.
+  async getUploadRejected() {
+    if (!this.db || !this.hasUploadRejected) return [];
+    try {
+      return await this.db.getAllAsync(
+        `SELECT id, filename, mediaType, uploadRejectedReason AS reason FROM MediaAsset
+         WHERE isLocal = 1 AND uploadRejected = 1 AND NOT (uploaded = 1 AND hash IS NOT NULL)`
+      );
+    } catch (e) {
+      console.error('[AssetDBService] Failed to read rejected uploads:', e);
+      return [];
+    }
   }
 
   // Get total count of assets
@@ -491,13 +593,19 @@ class AssetDBService {
   // many backed-up items have no recorded size yet.
   async getBackupSummaryRows() {
     if (!this.db) return [];
+    // COALESCE so a NULL backupExcluded doesn't quietly drop the row from the refused count:
+    // in SQL, NULL != 1 is NULL, which is not true.
+    const rejected = this.hasUploadRejected
+      ? `SUM(CASE WHEN uploadRejected = 1 AND COALESCE(backupExcluded, 0) != 1 AND NOT (uploaded = 1 AND hash IS NOT NULL) THEN 1 ELSE 0 END)`
+      : '0';
     return await this.db.getAllAsync(
       `SELECT mediaType,
               COUNT(*) AS total,
               SUM(CASE WHEN uploaded = 1 AND hash IS NOT NULL THEN 1 ELSE 0 END) AS backedUp,
               SUM(CASE WHEN uploaded = 1 AND hash IS NOT NULL THEN COALESCE(fileSize, 0) ELSE 0 END) AS backedUpBytes,
               SUM(CASE WHEN uploaded = 1 AND hash IS NOT NULL AND fileSize IS NULL THEN 1 ELSE 0 END) AS unknownSize,
-              SUM(CASE WHEN backupExcluded = 1 AND NOT (uploaded = 1 AND hash IS NOT NULL) THEN 1 ELSE 0 END) AS excluded
+              SUM(CASE WHEN backupExcluded = 1 AND NOT (uploaded = 1 AND hash IS NOT NULL) THEN 1 ELSE 0 END) AS excluded,
+              ${rejected} AS rejected
        FROM MediaAsset WHERE isLocal = 1 GROUP BY mediaType`
     );
   }

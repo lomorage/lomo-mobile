@@ -12,6 +12,30 @@ import { logSincePairedOnce } from '../utils/scaleMetrics';
 
 const CANNOT_CHECK = new Set([UNSAFE_REASONS.SERVER_UNREACHABLE, UNSAFE_REASONS.STORAGE_UNAVAILABLE]);
 
+// The distinct file extensions in a set of refused rows, lowercased and dotted (".avif"), at most
+// three so the line stays readable. Empty when no filename was recorded.
+export function kindsOf(rows) {
+    const kinds = [];
+    for (const row of rows || []) {
+        const name = row?.filename || '';
+        const dot = name.lastIndexOf('.');
+        const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
+        if (ext && !kinds.includes(`.${ext}`)) kinds.push(`.${ext}`);
+    }
+    return kinds.slice(0, 3);
+}
+
+// "2 your Lomorage computer couldn't accept (.avif) -- they stay on this phone. Updating the
+// computer's Lomorage may let them in." The kinds go in parentheses: naming them is the only
+// actionable part, and inlining them made the sentence unreadable.
+export function describeRefused(count, kinds) {
+    const kindList = kinds?.length > 0 ? ` (${kinds.join(', ')})` : '';
+    const n = count.toLocaleString('en-US');
+    return count === 1
+        ? `1${kindList} your Lomorage computer couldn't accept — it stays on this phone. Updating the computer's Lomorage may let it in.`
+        : `${n}${kindList} your Lomorage computer couldn't accept — they stay on this phone. Updating the computer's Lomorage may let them in.`;
+}
+
 /**
  * "Are my photos safe?" -- checks every backed-up item on this phone against the
  * Lomorage computer and says how much space can be freed. Shown after the first backup
@@ -74,10 +98,16 @@ export default function BackupSummaryScreen({ navigation }) {
                 atHomeLost = Math.max(0, before - ((atHome?.photos || 0) + (atHome?.videos || 0)));
             }
             const backup = summarizeBackup(summaryRows);
+            // Which kinds of file the computer refused. The count alone leaves the user nothing to
+            // act on; ".avif" tells them what to look for in a Lomorage update.
+            const refusedKinds = backup.rejected > 0 ? kindsOf(await AssetDBService.getUploadRejected()) : [];
+            if (!mounted.current) return;
             const summary = {
                 ...summarizeVerification(items, verification),
                 notBackedUp: backup.notBackedUp,
                 skipped: backup.skipped,
+                rejected: backup.rejected,
+                refusedKinds,
                 // What the computer listed just now for the photos freed from this phone: the
                 // check above only covers what is still on the phone.
                 atHomePhotos: atHome?.photos || 0,
@@ -100,6 +130,22 @@ export default function BackupSummaryScreen({ navigation }) {
             if (mounted.current) setProgress(null);
         }
     }, []);
+
+    // Hand the files the computer refused back to the backup queue and re-run the check, so the
+    // count the user is looking at reflects what happened.
+    const [retrying, setRetrying] = useState(false);
+    const retryRejected = useCallback(async () => {
+        setRetrying(true);
+        try {
+            const AutoBackupManager = require('../services/AutoBackupManager').default;
+            await AutoBackupManager.retryRejectedUploads();
+        } catch (e) {
+            console.warn('[BackupSummaryScreen] Could not retry the refused files:', e.message);
+        } finally {
+            if (mounted.current) setRetrying(false);
+        }
+        if (mounted.current) check();
+    }, [check]);
 
     // Where the originals are on the computer; a hint, so a failed lookup just shows nothing.
     const [originalsPath, setOriginalsPath] = useState(null);
@@ -214,6 +260,19 @@ export default function BackupSummaryScreen({ navigation }) {
                     <Text style={styles.note}>
                         {`${result.skipped.toLocaleString('en-US')} in albums you don't back up — they stay on this phone.`}
                     </Text>
+                )}
+                {result.rejected > 0 && (
+                    <>
+                        <Text style={styles.note}>{describeRefused(result.rejected, result.refusedKinds)}</Text>
+                        {/* Nothing re-offers a refused file on its own: the same file and the same
+                            server fail the same way. This is how the user asks again once the
+                            computer has been updated. */}
+                        <TouchableOpacity style={styles.secondaryButton} onPress={retryRejected} disabled={retrying}>
+                            <Text style={styles.secondaryButtonText}>
+                                {retrying ? 'Trying again…' : 'Try these again'}
+                            </Text>
+                        </TouchableOpacity>
+                    </>
                 )}
                 {result.restoringCount > 0 && (
                     <Text style={styles.note}>
