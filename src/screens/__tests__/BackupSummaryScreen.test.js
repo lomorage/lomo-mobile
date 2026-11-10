@@ -112,7 +112,10 @@ test('some not backed up, skipped or unconfirmed: says so and does not log Time 
 describe('files the computer refused', () => {
   // They are not "still to back up": nothing will happen to them until the user asks again or
   // the computer is updated, so the screen has to say that and offer the way out.
-  const refused = (rows = [{ filename: 'IMG_1.avif' }, { filename: 'IMG_2.avif' }]) => {
+  const refused = (rows = [
+    { filename: null, reason: 'Not implemented: extension: avif' },
+    { filename: null, reason: 'Not implemented: extension: avif' },
+  ]) => {
     AssetDBService.getBackupSummaryRows.mockResolvedValue(
       summaryRows({ total: 5, backedUp: 3, excluded: 0, rejected: 2 }, { total: 0, backedUp: 0 }));
     AssetDBService.getUploadRejected.mockResolvedValue(rows);
@@ -129,8 +132,15 @@ describe('files the computer refused', () => {
     expect(text).not.toContain('still to back up'); // 5 total - 3 backed up - 2 refused = 0
   });
 
-  test('still reads sensibly when no filename was recorded', async () => {
-    refused([{ filename: null }, { filename: null }]);
+  test('falls back to the filename when a row carries one', async () => {
+    refused([{ filename: 'IMG_1.heic', reason: 'something else' }]);
+    const tree = await render();
+
+    expect(allText(tree)).toContain("2 (.heic) your Lomorage computer couldn't accept");
+  });
+
+  test('names nothing rather than guessing when neither says what the file was', async () => {
+    refused([{ filename: null, reason: null }]);
     const tree = await render();
 
     expect(allText(tree)).toContain("2 your Lomorage computer couldn't accept");
