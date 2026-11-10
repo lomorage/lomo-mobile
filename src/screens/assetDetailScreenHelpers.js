@@ -50,3 +50,11 @@ export const mergeServerMetadata = (item, metadata) => {
         mediaType: isVideoExtension(name) ? 'video' : (item.mediaType || 'image'),
     };
 };
+
+// How long a remote photo has to stay on screen before the original replaces the 640 px preview.
+export const ORIGINAL_SWAP_DELAY_MS = 3000;
+
+// Only a remote photo that has a hash and no offline copy; videos and Live Photos keep their preview.
+export const wantsOriginal = (item) => !!item
+  && item.status === 'remote' && !!item.hash && item.mediaType !== 'video'
+  && !item.localCachePath && !item.isLivePhoto;

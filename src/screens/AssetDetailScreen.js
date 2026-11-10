@@ -12,7 +12,7 @@ import AuthService from '../services/AuthService';
 import MediaService from '../services/MediaService';
 import SyncService from '../services/SyncService';
 import { isLivePhoto } from '../utils/livePhoto';
-import { getCacheKey, formatTakenDate, contentAspectOf, mergeServerMetadata } from './assetDetailScreenHelpers';
+import { getCacheKey, formatTakenDate, contentAspectOf, mergeServerMetadata, wantsOriginal, ORIGINAL_SWAP_DELAY_MS } from './assetDetailScreenHelpers';
 import { useSettings } from '../context/SettingsContext';
 import RemoteAlbumService from '../services/RemoteAlbumService';
 import AIService from '../services/AIService';
@@ -594,6 +594,18 @@ export default function AssetDetailScreen({ route, navigation }) {
     
     const currentAsset = assets[currentIndex] || {};
 
+    // Swap the 640 px preview for the original once a photo has been looked at for a while, so
+    // zooming is sharp -- but only for the one on screen, and never in a swipe-through.
+    const [originalHash, setOriginalHash] = useState(null);
+    const failedOriginals = useRef(new Set());
+    useEffect(() => {
+        setOriginalHash(null);
+        const hash = currentAsset?.hash;
+        if (!wantsOriginal(currentAsset) || failedOriginals.current.has(hash)) return undefined;
+        const timer = setTimeout(() => setOriginalHash(hash), ORIGINAL_SWAP_DELAY_MS);
+        return () => clearTimeout(timer);
+    }, [currentAsset?.id, currentAsset?.hash, currentAsset?.status, currentAsset?.mediaType, currentAsset?.localCachePath]);
+
     useEffect(() => {
         setIsOcrOverlayVisible(false);
         setOcrBlocks([]);
@@ -1088,12 +1100,16 @@ export default function AssetDetailScreen({ route, navigation }) {
             : null;
 
         let staticImageUri = uri;
+        let originalUri = null;
         if (isRemote && item.hash) {
             if (item.mediaType === 'video') {
                 staticImageUri = thumbUri;
             } else {
                 // Fetch high-quality preview for full screen viewing to avoid high memory/bandwidth usage and OOM crashes
                 staticImageUri = MediaService.getPreviewUrl(item.hash, item.mediaType, true);
+                if (originalHash && item.hash === originalHash && !isLive) {
+                    originalUri = MediaService.getOriginalUrl(item.hash);
+                }
             }
         }
         // Offline Cache overriding logic:
@@ -1106,6 +1122,12 @@ export default function AssetDetailScreen({ route, navigation }) {
             // serverEpoch/retryEpoch above. Bare URLs alone won't re-trigger the loader.
             thumbUri = withRetryBuster(thumbUri, serverEpoch, retryEpoch);
             staticImageUri = withRetryBuster(staticImageUri, serverEpoch, retryEpoch);
+            if (originalUri) {
+                // The preview is already on screen: keep it as the placeholder until the original
+                // has decoded, and fall back to it (not a retry loop) if the original fails.
+                thumbUri = staticImageUri;
+                staticImageUri = originalUri;
+            }
         }
 
         return (
@@ -1158,7 +1180,7 @@ export default function AssetDetailScreen({ route, navigation }) {
                                         contentFit="contain"
                                         cachePolicy="memory-disk"
                                         transition={0}
-                                        onError={usingLocalCache ? undefined : handleRemoteImageError}
+                                        onError={usingLocalCache ? undefined : (originalUri ? () => { failedOriginals.current.add(item.hash); setOriginalHash(null); } : handleRemoteImageError)}
                                         onLoad={(event) => {
                                             if (event.source) {
                                                 console.log('[AssetDetailScreen] Image loaded for item:', loadedDimsKey, 'source size:', event.source.width, event.source.height);

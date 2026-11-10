@@ -1,4 +1,4 @@
-import { getCacheKey } from '../assetDetailScreenHelpers';
+import { wantsOriginal, getCacheKey } from '../assetDetailScreenHelpers';
 
 describe('getCacheKey', () => {
   test('uses the hash directly for a remote asset', () => {
@@ -91,4 +91,16 @@ describe('mergeServerMetadata', () => {
         const merged = mergeServerMetadata({ id: 'x', mediaType: 'image', creationTime: 0, isMetadataPartial: true }, {});
         expect(merged).toMatchObject({ filename: '', creationTime: 0, mediaType: 'image', isMetadataPartial: false });
     });
+});
+
+describe('wantsOriginal', () => {
+  const photo = { status: 'remote', hash: 'h', mediaType: 'photo' };
+  it('is true for a remote photo', () => expect(wantsOriginal(photo)).toBe(true));
+  it('is false for videos, local items, no hash and offline copies', () => {
+    expect(wantsOriginal({ ...photo, mediaType: 'video' })).toBe(false);
+    expect(wantsOriginal({ ...photo, status: 'local' })).toBe(false);
+    expect(wantsOriginal({ ...photo, hash: '' })).toBe(false);
+    expect(wantsOriginal({ ...photo, localCachePath: 'file:///x' })).toBe(false);
+    expect(wantsOriginal(undefined)).toBe(false);
+  });
 });
