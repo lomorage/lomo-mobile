@@ -61,6 +61,7 @@ describe('a file the server refuses for good', () => {
         AutoBackupManager.queue = [];
         AutoBackupManager.consecutiveErrors = 0;
         AutoBackupManager.rejectedSessionCount = 0;
+        AutoBackupManager.rejectedIds = new Set();
         AutoBackupManager.autoBackupEnabled = true;
         AutoBackupManager.activeAssetIds = new Set();
         SyncService.localHashCache = {};
@@ -165,6 +166,20 @@ describe('a file the server refuses for good', () => {
         expect(UploadService.uploadAsset).toHaveBeenCalledTimes(2); // pushed back, then succeeded
         expect(AutoBackupManager.completedSessionCount).toBe(1);
         expect(AssetDBService.markUploadRejected).not.toHaveBeenCalled();
+    });
+
+    test('stays out of the queue even when the hash cache has no entry for it', async () => {
+        // An asset whose hash row is missing has no cache entry to carry uploadRejected.
+        const asset = { id: 'nohash', status: 'local', hash: 'h' };
+        UploadService.uploadAsset.mockRejectedValue(refusal());
+        AutoBackupManager.queue = [asset];
+        await AutoBackupManager.startBackup();
+        expect(UploadService.uploadAsset).toHaveBeenCalledTimes(1);
+
+        expect(AutoBackupManager._isRejected('nohash')).toBe(true);
+        GalleryStore.setAssets([asset]);
+        AutoBackupManager.syncQueueWithGallery();
+        expect(UploadService.uploadAsset).toHaveBeenCalledTimes(1);
     });
 
     test('retryRejectedUploads offers them to the queue again', async () => {

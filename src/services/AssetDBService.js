@@ -536,7 +536,8 @@ class AssetDBService {
     try {
       return await this.db.getAllAsync(
         `SELECT id, filename, mediaType, uploadRejectedReason AS reason FROM MediaAsset
-         WHERE isLocal = 1 AND uploadRejected = 1 AND NOT (uploaded = 1 AND hash IS NOT NULL)`
+         WHERE isLocal = 1 AND uploadRejected = 1 AND COALESCE(backupExcluded, 0) != 1
+           AND NOT (uploaded = 1 AND hash IS NOT NULL)`
       );
     } catch (e) {
       console.error('[AssetDBService] Failed to read rejected uploads:', e);
@@ -561,6 +562,19 @@ class AssetDBService {
     // expo-media-library returns modificationTime as a float (seconds since epoch).
     // SQLite INTEGER truncates floats, so we floor it explicitly to keep the stored
     // value consistent with what we'll compare against on the next launch.
+    // A refusal belongs to the bytes it was given for: when the file's hash changes (the photo was
+    // edited or re-saved), the new bytes have not been refused, so offer them again. `hash IS ?`
+    // compares with the stored value, since every right-hand side sees the row as it was.
+    if (this.hasUploadRejected) {
+      await this.db.runAsync(
+        `UPDATE MediaAsset SET hash = ?, hashModificationTime = ?, uploaded = 0,
+           uploadRejected = CASE WHEN hash IS ? THEN uploadRejected ELSE 0 END,
+           uploadRejectedReason = CASE WHEN hash IS ? THEN uploadRejectedReason ELSE NULL END
+         WHERE id = ?`,
+        [hash, Math.floor(modificationTime), hash, hash, id]
+      );
+      return;
+    }
     await this.db.runAsync(
       'UPDATE MediaAsset SET hash = ?, hashModificationTime = ?, uploaded = 0 WHERE id = ?',
       [hash, Math.floor(modificationTime), id]
@@ -896,14 +910,15 @@ class AssetDBService {
           await this.db.withExclusiveTransactionAsync(async () => {
             const statement = await this.db.prepareAsync(`
               INSERT INTO MediaAsset 
-              (id, isLocal, hasGeo, latitude, longitude, createTime, mediaType) 
-              VALUES (?, 1, ?, ?, ?, ?, ?)
+              (id, isLocal, hasGeo, latitude, longitude, createTime, mediaType, filename) 
+              VALUES (?, 1, ?, ?, ?, ?, ?, ?)
               ON CONFLICT(id) DO UPDATE SET
                 hasGeo = excluded.hasGeo,
                 latitude = excluded.latitude,
                 longitude = excluded.longitude,
                 createTime = excluded.createTime,
-                mediaType = excluded.mediaType
+                mediaType = excluded.mediaType,
+                filename = COALESCE(excluded.filename, filename)
             `);
             
             try {
@@ -919,7 +934,8 @@ class AssetDBService {
                   lat,
                   lon,
                   asset.creationTime || 0,
-                  asset.mediaType || 'photo'
+                  asset.mediaType || 'photo',
+                  asset.filename || null
                 );
               }
             } finally {

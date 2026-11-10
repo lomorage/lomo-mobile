@@ -204,6 +204,32 @@ describe('after freeing space, when nothing is left on the phone to check', () =
     expect(() => allText(tree) && pressText(tree, 'Free Up Space')).toThrow('No button "Free Up Space"');
   });
 
+  test('some freed and some still on the phone: also says what the computer holds in all', async () => {
+    // one video is still on the phone; the computer also holds the photos freed earlier
+    AssetDBService.getFreeUpSpaceCandidates.mockImplementation(async (type) => (type === 'video'
+      ? [{ id: 'v1', mediaType: 'video', fileSize: 3000 }] : []));
+    AssetDBService.getBackupSummaryRows.mockResolvedValue(summaryRows({ total: 0, backedUp: 0, excluded: 0 }, { total: 1, backedUp: 1, excluded: 0 }));
+    BackupSafetyService.checkAll.mockResolvedValue({ safe: ['v1'], unsafe: [], weakEvidence: false });
+    AssetDBService.getAtHomeCounts.mockResolvedValue({ photos: 108, videos: 3 });
+    const tree = await render();
+
+    const text = allText(tree);
+    expect(text).toContain('1 video'); // what is still here and was checked
+    expect(text).toContain('Your Lomorage computer holds 108 photos and 3 videos in all');
+  });
+
+  test('nothing freed: no extra line repeating the same count', async () => {
+    AssetDBService.getFreeUpSpaceCandidates.mockImplementation(async (type) => (type === 'video'
+      ? [{ id: 'v1', mediaType: 'video', fileSize: 3000 }]
+      : [{ id: 'p1', mediaType: 'photo', fileSize: 1000 }, { id: 'p2', mediaType: 'photo', fileSize: 1000 }]));
+    AssetDBService.getBackupSummaryRows.mockResolvedValue(summaryRows({ total: 2, backedUp: 2, excluded: 0 }, { total: 1, backedUp: 1, excluded: 0 }));
+    BackupSafetyService.checkAll.mockResolvedValue({ safe: ['p1', 'p2', 'v1'], unsafe: [], weakEvidence: false });
+    AssetDBService.getAtHomeCounts.mockResolvedValue({ photos: 2, videos: 1 });
+    const tree = await render();
+
+    expect(allText(tree)).not.toContain('holds');
+  });
+
   test('the computer cannot be reached: says so instead of calling the photos safe', async () => {
     AssetDBService.getBackupSummaryRows.mockResolvedValue([]);
     AssetDBService.getAtHomeCounts.mockResolvedValue({ photos: 100, videos: 2 });

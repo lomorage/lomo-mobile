@@ -231,6 +231,13 @@ export default function BackupSummaryScreen({ navigation }) {
                         {result.lastBackupAt && (
                             <Text style={styles.detail}>{`Last backup: ${describeWhen(result.lastBackupAt)}`}</Text>
                         )}
+                        {/* After freeing space only what is still here is checked above, which would read
+                            as if that were everything: say what the computer holds in all. */}
+                        {atHomeCount > result.safeCount && (
+                            <Text style={styles.detail}>
+                                {`Your Lomorage computer holds ${describeCounts(result.atHomePhotos, result.atHomeVideos)} in all`}
+                            </Text>
+                        )}
                         {result.safeBytes > 0 && (
                             <Text style={styles.freeable}>
                                 {result.sizeIsPartial ? 'At least ' : ''}{formatSize(result.safeBytes)} can be freed from this phone

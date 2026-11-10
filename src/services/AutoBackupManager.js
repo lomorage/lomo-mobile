@@ -48,6 +48,10 @@ class AutoBackupManager {
         this.uploadStats = {}; // Map of assetId -> { startTime, totalBytes, speed }
         this.completedSessionCount = 0;
         this.rejectedSessionCount = 0;
+        // Assets the server refused this session. The hash cache has no entry for an asset whose
+        // hash row is missing, so the refusal also has to be kept here or the queue would offer
+        // the asset again (and the refusal would cost the session its concurrency).
+        this.rejectedIds = new Set();
 
         if (!backgroundTask) {
           DeviceEventEmitter.addListener('settingsChanged', (settings) => {
@@ -322,9 +326,9 @@ class AutoBackupManager {
     _isRejected(assetId) {
         try {
             const SyncService = require('./SyncService').default;
-            return SyncService.localHashCache?.[assetId]?.uploadRejected === true;
+            return this.rejectedIds.has(assetId) || SyncService.localHashCache?.[assetId]?.uploadRejected === true;
         } catch {
-            return false;
+            return this.rejectedIds.has(assetId);
         }
     }
 
@@ -680,6 +684,7 @@ class AutoBackupManager {
                 // circuit breaker stops the whole backup over one unusable file.
                 console.warn(`[AutoBackup] Server refused ${asset.id} for good: ${error.message}. Skipping it.`);
                 this.rejectedSessionCount++;
+                this.rejectedIds.add(asset.id);
                 try {
                     const AssetDBService = require('./AssetDBService').default;
                     await AssetDBService.markUploadRejected(asset.id, error.message);
@@ -793,6 +798,7 @@ class AutoBackupManager {
         try {
             const AssetDBService = require('./AssetDBService').default;
             cleared = await AssetDBService.clearUploadRejected();
+            this.rejectedIds.clear();
             const SyncService = require('./SyncService').default;
             for (const entry of Object.values(SyncService.localHashCache || {})) {
                 if (entry?.uploadRejected) {
@@ -889,7 +895,7 @@ TaskManager.defineTask(BACKGROUND_BACKUP_TASK, async () => {
                     continue; // Skip excluded albums
                 }
                 const cached = SyncService.localHashCache[asset.id];
-                if (cached?.uploadRejected === true) {
+                if (this._isRejected(asset.id)) {
                     continue; // the server refused these bytes already; sending them again cannot help
                 }
                 // Using the DB-derived 'uploaded' flag directly!
@@ -906,7 +912,7 @@ TaskManager.defineTask(BACKGROUND_BACKUP_TASK, async () => {
             // so it must not hold the scan open looking for work that will never run.
             const allSynced = assets.length > 0 && assets.every(a => {
                 const row = SyncService.localHashCache[a.id];
-                return row?.uploaded === true || row?.uploadRejected === true;
+                return row?.uploaded === true || this._isRejected(a.id);
             });
             if (allSynced) {
                 console.log('[BackgroundTask] Found fully-synced boundary, stopping scan.');

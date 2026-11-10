@@ -144,3 +144,53 @@ describe('a database with the refused-upload columns', () => {
     expect(map.a1.uploadRejectedReason).toBe('Not implemented');
   });
 });
+
+describe('a refusal belongs to the bytes it was given for', () => {
+  test('rehashing clears it in SQL only when the hash changed', async () => {
+    await initWith(V17_COLUMNS);
+
+    await AssetDBService.updateAssetHash('a1', 'new-hash', 123.9);
+
+    const [sql, params] = raw.runAsync.mock.calls[raw.runAsync.mock.calls.length - 1];
+    expect(sql).toContain('uploadRejected = CASE WHEN hash IS ? THEN uploadRejected ELSE 0 END');
+    expect(sql).toContain('uploadRejectedReason = CASE WHEN hash IS ? THEN uploadRejectedReason ELSE NULL END');
+    expect(params).toEqual(['new-hash', 123, 'new-hash', 'new-hash', 'a1']);
+  });
+
+  test('without the columns it falls back to the plain update', async () => {
+    await initWith(BASE_COLUMNS);
+
+    await AssetDBService.updateAssetHash('a1', 'h', 5);
+
+    const [sql] = raw.runAsync.mock.calls[raw.runAsync.mock.calls.length - 1];
+    expect(sql).not.toContain('uploadRejected');
+  });
+
+  test('the refused list leaves out excluded albums', async () => {
+    await initWith(V17_COLUMNS);
+    queryReturns(V17_COLUMNS, (sql) => {
+      expect(sql).toContain('COALESCE(backupExcluded, 0) != 1');
+      return [];
+    });
+
+    await expect(AssetDBService.getUploadRejected()).resolves.toEqual([]);
+  });
+});
+
+describe('recording the camera roll', () => {
+  test('stores the file name, so albums and search have one to show', async () => {
+    await initWith(V17_COLUMNS);
+    const executeSync = jest.fn();
+    raw.prepareAsync.mockResolvedValue({ executeSync, finalizeAsync: jest.fn(async () => ({})) });
+
+    await AssetDBService.insertLocalAssets([
+      { id: 'x', filename: 'IMG_1.jpg', mediaType: 'photo', creationTime: 5 },
+      { id: 'y', mediaType: 'photo' },
+    ]);
+
+    const calls = executeSync.mock.calls;
+    expect(calls[0][0]).toBe('x');
+    expect(calls[0]).toContain('IMG_1.jpg');
+    expect(calls[1][calls[1].length - 1]).toBeNull();
+  });
+});
