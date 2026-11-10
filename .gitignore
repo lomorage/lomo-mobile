@@ -78,7 +78,10 @@ fastlane/play-store-credentials.json
 # integration test logs (lomod output per test file)
 integration/.artifacts/
 
-# local agent tooling
-.claude/
+# local agent tooling (project skills in .claude/skills are tracked; settings.local.json and
+# the symlink to the git-ignored .agents/skills are not)
+.claude/*
+!.claude/skills/
+.claude/skills/convert-documents-to-markdown
 .agents/skills/
 skills-lock.json
