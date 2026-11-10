@@ -17,7 +17,7 @@ import AssetDBService from '../../src/services/AssetDBService';
 import SyncService from '../../src/services/SyncService';
 import UploadService, { isPermanentReject } from '../../src/services/UploadService';
 import { addToCameraRoll, fixturePath } from '../support/cameraRoll';
-import { kindsOf } from '../../src/screens/BackupSummaryScreen';
+import { kindsOf } from '../../src/screens/backupSummaryHelpers';
 import { registerUser, sha1, startTestServer } from '../support/harness';
 import sandbox from '../shims/sandbox';
 
@@ -108,9 +108,9 @@ describe('a photo this lomod cannot accept', () => {
       expect(rows).toEqual([expect.objectContaining({
         id: refused.id, reason: 'Not implemented: extension: avif',
       })]);
-      // Not from the filename: MediaAsset.filename is NULL for local assets, because
-      // insertLocalAssets never writes it. The screen reads the reason for exactly this reason.
-      expect(rows[0].filename).toBeNull();
+      // insertLocalAssets now stores the name (it used to leave it NULL); the summary still
+      // reads the reason first, so either one is enough to name the kind.
+      expect(rows[0].filename).toBe('refused.avif');
       expect(kindsOf(rows)).toEqual(['.avif']);
     });
 
