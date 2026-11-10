@@ -12,7 +12,7 @@ import AuthService from '../services/AuthService';
 import MediaService from '../services/MediaService';
 import SyncService from '../services/SyncService';
 import { isLivePhoto } from '../utils/livePhoto';
-import { getCacheKey } from './assetDetailScreenHelpers';
+import { getCacheKey, formatTakenDate, contentAspectOf, mergeServerMetadata } from './assetDetailScreenHelpers';
 import { useSettings } from '../context/SettingsContext';
 import RemoteAlbumService from '../services/RemoteAlbumService';
 import AIService from '../services/AIService';
@@ -274,6 +274,9 @@ export default function AssetDetailScreen({ route, navigation }) {
     const flatListRef = useRef(null);
     const { initialIndex, source = 'gallery' } = route.params;
     const [assets, setAssets] = useState(GalleryStore.getAssets(source));
+    // Latest list for async callbacks (a response can arrive after the list changed).
+    const assetsRef = useRef(assets);
+    assetsRef.current = assets;
     
     const { debugMode, liteMode } = useSettings();
     const [useOriginalVideo, setUseOriginalVideo] = useState(false);
@@ -467,14 +470,15 @@ export default function AssetDetailScreen({ route, navigation }) {
                     });
                     if (res.status === 200 && res.data) {
                         const metadata = res.data;
-                        const newAssets = [...assets];
-                        newAssets[currentIndex] = {
-                            ...item,
-                            isMetadataPartial: false,
-                            mediaType: metadata.type === 1 ? 'video' : 'image',
-                            creationTime: metadata.date ? new Date(metadata.date).getTime() : item.creationTime,
-                            filename: metadata.name,
-                            mediaSubtypes: metadata.subtype ? [metadata.subtype] : []
+                        // Merge into the list as it is now, not as it was when the request started:
+                        // after a quick swipe an older response would otherwise undo a newer one.
+                        const latest = assetsRef.current;
+                        const at = latest.findIndex(a => a.id === item.id);
+                        if (at < 0) return;
+                        const newAssets = [...latest];
+                        newAssets[at] = {
+                            ...mergeServerMetadata(latest[at], metadata),
+                            mediaSubtypes: latest[at].mediaSubtypes || []
                         };
                         GalleryStore.setAssets(newAssets, source);
                         setAssets(newAssets);
@@ -1105,8 +1109,9 @@ export default function AssetDetailScreen({ route, navigation }) {
         }
 
         return (
-            <View style={{ width, height: height * 0.7, justifyContent: 'center', alignItems: 'center', position: 'relative', backgroundColor: '#fff' }}>
+            <View style={{ width, height: height * 0.7, justifyContent: 'center', alignItems: 'center', position: 'relative', backgroundColor: '#fff', overflow: 'hidden' }}>
                 <ZoomableMedia 
+                    contentAspect={contentAspectOf(item, loadedDims)}
                     onZoomStateChange={(isZoomed) => setFlatListScrollEnabled(!isZoomed)}
                     style={{ width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center' }}
                 >
@@ -1420,7 +1425,7 @@ export default function AssetDetailScreen({ route, navigation }) {
             <View style={styles.footer}>
                 <Text style={styles.infoText}>{currentAsset.filename}</Text>
                 <Text style={styles.subInfoText}>
-                    {new Date(currentAsset.creationTime || 0).toLocaleString()}
+                    {formatTakenDate(currentAsset)}
                 </Text>
             </View>
 
