@@ -29,6 +29,15 @@ class MediaService {
     return `${AuthService.getServerUrl()}/preview/${hash}?width=${width}&height=-1${codec}&token=${token}`;
   }
 
+  /**
+   * The stored original, not a pre-generated preview. Only for one photo that is being looked at
+   * for a while: the server streams the file as is, and a NAS this small should not be asked for
+   * originals in bulk.
+   */
+  getOriginalUrl(hash) {
+    if (!hash) return null;
+    return `${AuthService.getServerUrl()}/asset/${hash}?token=${AuthService.getToken()}`;
+  }
 
   /**
    * Read-only permission check that never triggers the OS dialog, so callers

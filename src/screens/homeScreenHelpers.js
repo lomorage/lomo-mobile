@@ -75,3 +75,12 @@ export function freeSpaceBannerInfo({ freeBytes, backup, backupActive, dismissed
     if (!backup || backup.backedUp === 0) return null;
     return { count: backup.backedUp, bytes: backup.backedUpBytes, photos: backup.photos.backedUp, videos: backup.videos.backedUp };
 }
+
+// The "NN% Match" label on a search result, or null when there is nothing to say: a date or
+// place filter and an exact text hit have no relevance score (AIService gives them a fixed 1.0;
+// text hits already carry a "Text Match" badge), so "99% Match" would be made up.
+export function searchMatchLabel(asset) {
+    if (!asset || asset.score === undefined || asset.filterOnly || asset.isOcrMatch) return null;
+    if (asset.isPHash) return `${Math.round(asset.score * 100)}% Match`;
+    return `${Math.min(99, Math.max(50, Math.round(50 + (asset.score - 0.18) * 250)))}% Match`;
+}
