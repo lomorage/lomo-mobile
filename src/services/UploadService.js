@@ -26,6 +26,53 @@ function parseErrorText(body) {
     }
 }
 
+// Server answers that mean this server can never accept this file, so the asset is skipped and
+// reported instead of retried forever (see AutoBackupManager._uploadSingle).
+//
+// Matched on the message text, NOT on the 400 status: lomod maps most of its errors to 400
+// (lomod common/errors.go), transient ones among them -- "Fail to update", "API can only be
+// visited internally", "Unknown Error". Treating every 400 as permanent would skip photos over a
+// passing server-side failure; treating none as permanent is what let one AVIF file retry 3070
+// times in 2h50m without a single upload getting through.
+//
+// The bar for a new entry is high, because being wrong here is silent: the photo is dropped from
+// the backup for good and the user is told their computer refused it. An entry must describe the
+// file and this server's capabilities only -- never the client's request, and never what happened
+// to reach the wire. These were considered and deliberately left out:
+//
+//   "Empty asset" / "empty size"  lomod raises these when zero bytes arrived in THAT request
+//                                 (common/asset/importer.go, and the stat after saving). A local
+//                                 file briefly unreadable -- an iCloud placeholder, a file being
+//                                 written -- gives a clean 400 now and a good upload next time.
+//   "No create time"/"No timestamp"  validateAsset (handler/asset.go) decides this from the
+//                                 createtime/modifiedtime QUERY PARAMS, which buildUploadUrl
+//                                 derives from MediaAsset.exifTakenTime -- NULL until the EXIF
+//                                 read fills it in. Same bytes, different request next time.
+//   ...Originhash tag not found   gated server-side on the filesha param, which this client
+//                                 never sends. Unreachable, so untestable.
+//
+// Those stay retryable and keep the circuit breaker's bound: noisy, but never silent loss. Giving
+// them a bounded attempt count instead of endless retries is the follow-up worth doing.
+export const PERMANENT_REJECT_TEXTS = [
+    // ErrNotImplementedFormat: lomod has no handler for this extension, decided from the ext
+    // query param before a byte is read (handler/asset.go saveAsset). True of the file and this
+    // lomod build, whatever else is going on -- and the refusal behind the 2h50m stall (AVIF).
+    'Not implemented',
+];
+
+// Statuses whose 4xx says something about the session or the request size, not about the file:
+// a stale token, rate limiting and the duplicate/too-large answers all have their own handling.
+const RETRYABLE_4XX = new Set([401, 403, 408, 409, 413, 429]);
+
+export function isPermanentReject(status, errorText) {
+    if (!(status >= 400 && status < 500)) return false;
+    if (RETRYABLE_4XX.has(status)) return false;
+    const text = errorText || '';
+    // Re-hashed and re-queued by the caller instead.
+    if (text.includes('different hash')) return false;
+    return PERMANENT_REJECT_TEXTS.some(t => text.includes(t));
+}
+
 // Upload URL for one asset. createtime is the same taken time the phone's timeline and hash
 // tree use (resolveTakenTime: OS date, else EXIF, else file time), so lomod files the photo under
 // the date the phone shows and the two hash trees bucket it alike. It used to fall back to "now",
@@ -260,6 +307,8 @@ class UploadService {
                 if (response.status !== 400 || !errorText.includes('different hash') || isLast) {
                     const err = new Error(errorText);
                     err.isDifferentHash = errorText.includes('different hash');
+                    err.httpStatus = response.status;
+                    err.permanentReject = isPermanentReject(response.status, errorText);
                     throw err;
                 }
 
@@ -400,8 +449,10 @@ class UploadService {
             if (response.status === 413) {
                 return { tooLarge: true };
             }
-            const err = new Error(`Server returned ${response.status} on partial upload patch.`);
+            const errorText = parseErrorText(response.body);
+            const err = new Error(errorText || `Server returned ${response.status} on partial upload patch.`);
             err.httpStatus = response.status;
+            err.permanentReject = isPermanentReject(response.status, errorText);
             throw err;
 
         } finally {
@@ -679,6 +730,8 @@ class UploadService {
                 }
                 const err = new Error(errorMsg);
                 err.isDifferentHash = isDifferentHash;
+                err.httpStatus = response.status;
+                err.permanentReject = isPermanentReject(response.status, errorMsg);
                 throw err;
             }
         } catch (error) {

@@ -47,6 +47,11 @@ class AutoBackupManager {
         this.activeUploads = {}; // Map of assetId -> progress (0.0 to 1.0)
         this.uploadStats = {}; // Map of assetId -> { startTime, totalBytes, speed }
         this.completedSessionCount = 0;
+        this.rejectedSessionCount = 0;
+        // Assets the server refused this session. The hash cache has no entry for an asset whose
+        // hash row is missing, so the refusal also has to be kept here or the queue would offer
+        // the asset again (and the refusal would cost the session its concurrency).
+        this.rejectedIds = new Set();
 
         if (!backgroundTask) {
           DeviceEventEmitter.addListener('settingsChanged', (settings) => {
@@ -313,13 +318,32 @@ class AutoBackupManager {
         }
     }
 
+    /**
+     * Whether the server already refused this asset for good (UploadService isPermanentReject),
+     * which keeps it out of the queue. Read from the hash cache, the same row the 'uploaded'
+     * flag comes from, so no query is needed on this synchronous path.
+     */
+    _isRejected(assetId) {
+        try {
+            const SyncService = require('./SyncService').default;
+            return this.rejectedIds.has(assetId) || SyncService.localHashCache?.[assetId]?.uploadRejected === true;
+        } catch {
+            return this.rejectedIds.has(assetId);
+        }
+    }
+
+    /** Local assets the backup should still attempt: not yet uploaded and not refused. */
+    _queueable(assets) {
+        return assets.filter(a => a.status === 'local' && !this._isRejected(a.id));
+    }
+
     // Called whenever the gallery is updated
     syncQueueWithGallery() {
         if (!this.autoBackupEnabled) return;
 
         const assets = GalleryStore.getAssets();
-        // Only queue assets that are strictly 'local'
-        const pendingAssets = assets.filter(a => a.status === 'local');
+        // Only queue assets that are strictly 'local' and that the server hasn't refused
+        const pendingAssets = this._queueable(assets);
         
         // Update queue, trying to preserve order if possible or just reset
         if (!this.isBackingUp) {
@@ -377,6 +401,7 @@ class AutoBackupManager {
         if (this.isBackingUp || this.queue.length === 0 || this.isPaused) return;
         this.isBackingUp = true;
         this.completedSessionCount = 0;
+        this.rejectedSessionCount = 0;
         this.sessionStartedAt = Date.now();
         this.sessionFirstUploadLogged = false;
         this.emitState();
@@ -416,6 +441,14 @@ class AutoBackupManager {
                 // Yield to UI to prevent scroll stuttering
                 await TaskSchedulerService.waitUntilIdle();
 
+                // The queue can be replaced or emptied while we yield (syncQueueWithGallery, or
+                // the end of the session clearing it), so the bounds check above can be stale by
+                // the time we read the index.
+                if (this.isPaused || this.currentIndex >= this.queue.length) {
+                    if (this.activeWeight === 0) resolve();
+                    return;
+                }
+
                 const asset = this.queue[this.currentIndex];
                 const isVideo = asset.mediaType === 'video';
 
@@ -447,8 +480,11 @@ class AutoBackupManager {
                             consecutiveSuccessCount = 0;
                             console.log(`[AutoBackup] Network stable. Recovering concurrency to ${this.currentMaxConcurrency}`);
                         }
-                    } else if (!this.isPaused && adaptiveConcurrencyEnabled && this.currentMaxConcurrency > 1) {
-                        // AIMD Multiplicative Decrease: Slash concurrency on error to protect backend
+                    } else if (!this.isPaused && adaptiveConcurrencyEnabled && this.currentMaxConcurrency > 1
+                               && !this._isRejected(asset.id)) {
+                        // AIMD Multiplicative Decrease: Slash concurrency on error to protect backend.
+                        // A file the server refused outright says nothing about the network, so it
+                        // must not cost the whole session its concurrency.
                         this.currentMaxConcurrency = 1;
                         consecutiveSuccessCount = 0;
                         console.warn(`[AutoBackup] Error/Timeout detected! Slashing concurrency to 1 to protect backend.`);
@@ -471,12 +507,15 @@ class AutoBackupManager {
             this.isBackingUp = false;
 
             // If we finished the sequence but the gallery still has local items (added during backup), restart.
-            const remaining = GalleryStore.getAssets().filter(a => a.status === 'local');
+            const remaining = this._queueable(GalleryStore.getAssets());
             logMetric('backup_session', Date.now() - this.sessionStartedAt, {
                 uploaded: this.completedSessionCount,
                 queued: this.queue.length,
                 paused: this.isPaused ? 1 : 0,
                 remaining: remaining.length,
+                // Refused by the server and skipped. Not part of `remaining`: nothing is waiting
+                // to happen to them.
+                rejected: this.rejectedSessionCount,
             });
             if (!this.isPaused && remaining.length === 0) {
                 logSincePairedOnce('time_to_full_backup', { uploaded: this.completedSessionCount });
@@ -638,6 +677,32 @@ class AutoBackupManager {
                 return false;
             }
 
+            if (error.permanentReject) {
+                // The server examined these bytes and will refuse them again (an extension lomod
+                // has no handler for, a zero-byte file, no usable date). Record it and move on:
+                // pushing it back on the queue retries it forever, and counting it towards the
+                // circuit breaker stops the whole backup over one unusable file.
+                console.warn(`[AutoBackup] Server refused ${asset.id} for good: ${error.message}. Skipping it.`);
+                this.rejectedSessionCount++;
+                this.rejectedIds.add(asset.id);
+                try {
+                    const AssetDBService = require('./AssetDBService').default;
+                    await AssetDBService.markUploadRejected(asset.id, error.message);
+                    // Keep the in-memory cache in step so this session stops offering it too,
+                    // without waiting for the next library load.
+                    const SyncService = require('./SyncService').default;
+                    const cached = SyncService.localHashCache?.[asset.id];
+                    if (cached) {
+                        cached.uploadRejected = true;
+                        cached.uploadRejectedReason = error.message;
+                    }
+                } catch (e) {
+                    console.warn('[AutoBackup] Failed to record the refusal:', e.message);
+                }
+                this.emitState();
+                return false;
+            }
+
             this.consecutiveErrors++;
 
             // Circuit Breaker: Only pause the ENTIRE system if we have 5 consecutive failures
@@ -723,6 +788,34 @@ class AutoBackupManager {
         this.updateNotification();
     }
 
+    /**
+     * Offer the refused assets to the queue again -- for after the server is updated or the
+     * reason is otherwise addressed. Nothing clears a refusal on its own: the whole point is that
+     * resending the same bytes to the same server fails the same way.
+     */
+    async retryRejectedUploads() {
+        let cleared = 0;
+        try {
+            const AssetDBService = require('./AssetDBService').default;
+            cleared = await AssetDBService.clearUploadRejected();
+            this.rejectedIds.clear();
+            const SyncService = require('./SyncService').default;
+            for (const entry of Object.values(SyncService.localHashCache || {})) {
+                if (entry?.uploadRejected) {
+                    entry.uploadRejected = false;
+                    entry.uploadRejectedReason = null;
+                }
+            }
+        } catch (e) {
+            console.warn('[AutoBackup] Failed to clear refusals:', e.message);
+            return 0;
+        }
+        this.rejectedSessionCount = 0;
+        if (!this.isBackingUp && !this.isPaused) this.syncQueueWithGallery();
+        else this.emitState();
+        return cleared;
+    }
+
     emitState() {
         const pending = Math.max(0, (this.queue.length - this.currentIndex) + this.activeAssetIds.size);
         const completed = this.completedSessionCount;
@@ -802,6 +895,9 @@ TaskManager.defineTask(BACKGROUND_BACKUP_TASK, async () => {
                     continue; // Skip excluded albums
                 }
                 const cached = SyncService.localHashCache[asset.id];
+                if (this._isRejected(asset.id)) {
+                    continue; // the server refused these bytes already; sending them again cannot help
+                }
                 // Using the DB-derived 'uploaded' flag directly!
                 const isSynced = cached?.uploaded === true;
                 if (!isSynced) {
@@ -812,8 +908,11 @@ TaskManager.defineTask(BACKGROUND_BACKUP_TASK, async () => {
             }
             
             // Heuristic: If an entire page of assets are all in the cache and synced, stop scanning
+            // A refused asset counts as settled here too: nothing more is going to happen to it,
+            // so it must not hold the scan open looking for work that will never run.
             const allSynced = assets.length > 0 && assets.every(a => {
-                return SyncService.localHashCache[a.id]?.uploaded === true;
+                const row = SyncService.localHashCache[a.id];
+                return row?.uploaded === true || this._isRejected(a.id);
             });
             if (allSynced) {
                 console.log('[BackgroundTask] Found fully-synced boundary, stopping scan.');
