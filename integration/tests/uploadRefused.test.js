@@ -8,8 +8,9 @@
 // migration 17 and the queries naming its columns work on a database built by the app's own
 // schema code rather than by a mock.
 //
-// The refusal behind the incident this fixes was an AVIF file: 3070 rejected POSTs in 2h50m with
-// no upload getting through, because the client treated the 400 as worth retrying.
+// The incident this fixes was an AVIF file: 3070 rejected POSTs in 2h50m with no upload getting
+// through, because the client treated the 400 as worth retrying. lomod has since learned AVIF, so
+// the test uses an extension no lomod will ever know ('.xyz') and works on any server version.
 import fs from 'fs';
 import path from 'path';
 import MediaLibrary from 'expo-media-library';
@@ -25,14 +26,11 @@ const server = startTestServer('uploadRefused');
 
 // lomod decides on the ext query param before reading a byte (handler/asset.go saveAsset), so the
 // contents only have to look like the real thing rather than be decodable.
-const AVIF_MAGIC = Buffer.from([
-  0x00, 0x00, 0x00, 0x20, 0x66, 0x74, 0x79, 0x70, // box size + 'ftyp'
-  0x61, 0x76, 0x69, 0x66, 0x00, 0x00, 0x00, 0x00, // 'avif' brand
-]);
+const FAKE_MAGIC = Buffer.from('not a real image, only the extension matters');
 
-function makeAvif(name) {
+function makeUnknown(name) {
   const file = path.join(sandbox.dir('generated'), name);
-  fs.writeFileSync(file, Buffer.concat([AVIF_MAGIC, Buffer.alloc(2048, 7)]));
+  fs.writeFileSync(file, Buffer.concat([FAKE_MAGIC, Buffer.alloc(2048, 7)]));
   return file;
 }
 
@@ -43,8 +41,8 @@ describe('a photo this lomod cannot accept', () => {
 
   beforeAll(async () => {
     await registerUser(server);
-    refusedHash = sha1(makeAvif('refused-probe.avif'));
-    refused = addToCameraRoll(makeAvif('refused.avif'), { filename: 'refused.avif' });
+    refusedHash = sha1(makeUnknown('refused-probe.xyz'));
+    refused = addToCameraRoll(makeUnknown('refused.xyz'), { filename: 'refused.xyz' });
     good = addToCameraRoll('photo-2003-11-01.jpg');
     const roll = (await MediaLibrary.getAssetsAsync({ first: 1000 })).assets;
     // HomeScreen records the camera roll in the local DB; SyncService then hashes it.
@@ -86,7 +84,7 @@ describe('a photo this lomod cannot accept', () => {
 
   describe('once the refusal is recorded', () => {
     beforeAll(async () => {
-      await AssetDBService.markUploadRejected(refused.id, 'Not implemented: extension: avif');
+      await AssetDBService.markUploadRejected(refused.id, 'Not implemented: extension: xyz');
     });
 
     it('took the migration, on a database built by the app\'s own schema code', () => {
@@ -98,27 +96,27 @@ describe('a photo this lomod cannot accept', () => {
 
       expect(map[refused.id]).toMatchObject({
         uploadRejected: true,
-        uploadRejectedReason: 'Not implemented: extension: avif',
+        uploadRejectedReason: 'Not implemented: extension: xyz',
       });
     });
 
-    it('is listed with the wording the summary names ".avif" from', async () => {
+    it('is listed with the wording the summary names ".xyz" from', async () => {
       const rows = await AssetDBService.getUploadRejected();
 
       expect(rows).toEqual([expect.objectContaining({
-        id: refused.id, reason: 'Not implemented: extension: avif',
+        id: refused.id, reason: 'Not implemented: extension: xyz',
       })]);
       // insertLocalAssets now stores the name (it used to leave it NULL); the summary still
       // reads the reason first, so either one is enough to name the kind.
-      expect(rows[0].filename).toBe('refused.avif');
-      expect(kindsOf(rows)).toEqual(['.avif']);
+      expect(rows[0].filename).toBe('refused.xyz');
+      expect(kindsOf(rows)).toEqual(['.xyz']);
     });
 
     it('is counted as refused, not as still waiting to be backed up', async () => {
       const byType = Object.fromEntries(
         (await AssetDBService.getBackupSummaryRows()).map(r => [r.mediaType, r]));
 
-      // The good photo above is backed up; the avif is refused. Neither is pending.
+      // The good photo above is backed up; the .xyz is refused. Neither is pending.
       expect(byType.photo).toMatchObject({ total: 2, backedUp: 1, rejected: 1, excluded: 0 });
     });
 
