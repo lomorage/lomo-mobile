@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { ShieldCheck, ChevronLeft } from 'lucide-react-native';
+import { kindsOf } from './backupSummaryHelpers';
 import AssetDBService from '../services/AssetDBService';
 import BackupSafetyService, { UNSAFE_REASONS } from '../services/BackupSafetyService';
 import SyncService from '../services/SyncService';
@@ -10,7 +11,20 @@ import { describeCounts, describeWhen, summarizeBackup, summarizeVerification } 
 import { formatBytesLog } from '../utils/formatters';
 import { logSincePairedOnce } from '../utils/scaleMetrics';
 
+export { kindsOf };
+
 const CANNOT_CHECK = new Set([UNSAFE_REASONS.SERVER_UNREACHABLE, UNSAFE_REASONS.STORAGE_UNAVAILABLE]);
+
+// "2 your Lomorage computer couldn't accept (.avif) -- they stay on this phone. Updating the
+// computer's Lomorage may let them in." The kinds go in parentheses: naming them is the only
+// actionable part, and inlining them made the sentence unreadable.
+export function describeRefused(count, kinds) {
+    const kindList = kinds?.length > 0 ? ` (${kinds.join(', ')})` : '';
+    const n = count.toLocaleString('en-US');
+    return count === 1
+        ? `1${kindList} your Lomorage computer couldn't accept — it stays on this phone. Updating the computer's Lomorage may let it in.`
+        : `${n}${kindList} your Lomorage computer couldn't accept — they stay on this phone. Updating the computer's Lomorage may let them in.`;
+}
 
 /**
  * "Are my photos safe?" -- checks every backed-up item on this phone against the
@@ -74,10 +88,16 @@ export default function BackupSummaryScreen({ navigation }) {
                 atHomeLost = Math.max(0, before - ((atHome?.photos || 0) + (atHome?.videos || 0)));
             }
             const backup = summarizeBackup(summaryRows);
+            // Which kinds of file the computer refused. The count alone leaves the user nothing to
+            // act on; ".avif" tells them what to look for in a Lomorage update.
+            const refusedKinds = backup.rejected > 0 ? kindsOf(await AssetDBService.getUploadRejected()) : [];
+            if (!mounted.current) return;
             const summary = {
                 ...summarizeVerification(items, verification),
                 notBackedUp: backup.notBackedUp,
                 skipped: backup.skipped,
+                rejected: backup.rejected,
+                refusedKinds,
                 // What the computer listed just now for the photos freed from this phone: the
                 // check above only covers what is still on the phone.
                 atHomePhotos: atHome?.photos || 0,
@@ -100,6 +120,22 @@ export default function BackupSummaryScreen({ navigation }) {
             if (mounted.current) setProgress(null);
         }
     }, []);
+
+    // Hand the files the computer refused back to the backup queue and re-run the check, so the
+    // count the user is looking at reflects what happened.
+    const [retrying, setRetrying] = useState(false);
+    const retryRejected = useCallback(async () => {
+        setRetrying(true);
+        try {
+            const AutoBackupManager = require('../services/AutoBackupManager').default;
+            await AutoBackupManager.retryRejectedUploads();
+        } catch (e) {
+            console.warn('[BackupSummaryScreen] Could not retry the refused files:', e.message);
+        } finally {
+            if (mounted.current) setRetrying(false);
+        }
+        if (mounted.current) check();
+    }, [check]);
 
     // Where the originals are on the computer; a hint, so a failed lookup just shows nothing.
     const [originalsPath, setOriginalsPath] = useState(null);
@@ -176,6 +212,13 @@ export default function BackupSummaryScreen({ navigation }) {
                         {result.lastBackupAt && (
                             <Text style={styles.detail}>{`Last backup: ${describeWhen(result.lastBackupAt)}`}</Text>
                         )}
+                        {/* After freeing space only what is still here is checked above, which would read
+                            as if that were everything: say what the computer holds in all. */}
+                        {atHomeCount > result.safeCount && (
+                            <Text style={styles.detail}>
+                                {`Your Lomorage computer holds ${describeCounts(result.atHomePhotos, result.atHomeVideos)} in all`}
+                            </Text>
+                        )}
                         {result.safeBytes > 0 && (
                             <Text style={styles.freeable}>
                                 {result.sizeIsPartial ? 'At least ' : ''}{formatSize(result.safeBytes)} can be freed from this phone
@@ -214,6 +257,19 @@ export default function BackupSummaryScreen({ navigation }) {
                     <Text style={styles.note}>
                         {`${result.skipped.toLocaleString('en-US')} in albums you don't back up — they stay on this phone.`}
                     </Text>
+                )}
+                {result.rejected > 0 && (
+                    <>
+                        <Text style={styles.note}>{describeRefused(result.rejected, result.refusedKinds)}</Text>
+                        {/* Nothing re-offers a refused file on its own: the same file and the same
+                            server fail the same way. This is how the user asks again once the
+                            computer has been updated. */}
+                        <TouchableOpacity style={styles.secondaryButton} onPress={retryRejected} disabled={retrying}>
+                            <Text style={styles.secondaryButtonText}>
+                                {retrying ? 'Trying again…' : 'Try these again'}
+                            </Text>
+                        </TouchableOpacity>
+                    </>
                 )}
                 {result.restoringCount > 0 && (
                     <Text style={styles.note}>

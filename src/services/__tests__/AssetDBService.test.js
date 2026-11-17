@@ -111,7 +111,8 @@ describe('AssetDBService', () => {
       12.3,
       45.6,
       123456,
-      'photo'
+      'photo',
+      null
     );
     expect(mockStatement.finalizeAsync).toHaveBeenCalled();
   });
