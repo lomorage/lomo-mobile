@@ -85,3 +85,4 @@ integration/.artifacts/
 !.claude/skills/
 .agents/skills/
 skills-lock.json
+.claude/skills/convert-documents-to-markdown
