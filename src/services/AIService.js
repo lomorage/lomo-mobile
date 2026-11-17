@@ -1389,6 +1389,9 @@ class AIService {
             if ((wantsOcr || wantsFaces) && localPath) {
               try {
                 analysis = await this._prepareAnalysisImage(localPath);
+                if (analysis) {
+                  console.log(`[AIService] Prepared ${asset.id} for on-device vision: ${analysis.width}x${analysis.height} scale=${analysis.scale}`);
+                }
               } catch (prepErr) {
                 console.warn(`[AIService] Could not downscale ${asset.id} for on-device vision:`, prepErr.message);
                 if (wantsOcr) await AssetDBService.saveAssetOCR(asset.id, 'failed');
