@@ -93,3 +93,19 @@ describe('freeSpaceBannerInfo', () => {
     expect(freeSpaceBannerInfo({ ...base, dismissedAt: base.now - 8 * 24 * 3600 * 1000 })).not.toBeNull();
   });
 });
+
+describe('searchMatchLabel', () => {
+    const { searchMatchLabel } = require('../homeScreenHelpers');
+
+    it('labels semantic and perceptual-hash hits', () => {
+        expect(searchMatchLabel({ score: 0.9 })).toMatch(/^\d+% Match$/);
+        expect(searchMatchLabel({ score: 0.87, isPHash: true })).toBe('87% Match');
+    });
+
+    it('shows no badge for date/place filter results or items without a score', () => {
+        expect(searchMatchLabel({ score: 1.0, filterOnly: true })).toBeNull();
+        expect(searchMatchLabel({ score: 1.0, isOcrMatch: true })).toBeNull();
+        expect(searchMatchLabel({})).toBeNull();
+        expect(searchMatchLabel(undefined)).toBeNull();
+    });
+});

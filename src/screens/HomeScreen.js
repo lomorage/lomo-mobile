@@ -23,7 +23,7 @@ import { isVideoExtension } from '../utils/mediaType';
 import { isLivePhoto } from '../utils/livePhoto';
 import { isNotFoundImageError } from '../utils/imageErrors';
 import { useGatedImageUri } from '../hooks/useImageRetry';
-import { freeSpaceBannerInfo, parseTimeTokenExtra } from './homeScreenHelpers';
+import { freeSpaceBannerInfo, parseTimeTokenExtra, searchMatchLabel } from './homeScreenHelpers';
 import * as SecureStore from 'expo-secure-store';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
 import { pinyin } from 'pinyin-pro';
@@ -688,7 +688,7 @@ export default function HomeScreen({ navigation, route }) {
                 const mappedResults = results.map(res => {
                     const matched = globalAssetMapRef.current.get(res.id) || (res.hash ? globalAssetMapRef.current.get(res.hash) : undefined);
                     if (matched) {
-                        return { ...matched, score: res.score, isOcrMatch: res.isOcrMatch };
+                        return { ...matched, score: res.score, isOcrMatch: res.isOcrMatch, filterOnly: res.filterOnly };
                     }
                     return {
                         ...res,
@@ -1596,6 +1596,7 @@ export default function HomeScreen({ navigation, route }) {
             if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
         }, []);
 
+        const matchLabel = searchMatchLabel(asset);
         let thumbnailUri = safeUri(asset.uri, asset.mediaType);
         // For synced videos: build remote preview URL to use only on onError
         const remoteFallbackUri = (asset.status === 'synced' && asset.mediaType === 'video' && asset.hash)
@@ -1717,13 +1718,9 @@ export default function HomeScreen({ navigation, route }) {
                 {asset.status === 'remote' ? (
                     <View style={[styles.imageOverlay, { backgroundColor: 'rgba(0,0,0,0.1)' }]} />
                 ) : null}
-                {asset.score !== undefined ? (
+                {matchLabel ? (
                     <View style={styles.scoreBadge}>
-                        <Text style={styles.scoreText}>
-                            {asset.isPHash 
-                                ? `${Math.round(asset.score * 100)}% Match` 
-                                : `${Math.min(99, Math.max(50, Math.round(50 + (asset.score - 0.18) * 250)))}% Match`}
-                        </Text>
+                        <Text style={styles.scoreText}>{matchLabel}</Text>
                     </View>
                 ) : null}
                 {debugMode ? (
@@ -1744,6 +1741,8 @@ export default function HomeScreen({ navigation, route }) {
             prevProps.asset.uri !== nextProps.asset.uri ||
             prevProps.asset.score !== nextProps.asset.score ||
             prevProps.asset.isPHash !== nextProps.asset.isPHash ||
+            prevProps.asset.filterOnly !== nextProps.asset.filterOnly ||
+            prevProps.asset.isOcrMatch !== nextProps.asset.isOcrMatch ||
             prevProps.source !== nextProps.source ||
             prevProps.globalIndex !== nextProps.globalIndex
         ) return false;
@@ -1796,6 +1795,8 @@ export default function HomeScreen({ navigation, route }) {
                 prevItems[i].uri !== nextItems[i].uri ||
                 prevItems[i].score !== nextItems[i].score ||
                 prevItems[i].isPHash !== nextItems[i].isPHash ||
+                prevItems[i].filterOnly !== nextItems[i].filterOnly ||
+                prevItems[i].isOcrMatch !== nextItems[i].isOcrMatch ||
                 prevItems[i].globalIndex !== nextItems[i].globalIndex) {
                 return false;
             }

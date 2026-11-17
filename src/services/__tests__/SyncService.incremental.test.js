@@ -52,6 +52,8 @@ describe('SyncService Incremental Remote Sync', () => {
     SyncService.localHashCache = {};
     SyncService.isSyncing = false;
     SyncService._remoteTreeLoadedFromDisk = false;
+    SyncService._overviewRunning = null;
+    SyncService._overviewQueued = null;
     jest.clearAllMocks();
   });
 
@@ -243,6 +245,98 @@ describe('SyncService Incremental Remote Sync', () => {
       // Restore DeviceEventEmitter
       DeviceEventEmitter.emit = originalEmit;
     }
+  });
+
+  // Two fetches at once would both write the remote rows, so calls are serialized.
+  // A call arriving mid-flight can't just ride along on the running one either: it may
+  // be waiting on changes that fetch started too early to see (AutoBackupManager calls
+  // it right after an upload finishes), so it gets one more run afterwards.
+  describe('fetchRemoteOverview overlapping calls', () => {
+    // Lets a test hold a fetch open and decide when it finishes.
+    let pending;
+    const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+    beforeEach(() => {
+      pending = [];
+      jest.spyOn(SyncService, '_fetchRemoteOverviewNow').mockImplementation(
+        () => new Promise((resolve, reject) => pending.push({ resolve, reject }))
+      );
+    });
+
+    afterEach(() => {
+      SyncService._fetchRemoteOverviewNow.mockRestore();
+    });
+
+    const runCount = () => SyncService._fetchRemoteOverviewNow.mock.calls.length;
+
+    test('a call made while one is running waits, then runs once more', async () => {
+      const first = SyncService.fetchRemoteOverview();
+      const second = SyncService.fetchRemoteOverview();
+
+      // Still just the one fetch in flight -- the second did not start concurrently.
+      expect(runCount()).toBe(1);
+
+      pending[0].resolve('tree-1');
+      await expect(first).resolves.toBe('tree-1');
+      await flush();
+
+      // Only now does the queued call go out, and it gets its own fresh result.
+      expect(runCount()).toBe(2);
+      pending[1].resolve('tree-2');
+      await expect(second).resolves.toBe('tree-2');
+      expect(runCount()).toBe(2);
+    });
+
+    test('every call made during a run shares that one extra run', async () => {
+      const first = SyncService.fetchRemoteOverview();
+      const a = SyncService.fetchRemoteOverview();
+      const b = SyncService.fetchRemoteOverview();
+      const c = SyncService.fetchRemoteOverview();
+
+      expect(a).toBe(b);
+      expect(b).toBe(c);
+      expect(runCount()).toBe(1);
+
+      pending[0].resolve('tree-1');
+      await flush();
+      expect(runCount()).toBe(2);
+
+      pending[1].resolve('tree-2');
+      await expect(Promise.all([first, a, b, c])).resolves.toEqual([
+        'tree-1', 'tree-2', 'tree-2', 'tree-2',
+      ]);
+      expect(runCount()).toBe(2);
+    });
+
+    test('a run that fails still lets the queued call through, and later calls start clean', async () => {
+      const first = SyncService.fetchRemoteOverview();
+      const second = SyncService.fetchRemoteOverview();
+
+      pending[0].reject(new Error('server unreachable'));
+      await expect(first).rejects.toThrow('server unreachable');
+      await flush();
+
+      expect(runCount()).toBe(2);
+      pending[1].resolve('tree-2');
+      await expect(second).resolves.toBe('tree-2');
+
+      // Nothing is left latched: a call once the queue has drained fetches immediately.
+      const third = SyncService.fetchRemoteOverview();
+      expect(runCount()).toBe(3);
+      pending[2].resolve('tree-3');
+      await expect(third).resolves.toBe('tree-3');
+    });
+
+    test('calls made back to back, with nothing in flight, each fetch', async () => {
+      const first = SyncService.fetchRemoteOverview();
+      pending[0].resolve('tree-1');
+      await first;
+
+      const second = SyncService.fetchRemoteOverview();
+      expect(runCount()).toBe(2);
+      pending[1].resolve('tree-2');
+      await expect(second).resolves.toBe('tree-2');
+    });
   });
 
   test('_migrateAndHealRemoteAssets heals NULL filename remote assets in SQLite', async () => {

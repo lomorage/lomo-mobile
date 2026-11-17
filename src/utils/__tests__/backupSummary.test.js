@@ -6,8 +6,8 @@ test('summarizes photos and videos, treating anything not video as a photo', () 
     { mediaType: 'video', total: 10, backedUp: 4, backedUpBytes: 40000, unknownSize: 1 },
     { mediaType: null, total: 2, backedUp: 2, backedUpBytes: 20, unknownSize: 0 },
   ]);
-  expect(summary.photos).toEqual({ total: 102, backedUp: 92, bytes: 9020, unknownSize: 0, excluded: 0 });
-  expect(summary.videos).toEqual({ total: 10, backedUp: 4, bytes: 40000, unknownSize: 1, excluded: 0 });
+  expect(summary.photos).toEqual({ total: 102, backedUp: 92, bytes: 9020, unknownSize: 0, excluded: 0, rejected: 0 });
+  expect(summary.videos).toEqual({ total: 10, backedUp: 4, bytes: 40000, unknownSize: 1, excluded: 0, rejected: 0 });
   expect(summary.total).toBe(112);
   expect(summary.backedUp).toBe(96);
   expect(summary.notBackedUp).toBe(16);
@@ -23,6 +23,19 @@ test('photos in albums excluded from backup are skipped, not "not backed up yet"
   expect(summary.skipped).toBe(30);
   expect(summary.notBackedUp).toBe(10);
   expect(summary.photos.excluded).toBe(30);
+});
+
+test('photos the server refused are counted apart from "not backed up yet"', () => {
+  // They are not waiting for anything: the server examined these files and will refuse them
+  // again, so counting them as pending would be a number that never goes down.
+  const summary = summarizeBackup([
+    { mediaType: 'photo', total: 100, backedUp: 60, backedUpBytes: 600, unknownSize: 0, excluded: 30, rejected: 4 },
+    { mediaType: 'video', total: 5, backedUp: 4, backedUpBytes: 500, unknownSize: 0, excluded: 0, rejected: 1 },
+  ]);
+  expect(summary.rejected).toBe(5);
+  expect(summary.skipped).toBe(30);
+  expect(summary.notBackedUp).toBe(6);
+  expect(summary.photos.rejected).toBe(4);
 });
 
 test('empty library', () => {

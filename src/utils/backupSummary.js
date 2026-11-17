@@ -1,7 +1,7 @@
 // Turns AssetDBService.getBackupSummaryRows() into the numbers Free Up Space and the
 // "photos are safe" summary show. Live photos count as photos (their mediaType is 'photo').
 
-const emptyGroup = () => ({ total: 0, backedUp: 0, bytes: 0, unknownSize: 0, excluded: 0 });
+const emptyGroup = () => ({ total: 0, backedUp: 0, bytes: 0, unknownSize: 0, excluded: 0, rejected: 0 });
 
 export function summarizeBackup(rows) {
   const photos = emptyGroup();
@@ -13,18 +13,24 @@ export function summarizeBackup(rows) {
     group.bytes += row.backedUpBytes || 0;
     group.unknownSize += row.unknownSize || 0;
     group.excluded += row.excluded || 0;
+    group.rejected += row.rejected || 0;
   }
   const total = photos.total + videos.total;
   const backedUp = photos.backedUp + videos.backedUp;
   // not backed up because the user excluded their album (Settings > Selective Backup)
   const skipped = photos.excluded + videos.excluded;
+  // not backed up because the server refused the file itself and would refuse it again
+  // (UploadService isPermanentReject). Counted apart from notBackedUp: nothing is waiting to
+  // happen to these, so reporting them as "still to back up" would never stop being wrong.
+  const rejected = photos.rejected + videos.rejected;
   return {
     photos,
     videos,
     total,
     backedUp,
     skipped,
-    notBackedUp: total - backedUp - skipped,
+    rejected,
+    notBackedUp: total - backedUp - skipped - rejected,
     backedUpBytes: photos.bytes + videos.bytes,
     // some backed-up items have no recorded size yet, so backedUpBytes is a lower bound
     sizeIsPartial: photos.unknownSize + videos.unknownSize > 0,
