@@ -1,4 +1,4 @@
-import { MIN_FACE_SIZE, MIN_FACE_WIDTH_RATIO, buildFaceBoundingBox, isFaceTooSmall, attachEyeLandmarks } from '../faceGeometry';
+import { MIN_FACE_SIZE, MIN_FACE_WIDTH_RATIO, buildFaceBoundingBox, isFaceTooSmall, minFaceSizeForScale, attachEyeLandmarks } from '../faceGeometry';
 
 describe('buildFaceBoundingBox', () => {
   test('flattens MLKit origin/size frame into x/y/width/height', () => {
@@ -50,6 +50,40 @@ describe('isFaceTooSmall', () => {
   test('treats a falsy imageWidth (0/undefined) as "unknown", skipping the ratio check', () => {
     expect(isFaceTooSmall({ width: 100, height: 100 }, 0)).toBe(false);
     expect(isFaceTooSmall({ width: 100, height: 100 }, undefined)).toBe(false);
+  });
+
+  test('a downscaled copy makes the same decision when the floor is scaled with it', () => {
+    // 1600px photo, face exactly 80px (5% of the width, so the ratio check passes
+    // and the absolute floor is what would reject anything smaller). Half size
+    // must still pass.
+    const scale = 0.5;
+    const imageWidth = 1600;
+    const full = { width: MIN_FACE_SIZE, height: MIN_FACE_SIZE };
+    const prepared = { width: MIN_FACE_SIZE * scale, height: MIN_FACE_SIZE * scale };
+    expect(isFaceTooSmall(full, imageWidth)).toBe(false);
+    expect(isFaceTooSmall(prepared, imageWidth * scale, minFaceSizeForScale(scale))).toBe(false);
+
+    // One pixel under the floor is rejected on the original and on the half-size copy.
+    const under = { width: MIN_FACE_SIZE - 1, height: MIN_FACE_SIZE };
+    const underPrepared = { width: (MIN_FACE_SIZE - 1) * scale, height: MIN_FACE_SIZE * scale };
+    expect(isFaceTooSmall(under, imageWidth)).toBe(true);
+    expect(isFaceTooSmall(underPrepared, imageWidth * scale, minFaceSizeForScale(scale))).toBe(true);
+
+    // 100px in 4032px is a bystander (~2.5%). Half size is still a bystander.
+    expect(isFaceTooSmall({ width: 100, height: 100 }, 4032)).toBe(true);
+    expect(isFaceTooSmall({ width: 50, height: 50 }, 2016, minFaceSizeForScale(scale))).toBe(true);
+  });
+});
+
+describe('minFaceSizeForScale', () => {
+  test('keeps the 80px floor when the image was not shrunk', () => {
+    expect(minFaceSizeForScale(1)).toBe(MIN_FACE_SIZE);
+    expect(minFaceSizeForScale(0)).toBe(MIN_FACE_SIZE);
+    expect(minFaceSizeForScale(undefined)).toBe(MIN_FACE_SIZE);
+  });
+
+  test('shrinks the floor by the same factor as the image', () => {
+    expect(minFaceSizeForScale(0.25)).toBe(20);
   });
 });
 

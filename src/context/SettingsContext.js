@@ -386,15 +386,21 @@ export function SettingsProvider({ children }) {
         }
     };
 
-    const toggleAlbumExclusion = async (albumId) => {
-        let newList;
-        if (excludedAlbums.includes(albumId)) {
-            newList = excludedAlbums.filter(id => id !== albumId);
-        } else {
-            newList = [...excludedAlbums, albumId];
+    const replaceExcludedAlbums = async (ids) => {
+        const next = [...new Set((ids || []).filter(Boolean))];
+        try {
+            await SecureStore.setItemAsync('lomorage_excluded_albums', JSON.stringify(next));
+            setExcludedAlbums(next);
+        } catch (error) {
+            console.error('Failed to save excluded albums', error);
         }
-        setExcludedAlbums(newList);
-        await SecureStore.setItemAsync('lomorage_excluded_albums', JSON.stringify(newList));
+    };
+
+    const toggleAlbumExclusion = (albumId) => {
+        const next = excludedAlbums.includes(albumId)
+            ? excludedAlbums.filter(id => id !== albumId)
+            : [...excludedAlbums, albumId];
+        return replaceExcludedAlbums(next);
     };
 
     return (
@@ -417,6 +423,7 @@ export function SettingsProvider({ children }) {
             updateUploadConcurrency,
             excludedAlbums,
             toggleAlbumExclusion,
+            replaceExcludedAlbums,
             remoteAIProcessingEnabled,
             toggleRemoteAIProcessing,
             searchThreshold,

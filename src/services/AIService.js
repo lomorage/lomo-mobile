@@ -25,7 +25,7 @@ import { readJpegExifOrientation, readImagePhysicalDimensions, base64ToFloat32Ar
 import { cosineSimilarity } from './ai/vectorMath';
 import { extractTimeRange } from './ai/searchQueryParser';
 import { processBlocksToMetadata } from './ai/ocrUtils';
-import { buildFaceBoundingBox, isFaceTooSmall, attachEyeLandmarks } from './ai/faceGeometry';
+import { buildFaceBoundingBox, isFaceTooSmall, minFaceSizeForScale, attachEyeLandmarks } from './ai/faceGeometry';
 import { translateToEnglish } from './ai/translateQuery';
 import { rankFaceAlbumMatches, DEFAULT_FACE_MATCH_THRESHOLD } from './ai/faceAlbumMatching';
 import { clusterDuplicateAssets } from './ai/duplicateDetection';
@@ -660,7 +660,16 @@ class AIService {
 
         if (localPath) {
           console.log(`[AIService] Calling recognizeText with localPath: ${localPath}`);
-          result = await recognizeText(localPath);
+          const analysis = await this._prepareAnalysisImage(localPath);
+          try {
+            if (analysis.width > 0 && analysis.height > 0) {
+              imgWidth = analysis.width;
+              imgHeight = analysis.height;
+            }
+            result = await recognizeText(analysis.uri || localPath);
+          } finally {
+            await analysis.cleanup();
+          }
         }
       } else {
         const url = AuthService.getServerUrl();
@@ -808,6 +817,28 @@ class AIService {
     }
   }
 
+  // Android only. A camera original decoded whole is large enough to kill the
+  // process (the per-app heap, not the phone's RAM). Returns the original uri
+  // with scale 1 when the picture is already small, or when this isn't Android.
+  async _prepareAnalysisImage(uri) {
+    if (!uri || Platform.OS !== 'android' || typeof ExpoLomoHasher.prepareAnalysisImageAsync !== 'function') {
+      return { uri, width: 0, height: 0, scale: 1, cleanup: async () => {} };
+    }
+    const prepared = await ExpoLomoHasher.prepareAnalysisImageAsync(uri);
+    const nextUri = prepared?.uri || uri;
+    const same = nextUri === uri;
+    return {
+      uri: nextUri,
+      width: prepared?.width || 0,
+      height: prepared?.height || 0,
+      scale: prepared?.scale > 0 ? prepared.scale : 1,
+      cleanup: async () => {
+        if (same) return;
+        await FileSystem.deleteAsync(nextUri, { idempotent: true }).catch(() => {});
+      },
+    };
+  }
+
   /**
    * Given a photo a user explicitly long-pressed to use as a face album's
    * cover, detects every face in it and decides which crop to use:
@@ -831,9 +862,19 @@ class AIService {
    * @returns {Promise<{croppedImageBase64: string, similarity: number|null} | {error: string, similarity?: number}>}
    */
   async extractBestMatchingFaceCrop(imageUri, currentCoverImageBase64) {
+    let analysis;
+    try {
+      analysis = await this._prepareAnalysisImage(imageUri);
+    } catch (e) {
+      console.warn('[AIService] Could not downscale the photo for face detection:', e.message);
+      return { error: 'detection_failed' };
+    }
+    const imageForFaces = analysis.uri || imageUri;
+    const faceFloor = minFaceSizeForScale(analysis.scale);
+    try {
     let rawFaces = [];
     try {
-      const faceResponse = await this.manualPickFaceDetector.detectFaces(imageUri);
+      const faceResponse = await this.manualPickFaceDetector.detectFaces(imageForFaces);
       rawFaces = faceResponse?.faces || [];
     } catch (e) {
       console.warn('[AIService] Face detection failed while picking a new cover:', e.message);
@@ -846,10 +887,10 @@ class AIService {
     const candidates = [];
     for (const face of rawFaces) {
       const boundingBox = buildFaceBoundingBox(face);
-      if (isFaceTooSmall(boundingBox)) continue;
+      if (isFaceTooSmall(boundingBox, undefined, faceFloor)) continue;
       attachEyeLandmarks(boundingBox, face);
       try {
-        const faceResultObj = await ExpoLomoHasher.encodeFaceEmbeddingAsync(imageUri, boundingBox, await ModelAssetService.getModelPath('w600k_r50.onnx'));
+        const faceResultObj = await ExpoLomoHasher.encodeFaceEmbeddingAsync(imageForFaces, boundingBox, await ModelAssetService.getModelPath('w600k_r50.onnx'));
         if (faceResultObj && faceResultObj !== 'failed' && faceResultObj.croppedImage) {
           candidates.push({
             croppedImageBase64: faceResultObj.croppedImage,
@@ -893,6 +934,9 @@ class AIService {
       return { error: 'low_confidence', similarity: best.similarity };
     }
     return best;
+    } finally {
+      await analysis.cleanup();
+    }
   }
 
   async fixBrokenFaceData() {
@@ -1013,7 +1057,11 @@ class AIService {
       await this._refreshFaceAlbumCache();
     }
 
-    const faceResponse = await this.faceDetector.detectFaces(localPath);
+    const analysis = await this._prepareAnalysisImage(localPath);
+    const imageForFaces = analysis.uri || localPath;
+    const faceFloor = minFaceSizeForScale(analysis.scale);
+    try {
+    const faceResponse = await this.faceDetector.detectFaces(imageForFaces);
     let faces = faceResponse?.faces || [];
     
     // NMS (Non-Maximum Suppression) to remove overlapping phantom faces
@@ -1050,7 +1098,7 @@ class AIService {
       const face = faces[i];
       const boundingBox = buildFaceBoundingBox(face);
 
-      if (isFaceTooSmall(boundingBox)) {
+      if (isFaceTooSmall(boundingBox, undefined, faceFloor)) {
         continue;
       }
 
@@ -1063,7 +1111,7 @@ class AIService {
 
       try {
         const faceResultObj = await ExpoLomoHasher.encodeFaceEmbeddingAsync(
-          localPath, boundingBox, await ModelAssetService.getModelPath('w600k_r50.onnx')
+          imageForFaces, boundingBox, await ModelAssetService.getModelPath('w600k_r50.onnx')
         );
         if (faceResultObj && faceResultObj !== 'failed') {
           croppedImageBase64 = faceResultObj.croppedImage || null;
@@ -1083,6 +1131,9 @@ class AIService {
     }
 
     return results;
+    } finally {
+      await analysis.cleanup();
+    }
   }
 
   // Generate vector from local image asset
@@ -1328,16 +1379,40 @@ class AIService {
               return orientedDims;
             };
 
+            // OCR and face detection decode the file themselves. On Android that
+            // decode is capped (see prepareAnalysisImageAsync) so a 50MP original
+            // can't kill the process. analysis stays null when the downscale fails,
+            // and those steps are skipped instead of falling back to the original.
+            let analysis = null;
+            const wantsOcr = asset.ocrText === null;
+            const wantsFaces = !asset.faceRecVersion || asset.faceRecVersion < 1;
+            if ((wantsOcr || wantsFaces) && localPath) {
+              try {
+                analysis = await this._prepareAnalysisImage(localPath);
+              } catch (prepErr) {
+                console.warn(`[AIService] Could not downscale ${asset.id} for on-device vision:`, prepErr.message);
+                if (wantsOcr) await AssetDBService.saveAssetOCR(asset.id, 'failed');
+                if (wantsFaces) {
+                  await AssetDBService.db.runAsync(
+                    'UPDATE MediaAsset SET faceRecVersion = ? WHERE id = ?',
+                    [-1, asset.id]
+                  );
+                }
+              }
+            }
+
             // C. Calculate OCR if missing
-            if (asset.ocrText === null) {
+            if (analysis && asset.ocrText === null) {
               this.status = { ...this.status, currentStepLabel: '🔤 Reading text…' };
               DeviceEventEmitter.emit('ai_processing_status', this.status);
               try {
-                const result = await recognizeText(localPath);
+                const result = await recognizeText(analysis.uri);
                 const text = result && result.text ? result.text.trim() : "none";
                 await AssetDBService.saveAssetOCR(asset.id, text || "none");
                 if (result && result.blocks) {
-                   const oriented = await getOrientedDimsOnce();
+                   const oriented = analysis.width > 0
+                     ? { w: analysis.width, h: analysis.height }
+                     : await getOrientedDimsOnce();
                    const ocrWidth = oriented.w || imgWidth;
                    const ocrHeight = oriented.h || imgHeight;
                    console.log(`[AIService] Background OCR oriented dims: ${ocrWidth}x${ocrHeight}`);
@@ -1361,11 +1436,11 @@ class AIService {
             }
 
             // D. Face Clustering
-            if (!asset.faceRecVersion || asset.faceRecVersion < 1) {
+            if (analysis && (!asset.faceRecVersion || asset.faceRecVersion < 1)) {
               this.status = { ...this.status, currentStepLabel: '🙂 Detecting faces…' };
               DeviceEventEmitter.emit('ai_processing_status', this.status);
               try {
-                const faceResponse = await this.faceDetector.detectFaces(localPath);
+                const faceResponse = await this.faceDetector.detectFaces(analysis.uri);
                 const faces = faceResponse?.faces || [];
                 console.log(`[AIService] Detected ${faces.length} faces in ${asset.id}`);
                 let matchedExisting = false;
@@ -1378,20 +1453,21 @@ class AIService {
 
                   const url = AuthService.getServerUrl();
                   const token = AuthService.getToken();
-                  const orientedForFaces = await getOrientedDimsOnce();
-                  const faceCheckWidth = orientedForFaces.w || imgWidth;
+                  const faceCheckWidth = analysis.width > 0
+                    ? analysis.width
+                    : ((await getOrientedDimsOnce()).w || imgWidth);
 
                   for (const face of faces) {
                     const boundingBox = buildFaceBoundingBox(face);
 
-                    if (isFaceTooSmall(boundingBox, faceCheckWidth)) {
+                    if (isFaceTooSmall(boundingBox, faceCheckWidth, minFaceSizeForScale(analysis.scale))) {
                       continue;
                     }
 
                     attachEyeLandmarks(boundingBox, face);
                     
                     const faceResultObj = await ExpoLomoHasher.encodeFaceEmbeddingAsync(
-                      localPath,
+                      analysis.uri,
                       boundingBox,
                       await ModelAssetService.getModelPath('w600k_r50.onnx')
                     );
@@ -1485,6 +1561,8 @@ class AIService {
                 );
               }
             }
+
+            if (analysis) await analysis.cleanup();
 
           } catch (err) {
             // Steps A-D each catch their own errors now, so this only fires for things

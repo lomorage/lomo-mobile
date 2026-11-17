@@ -13,6 +13,7 @@ import { formatBytesLog } from '../utils/formatters';
 import { Send, Folder, X, PlayCircle } from 'lucide-react-native';
 import * as MediaLibrary from 'expo-media-library';
 import { MEDIA_PERMISSIONS } from '../services/MediaService';
+import { applyAlbumInclusion, filterAlbums, sortAlbums } from '../utils/backupAlbumSelection';
 import * as SecureStore from 'expo-secure-store';
 import { Image } from 'expo-image';
 import { useVideoPlayer, VideoView } from 'expo-video';
@@ -153,6 +154,7 @@ export default function SettingsScreen({ navigation, route }) {
         updateUploadConcurrency,
         excludedAlbums,
         toggleAlbumExclusion,
+        replaceExcludedAlbums,
         remoteAIProcessingEnabled,
         toggleRemoteAIProcessing,
         searchThreshold,
@@ -212,6 +214,16 @@ export default function SettingsScreen({ navigation, route }) {
     const [isReachable, setIsReachable] = React.useState(null);
     const [isAlbumModalVisible, setAlbumModalVisible] = React.useState(false);
     const [albumsList, setAlbumsList] = React.useState([]);
+    const [albumQuery, setAlbumQuery] = React.useState('');
+    const [albumSort, setAlbumSort] = React.useState('countDesc');
+    const visibleAlbums = sortAlbums(filterAlbums(albumsList, albumQuery), albumSort);
+    const includedAlbumCount = albumsList.filter((album) => !excludedAlbums.includes(album.id)).length;
+    const includeVisibleAlbums = () => {
+        replaceExcludedAlbums(applyAlbumInclusion(excludedAlbums, visibleAlbums.map((album) => album.id), true));
+    };
+    const skipVisibleAlbums = () => {
+        replaceExcludedAlbums(applyAlbumInclusion(excludedAlbums, visibleAlbums.map((album) => album.id), false));
+    };
 
     const [isAlbumPreviewModalVisible, setAlbumPreviewModalVisible] = React.useState(false);
     const [previewAlbum, setPreviewAlbum] = React.useState(null);
@@ -558,13 +570,14 @@ export default function SettingsScreen({ navigation, route }) {
                 <TouchableOpacity 
                     style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8 }]}
                     onPress={() => {
+                        setAlbumQuery('');
                         loadAlbums();
                         setAlbumModalVisible(true);
                     }}
                 >
                     <View style={styles.settingTextContainer}>
                         <Text style={styles.settingLabel}>Selective Backup (Folders)</Text>
-                        <Text style={styles.settingDescription}>Choose which albums/folders to back up or ignore (e.g. skip Screenshots).</Text>
+                        <Text style={styles.settingDescription}>Choose which albums to back up. Search, then turn a whole group on or off.</Text>
                     </View>
                     <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                         {excludedAlbums?.length > 0 && (
@@ -1340,15 +1353,60 @@ export default function SettingsScreen({ navigation, route }) {
                         </TouchableOpacity>
                     </View>
                     
-                    <View style={{ paddingHorizontal: 20, paddingBottom: 10 }}>
+                    <View style={styles.albumToolbar}>
                         <Text style={styles.settingDescription}>
-                            Turn off the switch to IGNORE an album. Only assets in ON albums will be backed up.
+                            An album that is on gets backed up, including photos added to it later. Search, then back up or skip everything that matches.
                         </Text>
+                        <TextInput
+                            style={styles.albumSearch}
+                            value={albumQuery}
+                            onChangeText={setAlbumQuery}
+                            placeholder="Search albums"
+                            placeholderTextColor="#999"
+                            autoCapitalize="none"
+                            autoCorrect={false}
+                        />
+                        <View style={styles.albumSortRow}>
+                            {[
+                                ['countDesc', 'Most photos'],
+                                ['name', 'Name'],
+                                ['countAsc', 'Fewest'],
+                            ].map(([key, label]) => (
+                                <TouchableOpacity
+                                    key={key}
+                                    onPress={() => setAlbumSort(key)}
+                                    style={[styles.albumSortChip, albumSort === key && styles.albumSortChipOn]}
+                                >
+                                    <Text style={[styles.albumSortChipText, albumSort === key && styles.albumSortChipTextOn]}>{label}</Text>
+                                </TouchableOpacity>
+                            ))}
+                        </View>
+                        <View style={styles.albumBulkRow}>
+                            <Text style={styles.albumBulkCount}>
+                                {albumsList.length === 0
+                                    ? 'No albums yet'
+                                    : `Backing up ${includedAlbumCount} of ${albumsList.length}`}
+                            </Text>
+                            <View style={styles.albumBulkButtons}>
+                                <TouchableOpacity onPress={includeVisibleAlbums} disabled={visibleAlbums.length === 0}>
+                                    <Text style={[styles.albumBulkAction, visibleAlbums.length === 0 && styles.albumBulkActionDisabled]}>
+                                        {albumQuery.trim() ? 'Back up these' : 'Back up all'}
+                                    </Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity onPress={skipVisibleAlbums} disabled={visibleAlbums.length === 0}>
+                                    <Text style={[styles.albumBulkAction, visibleAlbums.length === 0 && styles.albumBulkActionDisabled]}>
+                                        {albumQuery.trim() ? 'Skip these' : 'Skip all'}
+                                    </Text>
+                                </TouchableOpacity>
+                            </View>
+                        </View>
                     </View>
 
                     <FlatList
-                        data={albumsList}
+                        data={visibleAlbums}
                         keyExtractor={(item) => item.id}
+                        style={{ flex: 1 }}
+                        keyboardShouldPersistTaps="handled"
                         contentContainerStyle={{ paddingBottom: 40 }}
                         renderItem={({ item }) => {
                             const isExcluded = excludedAlbums.includes(item.id);
@@ -1376,7 +1434,9 @@ export default function SettingsScreen({ navigation, route }) {
                         }}
                         ListEmptyComponent={
                             <View style={{ padding: 20, alignItems: 'center' }}>
-                                <Text style={{ color: '#888' }}>No albums found.</Text>
+                                <Text style={{ color: '#888' }}>
+                                    {albumQuery.trim() ? 'No albums match that search.' : 'No albums found.'}
+                                </Text>
                             </View>
                         }
                     />
@@ -1893,6 +1953,63 @@ const styles = StyleSheet.create({
         color: '#FFF',
         fontSize: 15,
         fontWeight: 'bold',
+    },
+    albumToolbar: {
+        paddingHorizontal: 20,
+        paddingBottom: 8,
+    },
+    albumSearch: {
+        marginTop: 10,
+        backgroundColor: '#fff',
+        borderWidth: 1,
+        borderColor: '#e5e5ea',
+        borderRadius: 8,
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        fontSize: 15,
+        color: '#1c1c1e',
+    },
+    albumSortRow: {
+        flexDirection: 'row',
+        marginTop: 10,
+    },
+    albumSortChip: {
+        paddingHorizontal: 10,
+        paddingVertical: 5,
+        borderRadius: 14,
+        backgroundColor: '#ececef',
+        marginRight: 8,
+    },
+    albumSortChipOn: {
+        backgroundColor: '#007AFF',
+    },
+    albumSortChipText: {
+        fontSize: 13,
+        color: '#333',
+    },
+    albumSortChipTextOn: {
+        color: '#fff',
+        fontWeight: '600',
+    },
+    albumBulkRow: {
+        marginTop: 12,
+    },
+    albumBulkButtons: {
+        flexDirection: 'row',
+        marginTop: 6,
+    },
+    albumBulkCount: {
+        fontSize: 13,
+        color: '#555',
+    },
+    albumBulkAction: {
+        fontSize: 15,
+        color: '#007AFF',
+        fontWeight: '600',
+        marginRight: 18,
+    },
+    albumBulkActionDisabled: {
+        color: '#bbb',
     },
     albumModalContainer: {
         flex: 1,

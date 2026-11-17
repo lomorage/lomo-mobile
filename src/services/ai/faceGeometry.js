@@ -25,10 +25,22 @@ export function buildFaceBoundingBox(face) {
 // imageWidth is optional: pass the full source image's pixel width (not the
 // crop's) when known, to also catch faces that clear the absolute pixel floor
 // but are still tiny relative to a high-resolution photo.
-export function isFaceTooSmall(boundingBox, imageWidth) {
-  if (boundingBox.width < MIN_FACE_SIZE || boundingBox.height < MIN_FACE_SIZE) return true;
+// minFaceSize overrides the absolute floor. Android downscales anything over
+// 2048px before ML Kit sees it (a full 50MP decode is what was killing the
+// process). Pass MIN_FACE_SIZE * scale so a face keeps the same yes/no it
+// would have had on the original pixels.
+export function isFaceTooSmall(boundingBox, imageWidth, minFaceSize = MIN_FACE_SIZE) {
+  const floor = minFaceSize > 0 ? minFaceSize : MIN_FACE_SIZE;
+  if (boundingBox.width < floor || boundingBox.height < floor) return true;
   if (imageWidth && boundingBox.width / imageWidth < MIN_FACE_WIDTH_RATIO) return true;
   return false;
+}
+
+// scale is preparedWidth / originalWidth from prepareAnalysisImageAsync.
+// 1 (or anything that isn't a shrink) keeps the 80px floor.
+export function minFaceSizeForScale(scale) {
+  if (!(scale > 0) || scale >= 1) return MIN_FACE_SIZE;
+  return MIN_FACE_SIZE * scale;
 }
 
 // Locates the left/right eye landmarks on an MLKit face (when landmark
