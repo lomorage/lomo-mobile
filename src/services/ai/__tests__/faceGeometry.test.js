@@ -1,4 +1,4 @@
-import { MIN_FACE_SIZE, MIN_FACE_WIDTH_RATIO, buildFaceBoundingBox, isFaceTooSmall, minFaceSizeForScale, attachEyeLandmarks } from '../faceGeometry';
+import { MIN_FACE_SIZE, MIN_FACE_WIDTH_RATIO, MIN_FACE_OF_LARGEST_RATIO, buildFaceBoundingBox, isFaceTooSmall, isBystanderFace, minFaceSizeForScale, attachEyeLandmarks } from '../faceGeometry';
 
 describe('buildFaceBoundingBox', () => {
   test('flattens MLKit origin/size frame into x/y/width/height', () => {
@@ -84,6 +84,36 @@ describe('minFaceSizeForScale', () => {
 
   test('shrinks the floor by the same factor as the image', () => {
     expect(minFaceSizeForScale(0.25)).toBe(20);
+  });
+});
+
+describe('isBystanderFace', () => {
+  test('a face under 40% of the largest face in the same photo is a bystander', () => {
+    // 100 / 300 is about 0.33, and 100px on a 2000px photo still clears both floors.
+    expect(isBystanderFace({ width: 100, height: 100 }, 2000, MIN_FACE_SIZE, 300)).toBe(true);
+  });
+
+  test('a face at exactly 40% of the largest is kept', () => {
+    const largest = 300;
+    const width = largest * MIN_FACE_OF_LARGEST_RATIO;
+    expect(isBystanderFace({ width, height: width }, 2000, MIN_FACE_SIZE, largest)).toBe(false);
+  });
+
+  test('the only face is not a bystander', () => {
+    expect(isBystanderFace({ width: 200, height: 200 }, 2000, MIN_FACE_SIZE, 200)).toBe(false);
+  });
+
+  test('a child-sized face next to an adult is kept', () => {
+    // 220 / 400 = 0.55, the size of a child standing beside an adult.
+    expect(isBystanderFace({ width: 220, height: 220 }, 4000, MIN_FACE_SIZE, 400)).toBe(false);
+  });
+
+  test('an absolute-floor failure is still a bystander when it is the largest face', () => {
+    expect(isBystanderFace({ width: 40, height: 40 }, 2000, MIN_FACE_SIZE, 40)).toBe(true);
+  });
+
+  test('a missing largest width does not add a relative rejection', () => {
+    expect(isBystanderFace({ width: 200, height: 200 }, 2000)).toBe(false);
   });
 });
 

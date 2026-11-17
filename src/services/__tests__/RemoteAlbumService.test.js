@@ -67,6 +67,14 @@ describe('getAlbums', () => {
     await expect(RemoteAlbumService.getAlbums()).resolves.toEqual([]);
   });
 
+  test('returns null on a network error when nullOnError is set and keeps the current tree', async () => {
+    RemoteAlbumService.rootCollection = { keep: true };
+    axios.get.mockRejectedValue(new Error('network down'));
+    await expect(RemoteAlbumService.getAlbums({ nullOnError: true })).resolves.toBeNull();
+    await expect(RemoteAlbumService.getAlbumsHierarchy({ nullOnError: true })).resolves.toBeNull();
+    expect(RemoteAlbumService.rootCollection).toEqual({ keep: true });
+  });
+
   test('returns [] on a canceled request too', async () => {
     axios.isCancel = jest.fn(() => true);
     axios.get.mockRejectedValue(new Error('canceled'));

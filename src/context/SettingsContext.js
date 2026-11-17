@@ -344,6 +344,7 @@ export function SettingsProvider({ children }) {
         try {
             await SecureStore.setItemAsync('lomorage_face_dry_run', value.toString());
             setFaceDryRun(value);
+            require('../services/AIService').default.faceDryRun = value;
         } catch (error) {
             console.error('Error saving Face Dry Run setting:', error);
         }
@@ -357,6 +358,7 @@ export function SettingsProvider({ children }) {
             await SecureStore.setItemAsync('lomorage_face_dry_run', enableRealMode ? 'false' : 'true');
             await SecureStore.setItemAsync('lomorage_face_dry_run_migrated_v1', 'true');
             setFaceDryRun(!enableRealMode);
+            require('../services/AIService').default.faceDryRun = !enableRealMode;
             setFaceDryRunMigrationNeeded(false);
         } catch (error) {
             console.error('Error saving Face Dry Run migration:', error);

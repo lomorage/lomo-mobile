@@ -1,4 +1,4 @@
-import { rankFaceAlbumMatches, DEFAULT_FACE_MATCH_THRESHOLD } from '../faceAlbumMatching';
+import { rankFaceAlbumMatches, groupDuplicateFaceAlbums, titleForFaceAlbumMerge, DEFAULT_FACE_MATCH_THRESHOLD } from '../faceAlbumMatching';
 
 describe('rankFaceAlbumMatches', () => {
   test('returns no bestMatch and an empty list for an empty/missing cache', () => {
@@ -57,5 +57,49 @@ describe('rankFaceAlbumMatches', () => {
     ];
     const { bestMatch } = rankFaceAlbumMatches([1, 0], cache);
     expect(bestMatch.id).toBe('first');
+  });
+});
+
+describe('groupDuplicateFaceAlbums', () => {
+  test('groups albums whose covers are the same person and leaves the rest', () => {
+    const same = [1, 0];
+    const other = [0, 1];
+    const groups = groupDuplicateFaceAlbums([
+      { id: 2, title: '/Faces/a', coverEmbedding: same },
+      { id: 9, title: '/Faces/other', coverEmbedding: other },
+      { id: 3, title: '/Faces/b', coverEmbedding: same },
+      { id: 4, title: '/Faces/no-cover' },
+    ]);
+    expect(groups).toEqual([[
+      { id: 2, title: '/Faces/a', coverEmbedding: same },
+      { id: 3, title: '/Faces/b', coverEmbedding: same },
+    ]]);
+  });
+
+  test('keeps the name of the album with the most photos', () => {
+    expect(titleForFaceAlbumMerge([
+      { title: '/Faces/unamed-a', count: 1 },
+      { title: '/Faces/Mom', count: 4 },
+    ])).toBe('/Faces/Mom');
+  });
+
+  test('prefers a real name when the photo counts tie, and skips an empty group', () => {
+    expect(titleForFaceAlbumMerge([
+      { title: '/Faces/unamed-a', count: 2 },
+      { title: '/Faces/Mom', count: 2 },
+    ])).toBe('/Faces/Mom');
+    expect(titleForFaceAlbumMerge([
+      { title: '/Faces/unamed-a', count: 0 },
+      { title: '/Faces/Mom', count: 0 },
+    ])).toBeNull();
+  });
+
+  test('a similarity of exactly the threshold stays two albums', () => {
+    const v1 = [1, 0];
+    const v2 = [0.3, Math.sqrt(1 - 0.3 * 0.3)];
+    expect(groupDuplicateFaceAlbums([
+      { id: 1, coverEmbedding: v1 },
+      { id: 2, coverEmbedding: v2 },
+    ])).toEqual([]);
   });
 });

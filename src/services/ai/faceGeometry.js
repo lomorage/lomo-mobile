@@ -11,6 +11,12 @@ export const MIN_FACE_SIZE = 80;
 // incidental strangers caught in the frame of a landscape/travel shot.
 export const MIN_FACE_WIDTH_RATIO = 0.04;
 
+// In one photo the people you meant to shoot are about the same size. A face
+// much smaller than the largest face is a passer-by behind them, even when it
+// clears the 4% width floor. 0.4 still keeps a child beside an adult (often
+// half to two thirds of the adult face) and a row of similar-sized people.
+export const MIN_FACE_OF_LARGEST_RATIO = 0.4;
+
 // Converts an MLKit face detection result's frame ({origin, size}) into the
 // flat {x, y, width, height} shape used throughout the face-matching pipeline.
 export function buildFaceBoundingBox(face) {
@@ -41,6 +47,14 @@ export function isFaceTooSmall(boundingBox, imageWidth, minFaceSize = MIN_FACE_S
 export function minFaceSizeForScale(scale) {
   if (!(scale > 0) || scale >= 1) return MIN_FACE_SIZE;
   return MIN_FACE_SIZE * scale;
+}
+
+// largestFaceWidth is the widest face box in the same photo. Omit it (or pass
+// the box's own width) for a single face: that face is the subject.
+export function isBystanderFace(boundingBox, imageWidth, minFaceSize = MIN_FACE_SIZE, largestFaceWidth) {
+  if (isFaceTooSmall(boundingBox, imageWidth, minFaceSize)) return true;
+  if (!(largestFaceWidth > 0)) return false;
+  return boundingBox.width < largestFaceWidth * MIN_FACE_OF_LARGEST_RATIO;
 }
 
 // Locates the left/right eye landmarks on an MLKit face (when landmark

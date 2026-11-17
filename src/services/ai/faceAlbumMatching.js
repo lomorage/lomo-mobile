@@ -18,3 +18,49 @@ export function rankFaceAlbumMatches(faceVector, faceAlbumCache, threshold = DEF
   const bestMatch = (allMatches.length > 0 && allMatches[0].similarity > threshold) ? allMatches[0] : null;
   return { bestMatch, allMatches };
 }
+
+// Albums whose cover embeddings clear the same threshold as a photo match are
+// the same person split across two albums. Returns each such group (length >= 2).
+// Albums with no cover embedding are left out: nothing proves they match.
+export function groupDuplicateFaceAlbums(faceAlbumCache, threshold = DEFAULT_FACE_MATCH_THRESHOLD) {
+  const albums = (faceAlbumCache || []).filter(album => album && album.coverEmbedding);
+  const parent = albums.map((_, index) => index);
+  const find = (index) => {
+    while (parent[index] !== index) {
+      parent[index] = parent[parent[index]];
+      index = parent[index];
+    }
+    return index;
+  };
+  for (let i = 0; i < albums.length; i++) {
+    for (let j = i + 1; j < albums.length; j++) {
+      const similarity = cosineSimilarity(albums[i].coverEmbedding, albums[j].coverEmbedding);
+      if (similarity > threshold) parent[find(i)] = find(j);
+    }
+  }
+  const groups = new Map();
+  albums.forEach((album, index) => {
+    const root = find(index);
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root).push(album);
+  });
+  return [...groups.values()].filter(group => group.length >= 2);
+}
+
+// The server keeps the album with the most photos, then renames that survivor
+// to the Title we send. group[0] is list order (title sort), so an unamed
+// album can sort ahead of the populated one and rename it.
+export function titleForFaceAlbumMerge(group) {
+  let best = null;
+  for (const album of group || []) {
+    const title = album && album.title;
+    if (!title || !title.startsWith('/Faces/')) continue;
+    const count = Number(album.count) || 0;
+    const unamed = title.includes('/unamed-');
+    if (!best || count > best.count || (count === best.count && best.unamed && !unamed)) {
+      best = { title, count, unamed };
+    }
+  }
+  if (!best || best.count <= 0) return null;
+  return best.title;
+}

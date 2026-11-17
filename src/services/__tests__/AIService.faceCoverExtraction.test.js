@@ -69,6 +69,7 @@ jest.mock('@infinitered/react-native-mlkit-face-detection', () => ({
   // `manualPickFaceDetector`), so tests can control each separately.
   RNMLKitFaceDetector: jest.fn().mockImplementation(() => ({
     detectFaces: jest.fn().mockResolvedValue({ faces: [] }),
+    initialize: jest.fn().mockResolvedValue(),
   })),
 }));
 jest.mock('../../../modules/expo-lomo-hasher', () => ({

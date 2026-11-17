@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "619692300978",
+    "project_id": "lomorage-mobile",
+    "storage_bucket": "lomorage-mobile.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:619692300978:android:5ab4bd94067b24191647ab",
+        "android_client_info": {
+          "package_name": "com.wtao.lomo"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD3RE1rJO6yTxfLZ1KkXGcLu9kZXXDCstM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
