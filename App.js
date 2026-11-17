@@ -1,6 +1,13 @@
 import 'react-native-gesture-handler';
 import Logger from './src/utils/logger';
 Logger.init();
+// After the local log handler, so Crashlytics chains back to it.
+try {
+  const { getCrashlytics } = require('@react-native-firebase/crashlytics');
+  getCrashlytics();
+} catch (err) {
+  console.warn('[App] Crashlytics is not linked in this build:', err?.message);
+}
 import { markAppStart } from './src/utils/scaleMetrics';
 markAppStart();
 import React, { useEffect } from 'react';

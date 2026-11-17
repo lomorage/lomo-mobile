@@ -45,17 +45,20 @@ class RemoteAlbumService {
       } else {
         console.error('[RemoteAlbumService] Error fetching albums:', error.message);
       }
-      return [];
+      // nullOnError lets a caller keep the list already on screen. [] is also
+      // what an empty library looks like, so a failed refresh must not use it.
+      return options.nullOnError ? null : [];
     }
   }
 
   /**
    * Retrieves all albums from the server and builds a hierarchical tree.
    * @param {Object} options - Options like { priority, groupId }
-   * @returns {Promise<LomoCollection>} Root LomoCollection node.
+   * @returns {Promise<LomoCollection|null>} Root LomoCollection node, or null when nullOnError and the fetch failed.
    */
   async getAlbumsHierarchy(options = {}) {
     const flatAlbums = await this.getAlbums(options);
+    if (flatAlbums == null) return null;
     this.rootCollection = LomoCollection.buildCollections(flatAlbums);
     return this.rootCollection;
   }

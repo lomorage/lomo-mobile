@@ -69,12 +69,14 @@ jest.mock('@infinitered/react-native-mlkit-face-detection', () => ({
   // `manualPickFaceDetector`), so tests can control each separately.
   RNMLKitFaceDetector: jest.fn().mockImplementation(() => ({
     detectFaces: jest.fn().mockResolvedValue({ faces: [] }),
+    initialize: jest.fn().mockResolvedValue(),
   })),
 }));
 jest.mock('../../../modules/expo-lomo-hasher', () => ({
   encodeFaceEmbeddingAsync: jest.fn(),
   encodeImageEmbeddingAsync: jest.fn(),
   encodeTextEmbeddingAsync: jest.fn(),
+  prepareAnalysisImageAsync: jest.fn(),
   sliceFileAsync: jest.fn(),
 }));
 jest.mock('../../../modules/expo-background-keepalive', () => ({
@@ -90,6 +92,7 @@ jest.mock('react-native', () => ({
 }));
 
 const ExpoLomoHasher = require('../../../modules/expo-lomo-hasher');
+const FileSystem = require('expo-file-system/legacy');
 
 import AIService from '../AIService';
 
@@ -118,6 +121,31 @@ describe('AIService.extractBestMatchingFaceCrop', () => {
     AIService.manualPickFaceDetector.detectFaces.mockResolvedValueOnce({ faces: [] });
     const result = await AIService.extractBestMatchingFaceCrop('file://photo.jpg', 'cover-b64');
     expect(result).toEqual({ error: 'no_faces_found' });
+  });
+
+  test('detects and embeds the downscaled copy, then deletes it', async () => {
+    ExpoLomoHasher.prepareAnalysisImageAsync.mockResolvedValueOnce({
+      uri: 'file:///mock-cache/analysis.jpg',
+      width: 2048,
+      height: 1536,
+      scale: 0.5,
+    });
+    AIService.manualPickFaceDetector.detectFaces.mockResolvedValueOnce({ faces: [bigFace()] });
+    ExpoLomoHasher.encodeFaceEmbeddingAsync.mockResolvedValueOnce({
+      embedding: b64OfVector([1, 0, 0]),
+      croppedImage: 'solo-crop-b64',
+    });
+
+    const result = await AIService.extractBestMatchingFaceCrop('content://media/1', 'cover-b64');
+
+    expect(result.croppedImageBase64).toBe('solo-crop-b64');
+    expect(AIService.manualPickFaceDetector.detectFaces).toHaveBeenCalledWith('file:///mock-cache/analysis.jpg');
+    expect(ExpoLomoHasher.encodeFaceEmbeddingAsync).toHaveBeenCalledWith(
+      'file:///mock-cache/analysis.jpg',
+      expect.objectContaining({ width: 150, height: 150 }),
+      'w600k_r50.onnx'
+    );
+    expect(FileSystem.deleteAsync).toHaveBeenCalledWith('file:///mock-cache/analysis.jpg', { idempotent: true });
   });
 
   test('uses the lenient manualPickFaceDetector, not the strict clustering one, on the candidate photo', async () => {

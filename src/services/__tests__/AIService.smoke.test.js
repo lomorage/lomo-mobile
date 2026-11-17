@@ -73,12 +73,14 @@ jest.mock('@infinitered/react-native-mlkit-text-recognition', () => ({
 jest.mock('@infinitered/react-native-mlkit-face-detection', () => ({
   RNMLKitFaceDetector: jest.fn().mockImplementation(() => ({
     detectFaces: jest.fn().mockResolvedValue({ faces: [] }),
+    initialize: jest.fn().mockResolvedValue(),
   })),
 }));
 jest.mock('../../../modules/expo-lomo-hasher', () => ({
   encodeFaceEmbeddingAsync: jest.fn(),
   encodeImageEmbeddingAsync: jest.fn(),
   encodeTextEmbeddingAsync: jest.fn(),
+  prepareAnalysisImageAsync: jest.fn(),
   sliceFileAsync: jest.fn(),
 }));
 jest.mock('../../../modules/expo-background-keepalive', () => ({
@@ -94,8 +96,12 @@ jest.mock('react-native', () => ({
 }));
 
 const SecureStore = require('expo-secure-store');
+const FileSystem = require('expo-file-system/legacy');
 const AssetDBService = require('./../AssetDBService');
 const AuthService = require('./../AuthService');
+const MediaService = require('./../MediaService');
+const ExpoLomoHasher = require('../../../modules/expo-lomo-hasher');
+const { recognizeText } = require('@infinitered/react-native-mlkit-text-recognition');
 const { DeviceEventEmitter } = require('react-native');
 const axios = require('axios');
 
@@ -168,6 +174,21 @@ describe('AIService.processLocalEmbeddings (smoke)', () => {
     expect(SecureStore.getItemAsync).not.toHaveBeenCalled();
   });
 
+  test('a second call does not start while the first is still awaiting', async () => {
+    let release;
+    SecureStore.getItemAsync.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    const first = AIService.processLocalEmbeddings(10, true);
+    await Promise.resolve();
+    expect(AIService.isProcessing).toBe(true);
+
+    await AIService.processLocalEmbeddings(10, true);
+    expect(SecureStore.getItemAsync).toHaveBeenCalledTimes(1);
+
+    release(null);
+    await first;
+    expect(AIService.isProcessing).toBe(false);
+  });
+
   test('skips when AI is disabled and force is false', async () => {
     SecureStore.getItemAsync.mockImplementation((key) =>
       Promise.resolve(key === 'lomorage_ai_enabled' ? 'false' : null)
@@ -229,6 +250,53 @@ describe('AIService.processLocalEmbeddings (smoke)', () => {
       'ai_processing_status',
       expect.objectContaining({ isProcessing: false })
     );
+  });
+
+  test('deletes the downscaled analysis image when a later step throws', async () => {
+    let served = false;
+    AssetDBService.db = {
+      getFirstAsync: jest.fn(async (sql) => (
+        typeof sql === 'string' && sql.includes('COUNT(*)') ? { count: 1 } : { count: 0 }
+      )),
+      getAllAsync: jest.fn(async () => {
+        if (served) return [];
+        served = true;
+        return [{
+          id: 7,
+          hash: 'abc',
+          isLocal: 1,
+          clipEmbeddingVersion: 1,
+          phash: '1',
+          ocrText: null,
+          faceRecVersion: 1,
+        }];
+      }),
+      runAsync: jest.fn().mockResolvedValue(),
+    };
+    MediaService.getAssetInfo.mockResolvedValue({
+      localUri: 'file://photo.jpg',
+      uri: 'file://photo.jpg',
+      width: 4000,
+      height: 3000,
+    });
+    ExpoLomoHasher.prepareAnalysisImageAsync.mockResolvedValue({
+      uri: 'file:///mock-cache/analysis-7.jpg',
+      width: 2000,
+      height: 1500,
+      scale: 0.5,
+    });
+    recognizeText.mockRejectedValueOnce(new Error('ocr blew up'));
+    // The OCR catch tries to record the failure. That write failing is what
+    // used to skip analysis.cleanup() and leave the temp jpeg behind.
+    AssetDBService.saveAssetOCR.mockRejectedValueOnce(new Error('db down'));
+
+    await AIService.processLocalEmbeddings(10, true);
+
+    expect(FileSystem.deleteAsync).toHaveBeenCalledWith(
+      'file:///mock-cache/analysis-7.jpg',
+      { idempotent: true }
+    );
+    expect(AIService.isProcessing).toBe(false);
   });
 
   test('does not throw and still resets isProcessing when the DB query itself fails', async () => {

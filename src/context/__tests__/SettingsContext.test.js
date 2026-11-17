@@ -170,6 +170,27 @@ describe('toggleAlbumExclusion', () => {
     });
     expect(latestSettings.excludedAlbums).toEqual(['album2']);
   });
+
+  test('replaceExcludedAlbums writes the whole skip list at once', async () => {
+    await renderSettingsProvider();
+    await act(async () => {
+      await latestSettings.replaceExcludedAlbums(['screenshots', 'downloads']);
+    });
+    expect(latestSettings.excludedAlbums).toEqual(['screenshots', 'downloads']);
+    expect(SecureStore.setItemAsync).toHaveBeenCalledWith(
+      'lomorage_excluded_albums',
+      JSON.stringify(['screenshots', 'downloads'])
+    );
+  });
+
+  test('leaves the skip list unchanged when the write fails', async () => {
+    await renderSettingsProvider();
+    SecureStore.setItemAsync.mockRejectedValueOnce(new Error('disk full'));
+    await act(async () => {
+      await latestSettings.replaceExcludedAlbums(['screenshots']);
+    });
+    expect(latestSettings.excludedAlbums).toEqual([]);
+  });
 });
 
 describe('AI-related toggles trigger the right AIService calls', () => {

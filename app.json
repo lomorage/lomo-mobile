@@ -16,6 +16,7 @@
       "buildNumber": "28",
       "supportsTablet": true,
       "bundleIdentifier": "com.wtao.lomo",
+      "googleServicesFile": "./GoogleService-Info.plist",
       "appleTeamId": "3GRDMJ5JMM",
       "infoPlist": {
         "UIBackgroundModes": [
@@ -57,6 +58,7 @@
         "android.permission.POST_NOTIFICATIONS"
       ],
       "package": "com.wtao.lomo",
+      "googleServicesFile": "./google-services.json",
       "versionCode": 1000156,
       "intentFilters": [
         {
@@ -119,6 +121,17 @@
       "expo-task-manager",
       "expo-background-task",
       "expo-sqlite",
+      "@react-native-firebase/app",
+      "@react-native-firebase/crashlytics",
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "useFrameworks": "static"
+          }
+        }
+      ],
+      "./plugins/withCrashlyticsNativeSymbols",
       "./plugins/withAdaptiveIconInset",
       "./plugins/withWorkManagerForeground",
       "./plugins/withVideoCacheGradle",

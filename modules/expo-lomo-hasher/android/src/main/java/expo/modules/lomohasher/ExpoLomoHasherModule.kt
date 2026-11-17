@@ -20,8 +20,14 @@ import android.graphics.BitmapFactory
 import android.util.Base64
 import java.nio.FloatBuffer
 import java.nio.IntBuffer
-import android.media.ExifInterface
-import android.graphics.Matrix
+
+
+internal fun cpuSessionOptions(): OrtSession.SessionOptions {
+  return OrtSession.SessionOptions().apply {
+    setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+    setIntraOpNumThreads(Runtime.getRuntime().availableProcessors().coerceIn(2, 4))
+  }
+}
 
 class ExpoLomoHasherModule : Module() {
   private var visualSession: OrtSession? = null
@@ -68,47 +74,11 @@ class ExpoLomoHasherModule : Module() {
     return file.absolutePath
   }
 
-  private fun getOrientationRotation(context: android.content.Context, uri: Uri): Int {
-    try {
-      context.contentResolver.openInputStream(uri).use { stream ->
-        if (stream != null) {
-          val exif = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            ExifInterface(stream)
-          } else {
-            return 0
-          }
-          val orientation = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
-          return when (orientation) {
-            ExifInterface.ORIENTATION_ROTATE_90 -> 90
-            ExifInterface.ORIENTATION_ROTATE_180 -> 180
-            ExifInterface.ORIENTATION_ROTATE_270 -> 270
-            else -> 0
-          }
-        }
-      }
-    } catch (e: Exception) {
-      Log.e("ExpoLomoHasher", "Error reading exif orientation", e)
-    }
-    return 0
-  }
-
-  private fun rotateBitmap(bitmap: Bitmap, degrees: Int): Bitmap {
-    if (degrees == 0) return bitmap
-    val matrix = Matrix()
-    matrix.postRotate(degrees.toFloat())
-    val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
-    bitmap.recycle()
-    return rotated
-  }
   private fun getVisualSession(modelPath: String): OrtSession {
     val current = visualSession
     if (current != null) return current
     val resolved = resolveModelPath(modelPath)
-    val options = OrtSession.SessionOptions().apply {
-      setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-      setIntraOpNumThreads(Runtime.getRuntime().availableProcessors().coerceIn(2, 4))
-    }
-    val session = ortEnv.createSession(resolved, options)
+    val session = ortEnv.createSession(resolved, cpuSessionOptions())
     visualSession = session
     return session
   }
@@ -117,11 +87,7 @@ class ExpoLomoHasherModule : Module() {
     val current = faceSession
     if (current != null) return current
     val resolved = resolveModelPath(modelPath)
-    val options = OrtSession.SessionOptions().apply {
-      setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-      setIntraOpNumThreads(Runtime.getRuntime().availableProcessors().coerceIn(2, 4))
-    }
-    val session = ortEnv.createSession(resolved, options)
+    val session = ortEnv.createSession(resolved, cpuSessionOptions())
     faceSession = session
     return session
   }
@@ -130,11 +96,7 @@ class ExpoLomoHasherModule : Module() {
     val current = textualSession
     if (current != null) return current
     val resolved = resolveModelPath(modelPath)
-    val options = OrtSession.SessionOptions().apply {
-      setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-      setIntraOpNumThreads(Runtime.getRuntime().availableProcessors().coerceIn(2, 4))
-    }
-    val session = ortEnv.createSession(resolved, options)
+    val session = ortEnv.createSession(resolved, cpuSessionOptions())
     textualSession = session
     return session
   }
@@ -426,43 +388,13 @@ class ExpoLomoHasherModule : Module() {
     AsyncFunction("encodeImageEmbeddingAsync") { imageUriString: String, modelPath: String ->
       val uri = Uri.parse(imageUriString)
       val context = appContext.reactContext ?: throw Exception("React context not available")
-      
-      // Step 1: Decode only bounds to calculate scale factor
-      val options = BitmapFactory.Options().apply {
-          inJustDecodeBounds = true
-      }
-      context.contentResolver.openInputStream(uri).use { stream ->
-          BitmapFactory.decodeStream(stream, null, options)
-      }
-      
-      val width = options.outWidth
-      val height = options.outHeight
-      
-      // Step 2: Compute inSampleSize targeting ~320px to prevent high memory usage
-      var inSampleSize = 1
-      val targetSize = 320
-      if (width > targetSize || height > targetSize) {
-          val halfWidth = width / 2
-          val halfHeight = height / 2
-          while (halfWidth / inSampleSize >= targetSize && halfHeight / inSampleSize >= targetSize) {
-              inSampleSize *= 2
-          }
-      }
-      
-      // Step 3: Decode scaled image
-      val decodeOptions = BitmapFactory.Options().apply {
-          inSampleSize = inSampleSize
-      }
-      var bitmap = context.contentResolver.openInputStream(uri).use { stream ->
-          BitmapFactory.decodeStream(stream, null, decodeOptions)
-      }
-      
-      if (bitmap == null) {
-          throw Exception("Could not decode bitmap for: $imageUriString")
-      }
-      
-      val rotation = getOrientationRotation(context, uri)
-      bitmap = rotateBitmap(bitmap, rotation)
+
+      // ~320px on the short side. decodeToward keeps this sample loop and
+      // decodes through a seekable descriptor, so a camera original is not
+      // allocated at full size.
+      var bitmap = decodeToward(context, uri, 320)
+      val rotation = readOrientationDegrees(context, uri)
+      bitmap = rotateByDegrees(bitmap, rotation)
 
       val session = getVisualSession(modelPath)
       var cropped: Bitmap? = null
@@ -550,17 +482,58 @@ class ExpoLomoHasherModule : Module() {
       }
     }
 
+    // Oriented JPEG whose long edge is at most ANALYSIS_MAX_EDGE, plus the scale
+    // that maps original-image coordinates onto it. scale is 1 and uri is the
+    // input when the file is already small and upright. ML Kit must be given
+    // this uri: it decodes the file itself, so handing it the camera original
+    // crashes the same way a full-size embed did.
+    AsyncFunction("prepareAnalysisImageAsync") { imageUriString: String ->
+      val uri = Uri.parse(imageUriString)
+      val context = appContext.reactContext ?: throw Exception("React context not available")
+      val rotation = readOrientationDegrees(context, uri)
+      val bounds = readImageBounds(context, uri)
+      val rawW = bounds.outWidth
+      val rawH = bounds.outHeight
+      if (rawW <= 0 || rawH <= 0) throw Exception("Could not read image size: $imageUriString")
+      if (rotation == 0 && rawW <= ANALYSIS_MAX_EDGE && rawH <= ANALYSIS_MAX_EDGE) {
+        mapOf(
+          "uri" to imageUriString,
+          "width" to rawW,
+          "height" to rawH,
+          "scale" to 1.0
+        )
+      } else {
+        val decoded = decodeAnalysisBitmap(context, uri)
+        try {
+          val out = File(context.cacheDir, "analysis-${System.nanoTime()}.jpg")
+          FileOutputStream(out).use { stream ->
+            if (!decoded.bitmap.compress(Bitmap.CompressFormat.JPEG, 90, stream)) {
+              throw Exception("Could not write downscaled image")
+            }
+          }
+          mapOf(
+            "uri" to Uri.fromFile(out).toString(),
+            "width" to decoded.bitmap.width,
+            "height" to decoded.bitmap.height,
+            "scale" to decoded.scaleX.toDouble()
+          )
+        } finally {
+          decoded.bitmap.recycle()
+        }
+      }
+    }
+
     AsyncFunction("encodeFaceEmbeddingAsync") { imageUriString: String, boundingBox: Map<String, Any>, modelPath: String ->
       val uri = Uri.parse(imageUriString)
       val context = appContext.reactContext ?: throw Exception("React context not available")
-      
-      // Step 1: Decode image
-      var bitmap = context.contentResolver.openInputStream(uri).use { stream ->
-          BitmapFactory.decodeStream(stream)
-      } ?: throw Exception("Could not decode bitmap for: $imageUriString")
-      
-      val rotation = getOrientationRotation(context, uri)
-      bitmap = rotateBitmap(bitmap, rotation)
+
+      // Never the full camera frame. Boxes from a detector that saw the original
+      // are scaled onto this bitmap; boxes from prepareAnalysisImageAsync are
+      // already in this space and the scale comes out as 1.
+      val decoded = decodeAnalysisBitmap(context, uri)
+      val bitmap = decoded.bitmap
+      val scaleX = decoded.scaleX
+      val scaleY = decoded.scaleY
 
       var croppedBitmap: Bitmap? = null
       var scaledCrop: Bitmap? = null
@@ -568,10 +541,10 @@ class ExpoLomoHasherModule : Module() {
       
       try {
           // Step 2: Extract bounding box and crop
-          var x = (boundingBox["x"] as? Number)?.toInt() ?: 0
-          var y = (boundingBox["y"] as? Number)?.toInt() ?: 0
-          var w = (boundingBox["width"] as? Number)?.toInt() ?: bitmap.width
-          var h = (boundingBox["height"] as? Number)?.toInt() ?: bitmap.height
+          var x = (((boundingBox["x"] as? Number)?.toFloat() ?: 0f) * scaleX).toInt()
+          var y = (((boundingBox["y"] as? Number)?.toFloat() ?: 0f) * scaleY).toInt()
+          var w = if (boundingBox["width"] is Number) ((boundingBox["width"] as Number).toFloat() * scaleX).toInt() else bitmap.width
+          var h = if (boundingBox["height"] is Number) ((boundingBox["height"] as Number).toFloat() * scaleY).toInt() else bitmap.height
 
           // Ensure bounding box is within bitmap dimensions
           x = Math.max(0, x)
@@ -587,10 +560,10 @@ class ExpoLomoHasherModule : Module() {
           val rightEye = boundingBox["rightEye"] as? Map<*, *>
 
           if (leftEye != null && rightEye != null) {
-              val lx = (leftEye["x"] as? Number)?.toFloat() ?: 0f
-              val ly = (leftEye["y"] as? Number)?.toFloat() ?: 0f
-              val rx = (rightEye["x"] as? Number)?.toFloat() ?: 0f
-              val ry = (rightEye["y"] as? Number)?.toFloat() ?: 0f
+              val lx = ((leftEye["x"] as? Number)?.toFloat() ?: 0f) * scaleX
+              val ly = ((leftEye["y"] as? Number)?.toFloat() ?: 0f) * scaleY
+              val rx = ((rightEye["x"] as? Number)?.toFloat() ?: 0f) * scaleX
+              val ry = ((rightEye["y"] as? Number)?.toFloat() ?: 0f) * scaleY
               
               val src = floatArrayOf(lx, ly, rx, ry)
               // ArcFace 112x112 standard eye coordinates
@@ -672,35 +645,9 @@ class ExpoLomoHasherModule : Module() {
     AsyncFunction("generatePHashAsync") { imageUriString: String ->
       val uri = Uri.parse(imageUriString)
       val context = appContext.reactContext ?: throw Exception("React context not available")
-      
-      // Step 1: Decode only bounds to calculate scale factor
-      val options = BitmapFactory.Options().apply {
-          inJustDecodeBounds = true
-      }
-      context.contentResolver.openInputStream(uri).use { stream ->
-          BitmapFactory.decodeStream(stream, null, options)
-      }
-      
-      val width = options.outWidth
-      val height = options.outHeight
-      
-      var inSampleSize = 1
-      val targetSize = 128
-      if (width > targetSize || height > targetSize) {
-          val halfWidth = width / 2
-          val halfHeight = height / 2
-          while (halfWidth / inSampleSize >= targetSize && halfHeight / inSampleSize >= targetSize) {
-              inSampleSize *= 2
-          }
-      }
-      
-      val decodeOptions = BitmapFactory.Options().apply {
-          inSampleSize = inSampleSize
-      }
-      val bitmap = context.contentResolver.openInputStream(uri).use { stream ->
-          BitmapFactory.decodeStream(stream, null, decodeOptions)
-      } ?: throw Exception("Could not decode bitmap for: $imageUriString")
-      
+
+      val bitmap = decodeToward(context, uri, 128)
+
       // Step 2: Resize to 32x32
       val scaled = Bitmap.createScaledBitmap(bitmap, 32, 32, true)
       bitmap.recycle()

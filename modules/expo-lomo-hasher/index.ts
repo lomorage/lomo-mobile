@@ -20,6 +20,7 @@ type ExpoLomoHasherModuleType = {
   encodeImageEmbeddingAsync(imageUri: string, modelPath: string): Promise<string>;
   encodeTextEmbeddingAsync(text: string, modelPath: string, vocabPath: string, mergesPath: string): Promise<string>;
   encodeFaceEmbeddingAsync(imageUri: string, boundingBox: any, modelPath: string): Promise<string>;
+  prepareAnalysisImageAsync(uri: string): Promise<{ uri: string; width: number; height: number; scale: number }>;
   generatePHashAsync(imageUri: string): Promise<string>;
 };
 
@@ -60,6 +61,15 @@ export async function encodeImageEmbeddingAsync(imageUri: string, modelPath: str
 
 export async function encodeTextEmbeddingAsync(text: string, modelPath: string, vocabPath: string, mergesPath: string): Promise<string> {
   return await ExpoLomoHasher.encodeTextEmbeddingAsync(text, modelPath, vocabPath, mergesPath);
+}
+
+// Long edge at most 2048px, EXIF rotation baked in. scale maps original width onto it.
+// Not Android: the original uri, scale 1. The face embedder itself is Android-only.
+export async function prepareAnalysisImageAsync(uri: string): Promise<{ uri: string; width: number; height: number; scale: number }> {
+  if (Platform.OS !== 'android') {
+    return { uri, width: 0, height: 0, scale: 1 };
+  }
+  return await ExpoLomoHasher.prepareAnalysisImageAsync(uri);
 }
 
 export async function encodeFaceEmbeddingAsync(

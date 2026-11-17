@@ -65,6 +65,7 @@ jest.mock('@infinitered/react-native-mlkit-text-recognition', () => ({
 jest.mock('@infinitered/react-native-mlkit-face-detection', () => ({
   RNMLKitFaceDetector: jest.fn().mockImplementation(() => ({
     detectFaces: jest.fn().mockResolvedValue({ faces: [] }),
+    initialize: jest.fn().mockResolvedValue(),
   })),
 }));
 jest.mock('../../../modules/expo-lomo-hasher', () => ({
@@ -84,12 +85,18 @@ jest.mock('react-native', () => ({
   Image: { getSize: jest.fn((uri, onSuccess) => onSuccess(200, 200)) },
   PixelRatio: { get: jest.fn(() => 2) },
 }));
+jest.mock('./../RemoteAlbumService', () => ({
+  getAlbumsHierarchy: jest.fn().mockResolvedValue({ id: 'root' }),
+}));
 
 const axios = require('axios');
 const FileSystem = require('expo-file-system/legacy');
 const AuthService = require('./../AuthService');
 const ExpoLomoHasher = require('../../../modules/expo-lomo-hasher');
 const TaskSchedulerService = require('./../TaskSchedulerService');
+const RemoteAlbumService = require('./../RemoteAlbumService');
+const { DeviceEventEmitter } = require('react-native');
+const SecureStore = require('expo-secure-store');
 
 import AIService from '../AIService';
 
@@ -127,7 +134,7 @@ describe('AIService._refreshFaceAlbumCache', () => {
       data: { Albums: [{ ID: 'a1', Title: '/Faces/alice' }] },
     });
     await AIService._refreshFaceAlbumCache();
-    expect(AIService.faceAlbumCache).toEqual([{ id: 'a1', title: '/Faces/alice', coverEmbedding: null }]);
+    expect(AIService.faceAlbumCache).toEqual([{ id: 'a1', title: '/Faces/alice', coverEmbedding: null, count: 0 }]);
     expect(FileSystem.writeAsStringAsync).not.toHaveBeenCalled();
   });
 
@@ -209,6 +216,109 @@ describe('AIService._refreshFaceAlbumCache', () => {
     await AIService._refreshFaceAlbumCache();
 
     expect(TaskSchedulerService.waitUntilIdle).not.toHaveBeenCalled();
+  });
+
+  test('merges two face albums whose covers are the same person and reloads the survivor', async () => {
+    const embedding = Buffer.from(new Float32Array([1, 0, 0]).buffer).toString('base64');
+    ExpoLomoHasher.encodeFaceEmbeddingAsync.mockResolvedValue({ embedding });
+    axios.get
+      .mockResolvedValueOnce({
+        data: {
+          Albums: [
+            { ID: 2, Title: '/Faces/unamed-a', CoverImage: 'cover-a', AssetsCount: 1 },
+            { ID: 3, Title: '/Faces/unamed-b', CoverImage: 'cover-b', AssetsCount: 4 },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        data: { Albums: [{ ID: 3, Title: '/Faces/unamed-a', CoverImage: 'cover-a' }] },
+      });
+    axios.post.mockResolvedValue({ status: 200 });
+
+    await AIService._refreshFaceAlbumCache();
+
+    expect(axios.post).toHaveBeenCalledWith(
+      'http://localhost:8000/album/merge',
+      { Title: '/Faces/unamed-b', AlbumIDs: [2, 3] },
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'token=test-token' }) })
+    );
+    expect(AIService.faceAlbumCache.map(album => album.id)).toEqual([3]);
+    expect(RemoteAlbumService.getAlbumsHierarchy).toHaveBeenCalledWith(
+      expect.objectContaining({ nullOnError: true })
+    );
+    expect(DeviceEventEmitter.emit).toHaveBeenCalledWith('albumDeleted');
+  });
+
+  test('leaves the on-screen album list alone when the reload after a merge fails', async () => {
+    const embedding = Buffer.from(new Float32Array([1, 0, 0]).buffer).toString('base64');
+    ExpoLomoHasher.encodeFaceEmbeddingAsync.mockResolvedValue({ embedding });
+    axios.get
+      .mockResolvedValueOnce({
+        data: {
+          Albums: [
+            { ID: 2, Title: '/Faces/unamed-a', CoverImage: 'cover-a', AssetsCount: 1 },
+            { ID: 3, Title: '/Faces/unamed-b', CoverImage: 'cover-b', AssetsCount: 4 },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        data: { Albums: [{ ID: 3, Title: '/Faces/unamed-a', CoverImage: 'cover-a' }] },
+      });
+    axios.post.mockResolvedValue({ status: 200 });
+    RemoteAlbumService.getAlbumsHierarchy.mockResolvedValueOnce(null);
+
+    await AIService._refreshFaceAlbumCache();
+
+    expect(AIService.faceAlbumCache.map(album => album.id)).toEqual([3]);
+    expect(DeviceEventEmitter.emit).not.toHaveBeenCalled();
+  });
+
+  test('keeps the survivor in the match cache when the reload after a merge fails', async () => {
+    const embedding = Buffer.from(new Float32Array([1, 0, 0]).buffer).toString('base64');
+    ExpoLomoHasher.encodeFaceEmbeddingAsync.mockResolvedValue({ embedding });
+    axios.get
+      .mockResolvedValueOnce({
+        data: {
+          Albums: [
+            { ID: 2, Title: '/Faces/unamed-a', CoverImage: 'cover-a', AssetsCount: 1 },
+            { ID: 3, Title: '/Faces/Mom', CoverImage: 'cover-b', AssetsCount: 4 },
+          ],
+        },
+      })
+      .mockRejectedValueOnce(new Error('reload failed'));
+    axios.post.mockResolvedValue({ status: 200 });
+
+    await AIService._refreshFaceAlbumCache();
+
+    expect(axios.post).toHaveBeenCalledWith(
+      'http://localhost:8000/album/merge',
+      { Title: '/Faces/Mom', AlbumIDs: [2, 3] },
+      expect.any(Object)
+    );
+    expect(AIService.faceAlbumCache.map(album => album.id)).toEqual([3]);
+    expect(AIService.faceAlbumCache[0].title).toBe('/Faces/Mom');
+  });
+
+  test('does not merge face albums while an existing install is still in dry-run', async () => {
+    const embedding = Buffer.from(new Float32Array([1, 0, 0]).buffer).toString('base64');
+    ExpoLomoHasher.encodeFaceEmbeddingAsync.mockResolvedValue({ embedding });
+    SecureStore.getItemAsync.mockImplementation(async (key) => {
+      if (key === 'lomo_device_id') return 'device-1';
+      return null;
+    });
+    axios.get.mockResolvedValue({
+      data: {
+        Albums: [
+          { ID: 2, Title: '/Faces/unamed-a', CoverImage: 'cover-a', AssetsCount: 1 },
+          { ID: 3, Title: '/Faces/Mom', CoverImage: 'cover-b', AssetsCount: 4 },
+        ],
+      },
+    });
+
+    await AIService._refreshFaceAlbumCache();
+
+    expect(axios.post).not.toHaveBeenCalled();
+    expect(AIService.faceAlbumCache).toHaveLength(2);
   });
 
   test('still yields after a cover-image album even if embedding generation failed for it', async () => {

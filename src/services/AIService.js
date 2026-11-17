@@ -11,6 +11,7 @@ import * as MediaLibrary from 'expo-media-library';
 import * as Location from 'expo-location';
 import AssetDBService from './AssetDBService';
 import AuthService from './AuthService';
+import RemoteAlbumService from './RemoteAlbumService';
 import MediaService from './MediaService';
 import TaskSchedulerService from './TaskSchedulerService';
 import NetworkQueue from './NetworkQueue';
@@ -25,9 +26,9 @@ import { readJpegExifOrientation, readImagePhysicalDimensions, base64ToFloat32Ar
 import { cosineSimilarity } from './ai/vectorMath';
 import { extractTimeRange } from './ai/searchQueryParser';
 import { processBlocksToMetadata } from './ai/ocrUtils';
-import { buildFaceBoundingBox, isFaceTooSmall, attachEyeLandmarks } from './ai/faceGeometry';
+import { buildFaceBoundingBox, isFaceTooSmall, isBystanderFace, minFaceSizeForScale, attachEyeLandmarks } from './ai/faceGeometry';
 import { translateToEnglish } from './ai/translateQuery';
-import { rankFaceAlbumMatches, DEFAULT_FACE_MATCH_THRESHOLD } from './ai/faceAlbumMatching';
+import { rankFaceAlbumMatches, groupDuplicateFaceAlbums, titleForFaceAlbumMerge, DEFAULT_FACE_MATCH_THRESHOLD } from './ai/faceAlbumMatching';
 import { clusterDuplicateAssets } from './ai/duplicateDetection';
 
 export const BACKGROUND_AI_SYNC_TASK = 'LOMO_AI_SYNC_TASK';
@@ -54,7 +55,6 @@ class AIService {
     this.isPrewarmed = false;
     this.prewarmPromise = null;
     this.faceAlbumCache = null; // [ { id, title, coverEmbedding, coverImageBase64 } ]
-    this.faceDetector = new RNMLKitFaceDetector({ performanceMode: 'accurate', minFaceSize: 0.1, landmarkMode: true });
     // minFaceSize: 0.1 (face must be >=10% of image width) is deliberately
     // strict for the automatic clustering pipeline, to keep small background
     // bystanders out of face albums. That same strictness works against a
@@ -64,7 +64,13 @@ class AIService {
     // result. This second detector is only used for that explicit, one-photo
     // flow, where there's no "is this really the subject" ambiguity to guard
     // against.
-    this.manualPickFaceDetector = new RNMLKitFaceDetector({ performanceMode: 'accurate', minFaceSize: 0.02, landmarkMode: true });
+    // Native ML Kit keeps one detector for the whole app. Each constructor
+    // calls initialize() immediately, and the later call replaces the first,
+    // so building the lenient detector second made automatic clustering run
+    // at 0.02. Defer both, and install the one we are about to use inside
+    // _detectFaces.
+    this.faceDetector = new RNMLKitFaceDetector({ performanceMode: 'accurate', minFaceSize: 0.1, landmarkMode: true }, true);
+    this.manualPickFaceDetector = new RNMLKitFaceDetector({ performanceMode: 'accurate', minFaceSize: 0.02, landmarkMode: true }, true);
     // Face clustering ships for real: face detection results are written to the
     // server by default. Set `lomorage_face_dry_run` / the Settings toggle to
     // run detection WITHOUT writing to DB or server (debug only).
@@ -660,7 +666,16 @@ class AIService {
 
         if (localPath) {
           console.log(`[AIService] Calling recognizeText with localPath: ${localPath}`);
-          result = await recognizeText(localPath);
+          const analysis = await this._prepareAnalysisImage(localPath);
+          try {
+            if (analysis.width > 0 && analysis.height > 0) {
+              imgWidth = analysis.width;
+              imgHeight = analysis.height;
+            }
+            result = await recognizeText(analysis.uri || localPath);
+          } finally {
+            await analysis.cleanup();
+          }
         }
       } else {
         const url = AuthService.getServerUrl();
@@ -743,7 +758,7 @@ class AIService {
 
       // Attempt to detect landmarks in the cover image to align it properly for ArcFace
       try {
-        const coverFacesRes = await this.faceDetector.detectFaces(tempFileUri);
+        const coverFacesRes = await this._detectFaces(this.faceDetector, tempFileUri);
         const coverFaces = coverFacesRes?.faces || [];
         if (coverFaces.length > 0) {
           attachEyeLandmarks(coverBBox, coverFaces[0]);
@@ -769,7 +784,7 @@ class AIService {
     }
   }
 
-  async _refreshFaceAlbumCache() {
+  async _refreshFaceAlbumCache({ merge = true, keepOnError = false } = {}) {
     try {
       const url = AuthService.getServerUrl();
       const token = AuthService.getToken();
@@ -782,7 +797,9 @@ class AIService {
       const allAlbums = res.data?.Albums || [];
       const faceAlbums = allAlbums.filter(a => a.Title && a.Title.startsWith('/Faces/'));
 
-      this.faceAlbumCache = [];
+      // Build the next cache locally. Publishing [] first made a second
+      // indexing pass see "no albums" and create another album for the same face.
+      const nextCache = [];
       for (const album of faceAlbums) {
         let coverEmbedding = null;
         if (album.CoverImage) {
@@ -795,17 +812,166 @@ class AIService {
           await TaskSchedulerService.waitUntilIdle();
         }
 
-        this.faceAlbumCache.push({
+        nextCache.push({
           id: album.ID,
           title: album.Title,
           coverEmbedding: coverEmbedding,
+          count: album.AssetsCount || album.assetsCount || album.count || 0,
         });
       }
+      this.faceAlbumCache = nextCache;
       console.log(`[AIService] Refreshed Face Album cache, found ${this.faceAlbumCache.length} albums.`);
+      if (merge) await this._mergeDuplicateFaceAlbums();
     } catch (e) {
       console.warn('[AIService] Failed to refresh Face Album cache:', e.message);
-      this.faceAlbumCache = [];
+      // A failed reload after a merge must keep the cache we already built.
+      // Replacing it with [] makes the in-flight indexer create the person again.
+      if (!keepOnError) this.faceAlbumCache = [];
     }
+  }
+
+  // Same rules as processLocalEmbeddings. Existing installs stay dry-run until
+  // the migration prompt is answered; a failed read stays dry-run so we do not
+  // merge or delete people albums we were not supposed to touch.
+  async _loadFaceDryRun() {
+    try {
+      const savedFaceDryRun = await SecureStore.getItemAsync('lomorage_face_dry_run');
+      if (savedFaceDryRun !== null) {
+        this.faceDryRun = savedFaceDryRun === 'true';
+      } else {
+        const migrated = await SecureStore.getItemAsync('lomorage_face_dry_run_migrated_v1');
+        const deviceId = await SecureStore.getItemAsync('lomo_device_id');
+        this.faceDryRun = (migrated === 'true' || !deviceId) ? false : true;
+      }
+    } catch (e) {
+      this.faceDryRun = true;
+      console.warn('[AIService] Could not read the face dry-run setting:', e.message);
+    }
+    return this.faceDryRun;
+  }
+
+  // One person split into two albums (a second indexing pass created the copy
+  // before the first cover embedding was ready). Covers that clear the match
+  // threshold are the same person; fold them together and reload the survivor.
+  async _mergeDuplicateFaceAlbums() {
+    const groups = groupDuplicateFaceAlbums(this.faceAlbumCache);
+    if (groups.length === 0) return false;
+    await this._loadFaceDryRun();
+    if (this.faceDryRun) return false;
+    const url = AuthService.getServerUrl();
+    const token = AuthService.getToken();
+    if (!url || !token) return false;
+
+    let merged = false;
+    for (const group of groups) {
+      const title = titleForFaceAlbumMerge(group);
+      const ids = group.map(album => parseInt(album.id, 10)).filter(id => Number.isInteger(id));
+      if (!title || ids.length < 2) continue;
+      const survivor = group.find(album => album.title === title) || group[0];
+      const survivorId = parseInt(survivor.id, 10);
+      try {
+        const response = await axios.post(`${url}/album/merge`, {
+          Title: title,
+          AlbumIDs: ids,
+        }, {
+          headers: { Authorization: `token=${token}`, 'Content-Type': 'application/json' },
+          skipAutoProbe: true,
+        });
+        if (response?.status === 200) {
+          merged = true;
+          this.faceAlbumCache = (this.faceAlbumCache || [])
+            .filter(album => {
+              const id = parseInt(album.id, 10);
+              return !ids.includes(id) || id === survivorId;
+            })
+            .map(album => (parseInt(album.id, 10) === survivorId ? { ...album, title } : album));
+          console.log(`[AIService] Merged ${ids.length} face albums of the same person`);
+        }
+      } catch (e) {
+        console.warn('[AIService] Failed to merge duplicate face albums:', e.message);
+      }
+    }
+    if (merged) {
+      await this._refreshFaceAlbumCache({ merge: false, keepOnError: true });
+      // The Faces screen reads the album tree, not this matching cache.
+      // Reload it or the two people stay on screen after the server merge.
+      try {
+        const refreshed = await RemoteAlbumService.getAlbumsHierarchy({
+          priority: 1,
+          groupId: 'Albums',
+          nullOnError: true,
+        });
+        if (refreshed) DeviceEventEmitter.emit('albumDeleted');
+      } catch (e) {
+        console.warn('[AIService] Failed to refresh the face album list:', e.message);
+      }
+    }
+    return merged;
+  }
+
+  // One native detector for the whole app. Hold it across initialize() and
+  // detectFaces() so a cover pick cannot install the lenient detector in between.
+  _enqueueFaceDetection(task) {
+    const previous = this._faceDetectChain || Promise.resolve();
+    const run = previous.then(task, task);
+    this._faceDetectChain = run.then(() => {}, () => {});
+    return run;
+  }
+
+  async _detectFaces(detector, uri, restoreDetector) {
+    return this._enqueueFaceDetection(async () => {
+      await detector.initialize();
+      const result = await detector.detectFaces(uri);
+      if (restoreDetector && restoreDetector !== detector) {
+        try {
+          await restoreDetector.initialize();
+        } catch (e) {
+          console.warn('[AIService] Could not restore the strict face detector:', e.message);
+        }
+      }
+      return result;
+    });
+  }
+
+  // Drops faces that fail the pixel/width floors, and faces much smaller than
+  // the largest face in the same photo. The manual cover picker does not use
+  // this: a user who picked one photo already decided who the subject is.
+  _partitionSubjectFaces(faces, imageWidth, minFaceSize) {
+    const annotated = faces.map(face => ({ face, boundingBox: buildFaceBoundingBox(face) }));
+    const largestFaceWidth = annotated.reduce((max, item) => Math.max(max, item.boundingBox.width || 0), 0);
+    const kept = [];
+    for (const item of annotated) {
+      if (isBystanderFace(item.boundingBox, imageWidth, minFaceSize, largestFaceWidth)) continue;
+      kept.push(item);
+    }
+    return { kept, skipped: faces.length - kept.length };
+  }
+
+  _logFaceSelection(label, detected, kept, skipped) {
+    const keptWidths = kept.map(item => Math.round(item.boundingBox.width));
+    console.log(`[AIService] Faces in ${label}: detected ${detected}, kept [${keptWidths.join(', ')}px], skipped ${skipped} small`);
+  }
+
+  // Android only. A camera original decoded whole is large enough to kill the
+  // process (the per-app heap, not the phone's RAM). Returns the original uri
+  // with scale 1 when the picture is already small, or when this isn't Android.
+  async _prepareAnalysisImage(uri) {
+    if (!uri || Platform.OS !== 'android' || typeof ExpoLomoHasher.prepareAnalysisImageAsync !== 'function') {
+      return { uri, width: 0, height: 0, scale: 1, cleanup: async () => {} };
+    }
+    const prepared = await ExpoLomoHasher.prepareAnalysisImageAsync(uri);
+    const nextUri = prepared?.uri || uri;
+    const same = nextUri === uri;
+    return {
+      uri: nextUri,
+      width: prepared?.width || 0,
+      height: prepared?.height || 0,
+      scale: prepared?.scale > 0 ? prepared.scale : 1,
+      cleanup: async () => {
+        if (same) return;
+        await FileSystem.deleteAsync(nextUri, { idempotent: true }).catch(() => {});
+      },
+    };
   }
 
   /**
@@ -831,9 +997,19 @@ class AIService {
    * @returns {Promise<{croppedImageBase64: string, similarity: number|null} | {error: string, similarity?: number}>}
    */
   async extractBestMatchingFaceCrop(imageUri, currentCoverImageBase64) {
+    let analysis;
+    try {
+      analysis = await this._prepareAnalysisImage(imageUri);
+    } catch (e) {
+      console.warn('[AIService] Could not downscale the photo for face detection:', e.message);
+      return { error: 'detection_failed' };
+    }
+    const imageForFaces = analysis.uri || imageUri;
+    const faceFloor = minFaceSizeForScale(analysis.scale);
+    try {
     let rawFaces = [];
     try {
-      const faceResponse = await this.manualPickFaceDetector.detectFaces(imageUri);
+      const faceResponse = await this._detectFaces(this.manualPickFaceDetector, imageForFaces, this.faceDetector);
       rawFaces = faceResponse?.faces || [];
     } catch (e) {
       console.warn('[AIService] Face detection failed while picking a new cover:', e.message);
@@ -846,10 +1022,10 @@ class AIService {
     const candidates = [];
     for (const face of rawFaces) {
       const boundingBox = buildFaceBoundingBox(face);
-      if (isFaceTooSmall(boundingBox)) continue;
+      if (isFaceTooSmall(boundingBox, undefined, faceFloor)) continue;
       attachEyeLandmarks(boundingBox, face);
       try {
-        const faceResultObj = await ExpoLomoHasher.encodeFaceEmbeddingAsync(imageUri, boundingBox, await ModelAssetService.getModelPath('w600k_r50.onnx'));
+        const faceResultObj = await ExpoLomoHasher.encodeFaceEmbeddingAsync(imageForFaces, boundingBox, await ModelAssetService.getModelPath('w600k_r50.onnx'));
         if (faceResultObj && faceResultObj !== 'failed' && faceResultObj.croppedImage) {
           candidates.push({
             croppedImageBase64: faceResultObj.croppedImage,
@@ -893,6 +1069,9 @@ class AIService {
       return { error: 'low_confidence', similarity: best.similarity };
     }
     return best;
+    } finally {
+      await analysis.cleanup();
+    }
   }
 
   async fixBrokenFaceData() {
@@ -1010,10 +1189,14 @@ class AIService {
   async debugDetectAndMatch(localPath) {
     // Ensure face album cache is loaded
     if (!this.faceAlbumCache) {
-      await this._refreshFaceAlbumCache();
+      await this._refreshFaceAlbumCache({ merge: false });
     }
 
-    const faceResponse = await this.faceDetector.detectFaces(localPath);
+    const analysis = await this._prepareAnalysisImage(localPath);
+    const imageForFaces = analysis.uri || localPath;
+    const faceFloor = minFaceSizeForScale(analysis.scale);
+    try {
+    const faceResponse = await this._detectFaces(this.faceDetector, imageForFaces);
     let faces = faceResponse?.faces || [];
     
     // NMS (Non-Maximum Suppression) to remove overlapping phantom faces
@@ -1050,7 +1233,7 @@ class AIService {
       const face = faces[i];
       const boundingBox = buildFaceBoundingBox(face);
 
-      if (isFaceTooSmall(boundingBox)) {
+      if (isFaceTooSmall(boundingBox, undefined, faceFloor)) {
         continue;
       }
 
@@ -1063,7 +1246,7 @@ class AIService {
 
       try {
         const faceResultObj = await ExpoLomoHasher.encodeFaceEmbeddingAsync(
-          localPath, boundingBox, await ModelAssetService.getModelPath('w600k_r50.onnx')
+          imageForFaces, boundingBox, await ModelAssetService.getModelPath('w600k_r50.onnx')
         );
         if (faceResultObj && faceResultObj !== 'failed') {
           croppedImageBase64 = faceResultObj.croppedImage || null;
@@ -1083,6 +1266,9 @@ class AIService {
     }
 
     return results;
+    } finally {
+      await analysis.cleanup();
+    }
   }
 
   // Generate vector from local image asset
@@ -1098,7 +1284,12 @@ class AIService {
   // 1. Local extraction loop: processes local assets that don't have embeddings yet
   // 1. Local extraction loop: processes local assets that don't have embeddings or phash yet in non-blocking batches
   async processLocalEmbeddings(limit = 10, force = false) {
-    if (this.isProcessing) return;
+    if (this.isProcessing || this.isSyncing) return;
+    // Claim this before the first await. Startup, sync, and the background
+    // task otherwise all pass the check, and each one creates a face album
+    // for the same person while the others are still reading the old cover.
+    this.isProcessing = true;
+    try {
 
     // Run one-time fix for broken face data
     await this.fixBrokenFaceData();
@@ -1111,20 +1302,8 @@ class AIService {
       return;
     }
 
-    const savedFaceDryRun = await SecureStore.getItemAsync('lomorage_face_dry_run');
-    if (savedFaceDryRun !== null) {
-      this.faceDryRun = savedFaceDryRun === 'true';
-    } else {
-      // Face clustering ships for real on fresh installs (dry-run off).
-      // Existing installs that never set the flag ran under the old
-      // dry-run-by-default behavior — keep dry-run on for them until the
-      // one-time migration prompt in Settings is answered (see
-      // SettingsContext.resolveFaceDryRunMigration), so we never silently
-      // flip an install from dry-run to real writes behind the user's back.
-      const migrated = await SecureStore.getItemAsync('lomorage_face_dry_run_migrated_v1');
-      const deviceId = await SecureStore.getItemAsync('lomo_device_id');
-      this.faceDryRun = (migrated === 'true' || !deviceId) ? false : true;
-    }
+    // Existing installs stay dry-run until the migration prompt is answered.
+    await this._loadFaceDryRun();
 
     if (!force) {
       const isIdle = await this.isIdleForAI();
@@ -1222,6 +1401,8 @@ class AIService {
 
         for (const asset of pending) {
           let didCalculateEmbeddingForAsset = false;
+          // Hoisted so the finally below can delete it even when a later step throws.
+          let analysis = null;
           try {
             processed++;
             this.status = {
@@ -1328,16 +1509,42 @@ class AIService {
               return orientedDims;
             };
 
+            // OCR and face detection decode the file themselves. On Android that
+            // decode is capped (see prepareAnalysisImageAsync) so a 50MP original
+            // can't kill the process. analysis stays null when the downscale fails,
+            // and those steps are skipped instead of falling back to the original.
+            const wantsOcr = asset.ocrText === null;
+            const wantsFaces = !asset.faceRecVersion || asset.faceRecVersion < 1;
+            if ((wantsOcr || wantsFaces) && localPath) {
+              try {
+                analysis = await this._prepareAnalysisImage(localPath);
+                if (analysis) {
+                  console.log(`[AIService] Prepared ${asset.id} for on-device vision: ${analysis.width}x${analysis.height} scale=${analysis.scale}`);
+                }
+              } catch (prepErr) {
+                console.warn(`[AIService] Could not downscale ${asset.id} for on-device vision:`, prepErr.message);
+                if (wantsOcr) await AssetDBService.saveAssetOCR(asset.id, 'failed');
+                if (wantsFaces) {
+                  await AssetDBService.db.runAsync(
+                    'UPDATE MediaAsset SET faceRecVersion = ? WHERE id = ?',
+                    [-1, asset.id]
+                  );
+                }
+              }
+            }
+
             // C. Calculate OCR if missing
-            if (asset.ocrText === null) {
+            if (analysis && asset.ocrText === null) {
               this.status = { ...this.status, currentStepLabel: '🔤 Reading text…' };
               DeviceEventEmitter.emit('ai_processing_status', this.status);
               try {
-                const result = await recognizeText(localPath);
+                const result = await recognizeText(analysis.uri);
                 const text = result && result.text ? result.text.trim() : "none";
                 await AssetDBService.saveAssetOCR(asset.id, text || "none");
                 if (result && result.blocks) {
-                   const oriented = await getOrientedDimsOnce();
+                   const oriented = analysis.width > 0
+                     ? { w: analysis.width, h: analysis.height }
+                     : await getOrientedDimsOnce();
                    const ocrWidth = oriented.w || imgWidth;
                    const ocrHeight = oriented.h || imgHeight;
                    console.log(`[AIService] Background OCR oriented dims: ${ocrWidth}x${ocrHeight}`);
@@ -1361,13 +1568,12 @@ class AIService {
             }
 
             // D. Face Clustering
-            if (!asset.faceRecVersion || asset.faceRecVersion < 1) {
+            if (analysis && (!asset.faceRecVersion || asset.faceRecVersion < 1)) {
               this.status = { ...this.status, currentStepLabel: '🙂 Detecting faces…' };
               DeviceEventEmitter.emit('ai_processing_status', this.status);
               try {
-                const faceResponse = await this.faceDetector.detectFaces(localPath);
+                const faceResponse = await this._detectFaces(this.faceDetector, analysis.uri);
                 const faces = faceResponse?.faces || [];
-                console.log(`[AIService] Detected ${faces.length} faces in ${asset.id}`);
                 let matchedExisting = false;
                 let validFaceCount = 0;
 
@@ -1378,20 +1584,21 @@ class AIService {
 
                   const url = AuthService.getServerUrl();
                   const token = AuthService.getToken();
-                  const orientedForFaces = await getOrientedDimsOnce();
-                  const faceCheckWidth = orientedForFaces.w || imgWidth;
+                  const faceCheckWidth = analysis.width > 0
+                    ? analysis.width
+                    : ((await getOrientedDimsOnce()).w || imgWidth);
+                  const { kept, skipped } = this._partitionSubjectFaces(
+                    faces,
+                    faceCheckWidth,
+                    minFaceSizeForScale(analysis.scale)
+                  );
+                  this._logFaceSelection(asset.id, faces.length, kept, skipped);
 
-                  for (const face of faces) {
-                    const boundingBox = buildFaceBoundingBox(face);
-
-                    if (isFaceTooSmall(boundingBox, faceCheckWidth)) {
-                      continue;
-                    }
-
+                  for (const { face, boundingBox } of kept) {
                     attachEyeLandmarks(boundingBox, face);
                     
                     const faceResultObj = await ExpoLomoHasher.encodeFaceEmbeddingAsync(
-                      localPath,
+                      analysis.uri,
                       boundingBox,
                       await ModelAssetService.getModelPath('w600k_r50.onnx')
                     );
@@ -1463,6 +1670,8 @@ class AIService {
                       }
                     }
                   }
+                } else {
+                  this._logFaceSelection(asset.id, 0, [], 0);
                 }
 
                 if (validFaceCount > 0) {
@@ -1499,6 +1708,16 @@ class AIService {
             }
             if (asset.ocrText === null) {
               await AssetDBService.saveAssetOCR(asset.id, 'failed');
+            }
+          } finally {
+            // A throw in OCR/face marking used to skip this and leave analysis-*.jpg
+            // in the cache. Batch runs hit that path often enough to fill the disk.
+            if (analysis) {
+              try {
+                await analysis.cleanup();
+              } catch (cleanupErr) {
+                console.warn(`[AIService] Could not delete the analysis image for ${asset.id}:`, cleanupErr.message);
+              }
             }
           }
 
@@ -1557,6 +1776,9 @@ class AIService {
       if (iosKeepAlive) stopKeepAlive();
       // Trigger background geocoding after local feature extraction completes
       this.runBackgroundGeocoding().catch(e => console.error('[AIService] runBackgroundGeocoding on idle failed:', e));
+    }
+    } finally {
+      this.isProcessing = false;
     }
   }
 
@@ -1629,13 +1851,16 @@ class AIService {
 
   // 2. Synchronize embeddings with lomo-backend
   async syncEmbeddings(force = false) {
-    if (this.isSyncing) return;
+    if (this.isSyncing || this.isProcessing) return;
+    // Claim before the first await. A background sync otherwise starts while
+    // local indexing is still between awaits and creates a second face album.
+    this.isSyncing = true;
+    try {
     const aiEnabled = await isAiAllowed();
     if (!aiEnabled && !force) {
       console.log('[AIService] Skip embeddings sync: AI features disabled or Lite mode.');
       return;
     }
-    this.isSyncing = true;
     console.log('[AIService] Starting embeddings sync...');
 
     let iosKeepAlive = false;
@@ -2084,7 +2309,7 @@ class AIService {
                 // 4. Face Detection for remote photo
                 if (!asset.faceRecVersion || asset.faceRecVersion < 1) {
                   try {
-                    const faceResponse = await this.faceDetector.detectFaces(downloadRes.uri);
+                    const faceResponse = await this._detectFaces(this.faceDetector, downloadRes.uri);
                     const faces = faceResponse?.faces || [];
 
                     if (faces.length > 0) {
@@ -2102,13 +2327,10 @@ class AIService {
                         console.warn(`[AIService] Failed to read preview dimensions for ${asset.hash}:`, sizeErr.message);
                       }
 
-                      for (const face of faces) {
-                        const boundingBox = buildFaceBoundingBox(face);
+                      const { kept, skipped } = this._partitionSubjectFaces(faces, previewWidth);
+                      this._logFaceSelection(asset.hash, faces.length, kept, skipped);
 
-                        if (isFaceTooSmall(boundingBox, previewWidth)) {
-                          continue;
-                        }
-
+                      for (const { face, boundingBox } of kept) {
                         attachEyeLandmarks(boundingBox, face);
                         
                         const faceResultObj = await ExpoLomoHasher.encodeFaceEmbeddingAsync(
@@ -2180,6 +2402,8 @@ class AIService {
                           }
                         }
                       }
+                    } else {
+                      this._logFaceSelection(asset.hash, 0, [], 0);
                     }
                     
                     await AssetDBService.db.runAsync(
@@ -2344,6 +2568,9 @@ class AIService {
       DeviceEventEmitter.emit('ai_processing_status', this.status);
       console.log('[AIService] Embeddings sync finished.');
       if (iosKeepAlive) stopKeepAlive();
+    }
+    } finally {
+      this.isSyncing = false;
     }
   }
 
@@ -3408,7 +3635,7 @@ TaskManager.defineTask(BACKGROUND_AI_SYNC_TASK, async () => {
     
     // Do not run if already processing in foreground
     const AIServiceInstance = require('./AIService').default;
-    if (AIServiceInstance.isSyncing) {
+    if (AIServiceInstance.isSyncing || AIServiceInstance.isProcessing) {
         console.log('[Background AI Sync Task] AIService is currently syncing in foreground, skipping.');
         return BackgroundTask.BackgroundTaskResult.Success;
     }
@@ -3428,6 +3655,11 @@ TaskManager.defineTask(BACKGROUND_AI_SYNC_TASK, async () => {
             console.log('[Background AI Sync Task] Local AI features disabled or Lite mode. Skipping local analysis.');
         } else {
             await AIServiceInstance.processLocalEmbeddings(30, true);
+        }
+
+        if (AIServiceInstance.isProcessing || AIServiceInstance.isSyncing) {
+            console.log('[Background AI Sync Task] Face indexing is still running. Skipping remote sync.');
+            return BackgroundTask.BackgroundTaskResult.Success;
         }
 
         const savedRemoteAI = await SecureStore.getItemAsync('lomorage_remote_ai_processing');

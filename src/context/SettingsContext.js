@@ -344,6 +344,7 @@ export function SettingsProvider({ children }) {
         try {
             await SecureStore.setItemAsync('lomorage_face_dry_run', value.toString());
             setFaceDryRun(value);
+            require('../services/AIService').default.faceDryRun = value;
         } catch (error) {
             console.error('Error saving Face Dry Run setting:', error);
         }
@@ -357,6 +358,7 @@ export function SettingsProvider({ children }) {
             await SecureStore.setItemAsync('lomorage_face_dry_run', enableRealMode ? 'false' : 'true');
             await SecureStore.setItemAsync('lomorage_face_dry_run_migrated_v1', 'true');
             setFaceDryRun(!enableRealMode);
+            require('../services/AIService').default.faceDryRun = !enableRealMode;
             setFaceDryRunMigrationNeeded(false);
         } catch (error) {
             console.error('Error saving Face Dry Run migration:', error);
@@ -386,15 +388,21 @@ export function SettingsProvider({ children }) {
         }
     };
 
-    const toggleAlbumExclusion = async (albumId) => {
-        let newList;
-        if (excludedAlbums.includes(albumId)) {
-            newList = excludedAlbums.filter(id => id !== albumId);
-        } else {
-            newList = [...excludedAlbums, albumId];
+    const replaceExcludedAlbums = async (ids) => {
+        const next = [...new Set((ids || []).filter(Boolean))];
+        try {
+            await SecureStore.setItemAsync('lomorage_excluded_albums', JSON.stringify(next));
+            setExcludedAlbums(next);
+        } catch (error) {
+            console.error('Failed to save excluded albums', error);
         }
-        setExcludedAlbums(newList);
-        await SecureStore.setItemAsync('lomorage_excluded_albums', JSON.stringify(newList));
+    };
+
+    const toggleAlbumExclusion = (albumId) => {
+        const next = excludedAlbums.includes(albumId)
+            ? excludedAlbums.filter(id => id !== albumId)
+            : [...excludedAlbums, albumId];
+        return replaceExcludedAlbums(next);
     };
 
     return (
@@ -417,6 +425,7 @@ export function SettingsProvider({ children }) {
             updateUploadConcurrency,
             excludedAlbums,
             toggleAlbumExclusion,
+            replaceExcludedAlbums,
             remoteAIProcessingEnabled,
             toggleRemoteAIProcessing,
             searchThreshold,
