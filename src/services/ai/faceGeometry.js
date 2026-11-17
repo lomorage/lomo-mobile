@@ -49,6 +49,59 @@ export function minFaceSizeForScale(scale) {
   return MIN_FACE_SIZE * scale;
 }
 
+// Local face detection never decodes an edge longer than this. Keep it in
+// step with AnalysisImages.kt ANALYSIS_MAX_EDGE.
+export const ANALYSIS_MAX_EDGE = 2048;
+
+// The server's large preview tier. A file narrower than this was not shrunk.
+export const REMOTE_PREVIEW_EDGE = 640;
+
+// Absolute face floor for a server preview, in that preview's pixels.
+// The 80px floor is defined on the original. On a 640px-wide preview of a
+// 4000px photo the same face is much smaller, and leaving the floor at 80
+// drops people the local pass keeps. Pass the original width when it is
+// known. Without it, a preview at the 640px tier is scaled as if the local
+// pass had used ANALYSIS_MAX_EDGE, and a narrower file was not shrunk.
+export function minFaceSizeForPreview(previewWidth, originalWidth) {
+  const preview = Number(previewWidth) || 0;
+  const original = Number(originalWidth) || 0;
+  if (!(preview > 0)) return MIN_FACE_SIZE;
+  if (original > 0) return minFaceSizeForScale(preview / original);
+  if (preview < REMOTE_PREVIEW_EDGE - 1) return MIN_FACE_SIZE;
+  return minFaceSizeForScale(preview / ANALYSIS_MAX_EDGE);
+}
+
+// Width and height from a JPEG header (SOF). Returns null when the header is
+// not a JPEG or the frame marker is past the bytes we have. Does not decode
+// pixels. Orientation is not applied; callers only need the scale of a preview.
+export function jpegSize(bytes) {
+  if (!bytes || bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return null;
+  let i = 2;
+  while (i + 8 < bytes.length) {
+    if (bytes[i] !== 0xff) return null;
+    const marker = bytes[i + 1];
+    if (marker === 0xc0 || marker === 0xc1 || marker === 0xc2) {
+      const height = (bytes[i + 5] << 8) | bytes[i + 6];
+      const width = (bytes[i + 7] << 8) | bytes[i + 8];
+      if (!(width > 0) || !(height > 0)) return null;
+      return { width, height };
+    }
+    // Standalone markers have no length. SOS is the compressed scan: the
+    // frame size is never after it, and scanning it can mistake stuffed
+    // bytes for another marker.
+    if (marker === 0xda) return null;
+    if (marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7)) {
+      i += 2;
+      continue;
+    }
+    if (i + 3 >= bytes.length) return null;
+    const length = (bytes[i + 2] << 8) | bytes[i + 3];
+    if (length < 2) return null;
+    i += 2 + length;
+  }
+  return null;
+}
+
 // largestFaceWidth is the widest face box in the same photo. Omit it (or pass
 // the box's own width) for a single face: that face is the subject.
 export function isBystanderFace(boundingBox, imageWidth, minFaceSize = MIN_FACE_SIZE, largestFaceWidth) {
