@@ -12,7 +12,7 @@ import AuthService from '../services/AuthService';
 import MediaService from '../services/MediaService';
 import SyncService from '../services/SyncService';
 import { isLivePhoto } from '../utils/livePhoto';
-import { getCacheKey } from './assetDetailScreenHelpers';
+import { getCacheKey, formatTakenDate, contentAspectOf, mergeServerMetadata, wantsOriginal, ORIGINAL_SWAP_DELAY_MS } from './assetDetailScreenHelpers';
 import { useSettings } from '../context/SettingsContext';
 import RemoteAlbumService from '../services/RemoteAlbumService';
 import AIService from '../services/AIService';
@@ -274,6 +274,9 @@ export default function AssetDetailScreen({ route, navigation }) {
     const flatListRef = useRef(null);
     const { initialIndex, source = 'gallery' } = route.params;
     const [assets, setAssets] = useState(GalleryStore.getAssets(source));
+    // Latest list for async callbacks (a response can arrive after the list changed).
+    const assetsRef = useRef(assets);
+    assetsRef.current = assets;
     
     const { debugMode, liteMode } = useSettings();
     const [useOriginalVideo, setUseOriginalVideo] = useState(false);
@@ -467,14 +470,15 @@ export default function AssetDetailScreen({ route, navigation }) {
                     });
                     if (res.status === 200 && res.data) {
                         const metadata = res.data;
-                        const newAssets = [...assets];
-                        newAssets[currentIndex] = {
-                            ...item,
-                            isMetadataPartial: false,
-                            mediaType: metadata.type === 1 ? 'video' : 'image',
-                            creationTime: metadata.date ? new Date(metadata.date).getTime() : item.creationTime,
-                            filename: metadata.name,
-                            mediaSubtypes: metadata.subtype ? [metadata.subtype] : []
+                        // Merge into the list as it is now, not as it was when the request started:
+                        // after a quick swipe an older response would otherwise undo a newer one.
+                        const latest = assetsRef.current;
+                        const at = latest.findIndex(a => a.id === item.id);
+                        if (at < 0) return;
+                        const newAssets = [...latest];
+                        newAssets[at] = {
+                            ...mergeServerMetadata(latest[at], metadata),
+                            mediaSubtypes: latest[at].mediaSubtypes || []
                         };
                         GalleryStore.setAssets(newAssets, source);
                         setAssets(newAssets);
@@ -589,6 +593,18 @@ export default function AssetDetailScreen({ route, navigation }) {
 
     
     const currentAsset = assets[currentIndex] || {};
+
+    // Swap the 640 px preview for the original once a photo has been looked at for a while, so
+    // zooming is sharp -- but only for the one on screen, and never in a swipe-through.
+    const [originalHash, setOriginalHash] = useState(null);
+    const failedOriginals = useRef(new Set());
+    useEffect(() => {
+        setOriginalHash(null);
+        const hash = currentAsset?.hash;
+        if (!wantsOriginal(currentAsset) || failedOriginals.current.has(hash)) return undefined;
+        const timer = setTimeout(() => setOriginalHash(hash), ORIGINAL_SWAP_DELAY_MS);
+        return () => clearTimeout(timer);
+    }, [currentAsset?.id, currentAsset?.hash, currentAsset?.status, currentAsset?.mediaType, currentAsset?.localCachePath]);
 
     useEffect(() => {
         setIsOcrOverlayVisible(false);
@@ -1084,12 +1100,16 @@ export default function AssetDetailScreen({ route, navigation }) {
             : null;
 
         let staticImageUri = uri;
+        let originalUri = null;
         if (isRemote && item.hash) {
             if (item.mediaType === 'video') {
                 staticImageUri = thumbUri;
             } else {
                 // Fetch high-quality preview for full screen viewing to avoid high memory/bandwidth usage and OOM crashes
                 staticImageUri = MediaService.getPreviewUrl(item.hash, item.mediaType, true);
+                if (originalHash && item.hash === originalHash && !isLive) {
+                    originalUri = MediaService.getOriginalUrl(item.hash);
+                }
             }
         }
         // Offline Cache overriding logic:
@@ -1102,11 +1122,18 @@ export default function AssetDetailScreen({ route, navigation }) {
             // serverEpoch/retryEpoch above. Bare URLs alone won't re-trigger the loader.
             thumbUri = withRetryBuster(thumbUri, serverEpoch, retryEpoch);
             staticImageUri = withRetryBuster(staticImageUri, serverEpoch, retryEpoch);
+            if (originalUri) {
+                // The preview is already on screen: keep it as the placeholder until the original
+                // has decoded, and fall back to it (not a retry loop) if the original fails.
+                thumbUri = staticImageUri;
+                staticImageUri = originalUri;
+            }
         }
 
         return (
-            <View style={{ width, height: height * 0.7, justifyContent: 'center', alignItems: 'center', position: 'relative', backgroundColor: '#fff' }}>
+            <View style={{ width, height: height * 0.7, justifyContent: 'center', alignItems: 'center', position: 'relative', backgroundColor: '#fff', overflow: 'hidden' }}>
                 <ZoomableMedia 
+                    contentAspect={contentAspectOf(item, loadedDims)}
                     onZoomStateChange={(isZoomed) => setFlatListScrollEnabled(!isZoomed)}
                     style={{ width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center' }}
                 >
@@ -1153,7 +1180,7 @@ export default function AssetDetailScreen({ route, navigation }) {
                                         contentFit="contain"
                                         cachePolicy="memory-disk"
                                         transition={0}
-                                        onError={usingLocalCache ? undefined : handleRemoteImageError}
+                                        onError={usingLocalCache ? undefined : (originalUri ? () => { failedOriginals.current.add(item.hash); setOriginalHash(null); } : handleRemoteImageError)}
                                         onLoad={(event) => {
                                             if (event.source) {
                                                 console.log('[AssetDetailScreen] Image loaded for item:', loadedDimsKey, 'source size:', event.source.width, event.source.height);
@@ -1420,7 +1447,7 @@ export default function AssetDetailScreen({ route, navigation }) {
             <View style={styles.footer}>
                 <Text style={styles.infoText}>{currentAsset.filename}</Text>
                 <Text style={styles.subInfoText}>
-                    {new Date(currentAsset.creationTime || 0).toLocaleString()}
+                    {formatTakenDate(currentAsset)}
                 </Text>
             </View>
 

@@ -2811,6 +2811,7 @@ class AIService {
           localCachePath: c.localCachePath,
           isFavorite: c.isFavorite === 1,
           score: 1.0,
+          filterOnly: true, // matched a date/place filter, not a relevance score
           isOcrMatch: false
         }));
         results.sort((a, b) => b.creationTime - a.creationTime);

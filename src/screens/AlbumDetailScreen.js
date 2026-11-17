@@ -149,11 +149,15 @@ export default function AlbumDetailScreen() {
                         hash: hash,
                         uri: MediaService.getPreviewUrl(hash, localAsset ? localAsset.mediaType : 'image'),
                         status: 'remote',
-                        creationTime: localAsset ? localAsset.creationTime : Date.now(),
+                        filename: localAsset ? localAsset.filename : '',
+                        // 0 = unknown: the detail screen then shows no date, not today's.
+                        creationTime: localAsset ? localAsset.creationTime : 0,
                         mediaType: localAsset ? localAsset.mediaType : 'image', // Fallback to image if not in DB
                         isFavorite: localAsset ? localAsset.isFavorite : false,
                         localCachePath: localAsset ? localAsset.localCachePath : null,
-                        isMetadataPartial: !localAsset
+                        // Also partial when the row has no taken date (e.g. a video the phone gave none
+                        // for): the detail screen then asks the server for name and date.
+                        isMetadataPartial: !localAsset || !(localAsset.creationTime > 0)
                     };
                 });
                 
