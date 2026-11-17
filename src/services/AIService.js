@@ -26,7 +26,7 @@ import { readJpegExifOrientation, readImagePhysicalDimensions, base64ToFloat32Ar
 import { cosineSimilarity } from './ai/vectorMath';
 import { extractTimeRange } from './ai/searchQueryParser';
 import { processBlocksToMetadata } from './ai/ocrUtils';
-import { buildFaceBoundingBox, isFaceTooSmall, isBystanderFace, minFaceSizeForScale, attachEyeLandmarks } from './ai/faceGeometry';
+import { buildFaceBoundingBox, isFaceTooSmall, isBystanderFace, minFaceSizeForScale, minFaceSizeForPreview, jpegSize, attachEyeLandmarks } from './ai/faceGeometry';
 import { translateToEnglish } from './ai/translateQuery';
 import { rankFaceAlbumMatches, groupDuplicateFaceAlbums, titleForFaceAlbumMerge, DEFAULT_FACE_MATCH_THRESHOLD } from './ai/faceAlbumMatching';
 import { clusterDuplicateAssets } from './ai/duplicateDetection';
@@ -972,6 +972,42 @@ class AIService {
         await FileSystem.deleteAsync(nextUri, { idempotent: true }).catch(() => {});
       },
     };
+  }
+
+  // The 640px preview does not carry the original's pixel size: the server
+  // strips metadata, and it does not enlarge a file that is already narrower.
+  // Read the JPEG SOF from the first 64KB of the master so the 80px floor
+  // scales with that preview. A non-JPEG, or a header we cannot see, returns
+  // 0 and the caller falls back. Orientation is not applied (SOF is the stored
+  // width). Never log the URL: it holds the token. fetch, not axios, so a
+  // failed read cannot trip the 401 logout interceptor.
+  async _readOriginalJpegWidth(hash) {
+    const url = MediaService.getOriginalUrl(hash);
+    if (!url) return 0;
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    try {
+      const response = await fetch(url, {
+        headers: { Range: 'bytes=0-65535' },
+        signal: controller ? controller.signal : undefined,
+      });
+      if (!response.ok && response.status !== 206) return 0;
+      const contentLength = Number(response.headers?.get?.('content-length')) || 0;
+      // 206 is the ranged body. A 200 with a large or missing length means
+      // Range was ignored; do not buffer a whole master or video.
+      if (response.status !== 206 && (contentLength === 0 || contentLength > 65536)) {
+        controller?.abort();
+        console.log(`[AIService] Original JPEG width for ${hash}: unknown (status ${response.status})`);
+        return 0;
+      }
+      const size = jpegSize(new Uint8Array(await response.arrayBuffer()));
+      const width = size?.width || 0;
+      console.log(`[AIService] Original JPEG width for ${hash}: ${width || 'unknown'}`);
+      return width;
+    } catch (e) {
+      if (e?.name === 'AbortError') return 0;
+      console.warn(`[AIService] Could not read original width for ${hash}:`, e.message);
+      return 0;
+    }
   }
 
   /**
@@ -2327,7 +2363,11 @@ class AIService {
                         console.warn(`[AIService] Failed to read preview dimensions for ${asset.hash}:`, sizeErr.message);
                       }
 
-                      const { kept, skipped } = this._partitionSubjectFaces(faces, previewWidth);
+                      // 80px is the floor on the original. This file is the 640px
+                      // preview, so scale that floor or a 5% face is thrown out.
+                      const originalWidth = await this._readOriginalJpegWidth(asset.hash);
+                      const faceFloor = minFaceSizeForPreview(previewWidth, originalWidth);
+                      const { kept, skipped } = this._partitionSubjectFaces(faces, previewWidth, faceFloor);
                       this._logFaceSelection(asset.hash, faces.length, kept, skipped);
 
                       for (const { face, boundingBox } of kept) {
