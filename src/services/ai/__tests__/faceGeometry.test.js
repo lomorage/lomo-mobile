@@ -1,4 +1,4 @@
-import { MIN_FACE_SIZE, MIN_FACE_WIDTH_RATIO, MIN_FACE_OF_LARGEST_RATIO, buildFaceBoundingBox, isFaceTooSmall, isBystanderFace, minFaceSizeForScale, attachEyeLandmarks } from '../faceGeometry';
+import { MIN_FACE_SIZE, MIN_FACE_WIDTH_RATIO, MIN_FACE_OF_LARGEST_RATIO, ANALYSIS_MAX_EDGE, REMOTE_PREVIEW_EDGE, buildFaceBoundingBox, isFaceTooSmall, isBystanderFace, minFaceSizeForScale, minFaceSizeForPreview, jpegSize, attachEyeLandmarks } from '../faceGeometry';
 
 describe('buildFaceBoundingBox', () => {
   test('flattens MLKit origin/size frame into x/y/width/height', () => {
@@ -84,6 +84,66 @@ describe('minFaceSizeForScale', () => {
 
   test('shrinks the floor by the same factor as the image', () => {
     expect(minFaceSizeForScale(0.25)).toBe(20);
+  });
+});
+
+describe('minFaceSizeForPreview', () => {
+  test('scales the 80px floor from the 2048px analysis image down to a 640px preview', () => {
+    expect(minFaceSizeForPreview(REMOTE_PREVIEW_EDGE)).toBe(MIN_FACE_SIZE * REMOTE_PREVIEW_EDGE / ANALYSIS_MAX_EDGE);
+  });
+
+  test('keeps a 5% face on a 640px preview and still drops one under 4%', () => {
+    const floor = minFaceSizeForPreview(640);
+    const previewWidth = 640;
+    // 107px on the 2000px analysis image of a 4000px photo is 34px here.
+    const kept = { width: 34, height: 34 };
+    const largest = 78;
+    expect(isBystanderFace(kept, previewWidth, floor, largest)).toBe(false);
+    expect(isBystanderFace({ width: 20, height: 20 }, previewWidth, floor, largest)).toBe(true);
+  });
+
+  test('still drops a passer-by under 40% of the largest face', () => {
+    const floor = minFaceSizeForPreview(640);
+    expect(isBystanderFace({ width: 42, height: 42 }, 640, floor, 146)).toBe(true);
+  });
+
+  test('a preview narrower than the tier was not shrunk, so the floor stays 80px', () => {
+    expect(minFaceSizeForPreview(500)).toBe(MIN_FACE_SIZE);
+    expect(isBystanderFace({ width: 40, height: 40 }, 500, minFaceSizeForPreview(500), 40)).toBe(true);
+  });
+
+  test('an unknown width keeps the 80px floor', () => {
+    expect(minFaceSizeForPreview(0)).toBe(MIN_FACE_SIZE);
+    expect(minFaceSizeForPreview(undefined)).toBe(MIN_FACE_SIZE);
+  });
+
+  test('uses the real original width when the preview is a shrunk copy', () => {
+    // 640 / 4000 of the 80px floor. A 5% face (34px on this preview) stays,
+    // and a file that is already 640px wide keeps the full 80px floor.
+    expect(minFaceSizeForPreview(640, 4000)).toBe(MIN_FACE_SIZE * 640 / 4000);
+    expect(isBystanderFace({ width: 34, height: 34 }, 640, minFaceSizeForPreview(640, 4000), 78)).toBe(false);
+    expect(minFaceSizeForPreview(640, 640)).toBe(MIN_FACE_SIZE);
+  });
+});
+
+describe('jpegSize', () => {
+  test('reads width and height from a SOF0 marker after an APP0 segment', () => {
+    const app0 = [0xff, 0xe0, 0x00, 0x06, 0x4a, 0x46, 0x49, 0x46];
+    // precision 8, height 4000 (0x0fa0), width 2600 (0x0a28), 3 components
+    const sof = [0xff, 0xc0, 0x00, 0x0b, 0x08, 0x0f, 0xa0, 0x0a, 0x28, 0x03, 0x01, 0x11, 0x00];
+    const bytes = new Uint8Array([0xff, 0xd8, ...app0, ...sof]);
+    expect(jpegSize(bytes)).toEqual({ width: 2600, height: 4000 });
+  });
+
+  test('returns null for a header that is not a JPEG', () => {
+    expect(jpegSize(new Uint8Array([0x89, 0x50, 0x4e, 0x47]))).toBe(null);
+    expect(jpegSize(null)).toBe(null);
+  });
+
+  test('stops at the compressed scan and does not invent a size from it', () => {
+    const sos = [0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3f, 0x00, 0xff, 0xc0, 0x00, 0x0b];
+    const bytes = new Uint8Array([0xff, 0xd8, ...sos]);
+    expect(jpegSize(bytes)).toBe(null);
   });
 });
 
