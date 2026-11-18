@@ -43,17 +43,35 @@ function describeFaceImage(uri) {
   return 'other';
 }
 
-// faceRecVersion: 1 done, 0/NULL pending, -1 failed (remote photos retry it
-// on the next sync), -2 failed for good: the same file would fail again.
-// The reset/rebuild actions set 0, which retries these too.
+// faceRecVersion:
+//    1  done
+//    0 / NULL  pending
+//   -1  failed; remote photos retry on the next sync
+//   -2  failed for good: smaller than ML Kit's 32px minimum, or unreadable
+//       MAX_FACE_LOAD_FAILURES times in a row
+//   -3, -4, ...  unreadable 1, 2, ... times so far; retried like -1. A read
+//       can fail for a moment (a preview still being written), and
+//       RNMLKitImage reports every read error the same way.
+// The reset/rebuild actions, and a new hash for the photo, set 0 again.
 export const FACE_REC_FAILED = -1;
 export const FACE_REC_UNREADABLE = -2;
-const PERMANENT_FACE_FAILURES = new Set(['too_small', 'load_failed']);
+export const MAX_FACE_LOAD_FAILURES = 3;
 
-// Only a failure _detectFaces tagged counts: the same catch also sees
-// embedding and database errors.
-export function faceRecFailureVersion(error) {
-  return PERMANENT_FACE_FAILURES.has(error?.faceDetectionKind) ? FACE_REC_UNREADABLE : FACE_REC_FAILED;
+function faceLoadFailuresIn(faceRecVersion) {
+  return faceRecVersion <= -3 ? -faceRecVersion - 2 : 0;
+}
+
+// The state to save after a failure, given the state before it. Only a
+// failure _detectFaces tagged counts: the same catch also sees embedding and
+// database errors.
+export function faceRecFailureVersion(error, previousVersion) {
+  const kind = error?.faceDetectionKind;
+  if (kind === 'too_small') return FACE_REC_UNREADABLE;
+  if (kind === 'load_failed') {
+    const failures = faceLoadFailuresIn(previousVersion) + 1;
+    return failures >= MAX_FACE_LOAD_FAILURES ? FACE_REC_UNREADABLE : -(2 + failures);
+  }
+  return FACE_REC_FAILED;
 }
 
 // A row can be selected for another step (OCR, phash, CLIP) while its face
@@ -1798,7 +1816,7 @@ class AIService {
                 console.warn(`[AIService] Failed Face Detection for local asset ${asset.id}:`, fe.message);
                 await AssetDBService.db.runAsync(
                   'UPDATE MediaAsset SET faceRecVersion = ? WHERE id = ?',
-                  [faceRecFailureVersion(fe), asset.id]
+                  [faceRecFailureVersion(fe, asset.faceRecVersion), asset.id]
                 );
               }
             }
@@ -2529,7 +2547,7 @@ class AIService {
                     console.warn(`[AIService] Failed Face Detection for remote asset ${asset.hash}:`, fe.message);
                     await AssetDBService.db.runAsync(
                       'UPDATE MediaAsset SET faceRecVersion = ? WHERE hash = ?',
-                      [faceRecFailureVersion(fe), asset.hash]
+                      [faceRecFailureVersion(fe, asset.faceRecVersion), asset.hash]
                     );
                   }
                 }

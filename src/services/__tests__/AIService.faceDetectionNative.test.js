@@ -175,7 +175,7 @@ describe('background scan, native face detection rejects', () => {
     ExpoLomoHasher.prepareAnalysisImageAsync.mockResolvedValue({ uri: PHOTO_URI, width: 20, height: 20, scale: 1 });
   });
 
-  test('marks an unreadable photo failed for good (-2), not done with no faces', async () => {
+  test('marks a first read failure as one failed load (-3), not done with no faces', async () => {
     const db = oneLocalPhotoDb();
     AssetDBService.db = db;
     mockNativeFace.detectFaces.mockRejectedValueOnce(imageLoadRejection());
@@ -183,6 +183,16 @@ describe('background scan, native face detection rejects', () => {
     await AIService.processLocalEmbeddings(10, true);
 
     expect(mockNativeFace.detectFaces).toHaveBeenCalledWith(PHOTO_URI);
+    expect(faceRecWrites(db)).toEqual([[-3, 7]]);
+  });
+
+  test('marks a photo under 32px failed for good (-2)', async () => {
+    const db = oneLocalPhotoDb();
+    AssetDBService.db = db;
+    mockNativeFace.detectFaces.mockRejectedValueOnce(new Error('InputImage width and height should be at least 32!'));
+
+    await AIService.processLocalEmbeddings(10, true);
+
     expect(faceRecWrites(db)).toEqual([[-2, 7]]);
   });
 
@@ -269,6 +279,29 @@ describe('background scan, native face detection rejects', () => {
   });
 });
 
+describe('faceRecFailureVersion', () => {
+  const { faceRecFailureVersion } = require('../AIService');
+  const tagged = (kind) => Object.assign(new Error('x'), { faceDetectionKind: kind });
+
+  test.each([
+    ['too_small', undefined, -2],
+    ['too_small', -4, -2],
+    ['load_failed', undefined, -3],
+    ['load_failed', 0, -3],
+    ['load_failed', -1, -3],
+    ['load_failed', -3, -4],
+    ['load_failed', -4, -2],
+    ['run_failed', -3, -1],
+    ['init_failed', undefined, -1],
+  ])('%s after %p saves %p', (kind, previous, expected) => {
+    expect(faceRecFailureVersion(tagged(kind), previous)).toBe(expected);
+  });
+
+  test('an untagged error is retryable whatever its text says', () => {
+    expect(faceRecFailureVersion(new Error('InputImage width and height should be at least 32!'), 0)).toBe(-1);
+  });
+});
+
 // Part C of syncEmbeddings, with its pending query run by real SQLite so the
 // WHERE clause itself is what decides whether a photo comes back.
 describe('remote photos, native face detection rejects', () => {
@@ -315,6 +348,38 @@ describe('remote photos, native face detection rejects', () => {
     expect(faceVersionOf(db, 'r1')).toBe(-2);
     expect(FileSystem.downloadAsync).toHaveBeenCalledTimes(1);
     expect(mockNativeFace.detectFaces).toHaveBeenCalledTimes(1);
+  });
+
+  test('an unreadable preview is retried twice more, then left alone', async () => {
+    const db = remoteDb([{ id: 'r1', hash: 'h1', clipEmbedding: 'E', faceRecVersion: null }]);
+    AssetDBService.db = db;
+    mockNativeFace.detectFaces.mockRejectedValue(new Error(
+      'RNMLKitFaceDetection - Error: RNMLKitImage: Could not load image from file:///mock-cache/h1.jpg'
+    ));
+
+    const states = [];
+    for (let sync = 0; sync < 4; sync += 1) {
+      AIService.isSyncing = false;
+      await AIService.syncEmbeddings(true);
+      states.push(faceVersionOf(db, 'r1'));
+    }
+
+    expect(states).toEqual([-3, -4, -2, -2]);
+    expect(FileSystem.downloadAsync).toHaveBeenCalledTimes(3);
+  });
+
+  test('a preview that reads on a later sync is detected normally', async () => {
+    const db = remoteDb([{ id: 'r1', hash: 'h1', clipEmbedding: 'E', faceRecVersion: null }]);
+    AssetDBService.db = db;
+    mockNativeFace.detectFaces
+      .mockRejectedValueOnce(new Error('RNMLKitImage: Could not load image from file:///mock-cache/h1.jpg'))
+      .mockResolvedValueOnce({ faces: [] });
+
+    await AIService.syncEmbeddings(true);
+    AIService.isSyncing = false;
+    await AIService.syncEmbeddings(true);
+
+    expect(faceVersionOf(db, 'r1')).toBe(1);
   });
 
   test('a detector failure is retried on the next sync', async () => {
