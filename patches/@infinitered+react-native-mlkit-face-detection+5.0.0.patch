@@ -1,0 +1,19 @@
+diff --git a/node_modules/@infinitered/react-native-mlkit-face-detection/android/src/main/java/red/infinite/reactnativemlkit/facedetection/RNMLKitFaceDetectionModule.kt b/node_modules/@infinitered/react-native-mlkit-face-detection/android/src/main/java/red/infinite/reactnativemlkit/facedetection/RNMLKitFaceDetectionModule.kt
+index ef21cee..39f678d 100644
+--- a/node_modules/@infinitered/react-native-mlkit-face-detection/android/src/main/java/red/infinite/reactnativemlkit/facedetection/RNMLKitFaceDetectionModule.kt
++++ b/node_modules/@infinitered/react-native-mlkit-face-detection/android/src/main/java/red/infinite/reactnativemlkit/facedetection/RNMLKitFaceDetectionModule.kt
+@@ -42,11 +42,9 @@ class RNMLKitFaceDetectionModule : RNMLKitModule("RNMLKitFaceDetection") {
+                     return@suspend
+                 }
+                 try {
+-                    var result =
+-                        faceDetector.detectFaces(imagePath, appContext).getOrElse {
+-                            handleException(promise, it)
+-                            throw it
+-                        }
++                    // Reject once. getOrElse used to reject and rethrow, and the
++                    // catch rejected again. Expo kills the release process on that.
++                    val result = faceDetector.detectFaces(imagePath, appContext).getOrThrow()
+                     promise.resolve(result.record)
+                 } catch (e: Exception) {
+                     handleException(promise, e)
