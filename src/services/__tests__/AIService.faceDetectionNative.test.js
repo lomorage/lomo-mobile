@@ -465,36 +465,47 @@ describe('local photos kept for a retry', () => {
     expect(mockNativeFace.detectFaces).toHaveBeenCalledTimes(2);
   });
 
-  // A first hash can't be told from an edit hashed for the first time, so
-  // either way the photo is detected again, now with the hash its faces need.
-  test.each([
-    ['its first hash appears', 'first'],
-    ['it is edited and only then hashed', 'edited'],
-  ])('a photo read before it had a hash stays pending when %s meanwhile', async (_label, newHash) => {
+  // Faces are filed into server albums by hash: without one the scan would
+  // create an album and add [null] to it.
+  test.each([[null], ['']])('a photo with hash %p is not sent to face detection, and waits for one', async (missing) => {
     const db = localDb([{ id: 'p1', faceRecVersion: null }]);
-    db.sqlite.prepare("UPDATE MediaAsset SET hash = NULL WHERE id = 'p1'").run();
+    db.sqlite.prepare('UPDATE MediaAsset SET hash = ? WHERE id = ?').run(missing, 'p1');
     AssetDBService.db = db;
-    mockNativeFace.detectFaces.mockImplementationOnce(async () => {
-      db.sqlite.prepare('UPDATE MediaAsset SET hash = ? WHERE id = ?').run(newHash, 'p1');
-      return { faces: [] };
-    });
 
     await pass();
 
+    expect(mockNativeFace.detectFaces).not.toHaveBeenCalled();
     expect(stateOf(db, 'p1')).toBeNull();
+
+    db.sqlite.prepare("UPDATE MediaAsset SET hash = 'h1' WHERE id = 'p1'").run();
     await pass();
+
+    expect(mockNativeFace.detectFaces).toHaveBeenCalledTimes(1);
     expect(stateOf(db, 'p1')).toBe(1);
-    expect(mockNativeFace.detectFaces).toHaveBeenCalledTimes(2);
   });
 
-  test('a photo without a hash throughout is marked done', async () => {
-    const db = localDb([{ id: 'p1', faceRecVersion: null }]);
+  test('a photo without a hash still gets its OCR, only its faces wait', async () => {
+    const db = localDb([{ id: 'p1', faceRecVersion: null, ocrText: null }]);
     db.sqlite.prepare("UPDATE MediaAsset SET hash = NULL WHERE id = 'p1'").run();
     AssetDBService.db = db;
 
     await pass();
 
-    expect(stateOf(db, 'p1')).toBe(1);
+    expect(ExpoLomoHasher.prepareAnalysisImageAsync).toHaveBeenCalledTimes(1);
+    expect(mockNativeFace.detectFaces).not.toHaveBeenCalled();
+    expect(stateOf(db, 'p1')).toBeNull();
+  });
+
+  test('a photo without a hash does not count as face work still to do', async () => {
+    const db = localDb([{ id: 'p1', faceRecVersion: null }, { id: 'p2', faceRecVersion: null }]);
+    db.sqlite.prepare("UPDATE MediaAsset SET hash = NULL WHERE id = 'p1'").run();
+    AssetDBService.db = db;
+
+    const status = await AIService.getDetailedIndexStatus();
+
+    // p2 is pending; p1 is not picked up by the scan, so not counted as owed.
+    expect(status.onDevice.total).toBe(2);
+    expect(status.onDevice.analyzed).toBe(1);
   });
 
   test('a missing face module three passes running uses up no photo\'s retries', async () => {
@@ -508,16 +519,6 @@ describe('local photos kept for a retry', () => {
     expect(stateOf(db, 'p2')).toBe(-4);
   });
 
-  test('the hash guard matches a photo that has no hash yet', async () => {
-    const db = localDb([{ id: 'p1', faceRecVersion: null }]);
-    db.sqlite.prepare("UPDATE MediaAsset SET hash = NULL WHERE id = 'p1'").run();
-    AssetDBService.db = db;
-    mockNativeFace.detectFaces.mockRejectedValueOnce(new Error('InputImage width and height should be at least 32!'));
-
-    await pass();
-
-    expect(stateOf(db, 'p1')).toBe(-2);
-  });
 
   test('a failed downscale of the old file does not undo the edit either', async () => {
     const db = localDb([{ id: 'p1', faceRecVersion: null }]);

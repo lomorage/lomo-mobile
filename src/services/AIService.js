@@ -70,9 +70,12 @@ export const ANALYSIS_CACHE_WRITE_ERROR = 'ERR_ANALYSIS_CACHE_WRITE';
 
 // Local photos whose face step is still owed: never tried, or failed in
 // detection but not yet given up on. -1 is left out: the local scan has never
-// retried those. Shared by the status count, the progress total and the
-// batch query so the three agree.
-const LOCAL_FACE_PENDING_SQL = `faceRecVersion IS NULL OR faceRecVersion = 0 OR faceRecVersion <= ${FACE_REC_FIRST_RETRY}`;
+// retried those. Only once the photo has a hash: faces are filed into server
+// albums by hash, and without one the scan would create an album and add
+// [null] to it. Such a photo waits, pending, until backup or sync hashes it.
+// Shared by the status count, the progress total and the batch query so the
+// three agree.
+const LOCAL_FACE_PENDING_SQL = `hash IS NOT NULL AND hash != '' AND (faceRecVersion IS NULL OR faceRecVersion = 0 OR faceRecVersion <= ${FACE_REC_FIRST_RETRY})`;
 
 function faceDetectFailuresIn(faceRecVersion) {
   return faceRecVersion <= FACE_REC_FIRST_RETRY ? FACE_REC_FIRST_RETRY + 1 - faceRecVersion : 0;
@@ -1684,7 +1687,9 @@ class AIService {
             // can't kill the process. analysis stays null when the downscale fails,
             // and those steps are skipped instead of falling back to the original.
             const wantsOcr = asset.ocrText === null;
-            const wantsFaces = needsFaceDetection(asset.faceRecVersion);
+            // A row can come back for OCR, phash or CLIP before it has a hash; its
+            // faces wait for one (see LOCAL_FACE_PENDING_SQL).
+            const wantsFaces = !!asset.hash && needsFaceDetection(asset.faceRecVersion);
             if ((wantsOcr || wantsFaces) && localPath) {
               try {
                 analysis = await this._prepareAnalysisImage(localPath);
