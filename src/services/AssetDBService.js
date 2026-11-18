@@ -565,19 +565,23 @@ class AssetDBService {
     // A refusal belongs to the bytes it was given for: when the file's hash changes (the photo was
     // edited or re-saved), the new bytes have not been refused, so offer them again. `hash IS ?`
     // compares with the stored value, since every right-hand side sees the row as it was.
+    // A face detection failure (faceRecVersion below 0, e.g. -2 "too small") belongs to the old
+    // bytes the same way: an edited copy goes back to pending. A finished result (1) stays.
+    const resetFaceFailure = 'faceRecVersion = CASE WHEN hash IS ? THEN faceRecVersion WHEN faceRecVersion < 0 THEN 0 ELSE faceRecVersion END';
     if (this.hasUploadRejected) {
       await this.db.runAsync(
         `UPDATE MediaAsset SET hash = ?, hashModificationTime = ?, uploaded = 0,
            uploadRejected = CASE WHEN hash IS ? THEN uploadRejected ELSE 0 END,
-           uploadRejectedReason = CASE WHEN hash IS ? THEN uploadRejectedReason ELSE NULL END
+           uploadRejectedReason = CASE WHEN hash IS ? THEN uploadRejectedReason ELSE NULL END,
+           ${resetFaceFailure}
          WHERE id = ?`,
-        [hash, Math.floor(modificationTime), hash, hash, id]
+        [hash, Math.floor(modificationTime), hash, hash, hash, id]
       );
       return;
     }
     await this.db.runAsync(
-      'UPDATE MediaAsset SET hash = ?, hashModificationTime = ?, uploaded = 0 WHERE id = ?',
-      [hash, Math.floor(modificationTime), id]
+      `UPDATE MediaAsset SET hash = ?, hashModificationTime = ?, uploaded = 0, ${resetFaceFailure} WHERE id = ?`,
+      [hash, Math.floor(modificationTime), hash, id]
     );
   }
 
@@ -718,8 +722,11 @@ class AssetDBService {
            AND hash IN (SELECT id FROM MediaAsset WHERE isLocal = 0)`,
         chunk
       );
+      // A face detection failure (faceRecVersion below 0) was about the phone's file. The remote
+      // scan reads the server's preview instead, which deserves its own try.
       await this.db.runAsync(
-        `UPDATE OR IGNORE MediaAsset SET id = hash, isLocal = 0
+        `UPDATE OR IGNORE MediaAsset SET id = hash, isLocal = 0,
+           faceRecVersion = CASE WHEN faceRecVersion < 0 THEN 0 ELSE faceRecVersion END
          WHERE isLocal = 1 AND id IN (${marks}) AND hash IS NOT NULL`,
         chunk
       );

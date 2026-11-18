@@ -62,12 +62,13 @@ jest.mock('./../TaskSchedulerService', () => ({
 jest.mock('@infinitered/react-native-mlkit-text-recognition', () => ({
   recognizeText: jest.fn(),
 }));
-jest.mock('@infinitered/react-native-mlkit-face-detection', () => ({
-  // Each `new RNMLKitFaceDetector(...)` call gets its own independent
+jest.mock('./../ai/mlkitFaceDetector', () => ({
+  // Each `new MlKitFaceDetector(...)` call gets its own independent
   // detectFaces mock -- AIService constructs two instances (the strict
   // clustering one as `faceDetector`, and a lenient one as
   // `manualPickFaceDetector`), so tests can control each separately.
-  RNMLKitFaceDetector: jest.fn().mockImplementation(() => ({
+  // AIService.faceDetectionNative.test.js runs the real wrapper.
+  MlKitFaceDetector: jest.fn().mockImplementation(() => ({
     detectFaces: jest.fn().mockResolvedValue({ faces: [] }),
     initialize: jest.fn().mockResolvedValue(),
   })),
@@ -83,6 +84,9 @@ jest.mock('../../../modules/expo-background-keepalive', () => ({
   startKeepAlive: jest.fn(),
   stopKeepAlive: jest.fn(),
 }));
+jest.mock('./../crashReporting', () => ({
+  reportNonFatal: jest.fn(),
+}));
 jest.mock('react-native', () => ({
   Platform: { OS: 'android' },
   AppState: { addEventListener: jest.fn(() => ({ remove: jest.fn() })) },
@@ -93,6 +97,7 @@ jest.mock('react-native', () => ({
 
 const ExpoLomoHasher = require('../../../modules/expo-lomo-hasher');
 const FileSystem = require('expo-file-system/legacy');
+const { reportNonFatal } = require('../crashReporting');
 
 import AIService from '../AIService';
 
@@ -115,6 +120,43 @@ describe('AIService.extractBestMatchingFaceCrop', () => {
     AIService.manualPickFaceDetector.detectFaces.mockRejectedValueOnce(new Error('native crash'));
     const result = await AIService.extractBestMatchingFaceCrop('file://photo.jpg', 'cover-b64');
     expect(result).toEqual({ error: 'detection_failed' });
+  });
+
+  test('reports a rejected detection to Crashlytics with the image size, never the path', async () => {
+    ExpoLomoHasher.prepareAnalysisImageAsync.mockResolvedValueOnce({
+      uri: 'file:///mock-cache/analysis-123.jpg',
+      width: 2048,
+      height: 1536,
+      scale: 0.5,
+    });
+    const nativeError = new Error('InputImage width and height should be at least 32!');
+    AIService.manualPickFaceDetector.detectFaces.mockRejectedValueOnce(nativeError);
+
+    await AIService.extractBestMatchingFaceCrop('content://media/1', 'cover-b64');
+
+    expect(reportNonFatal).toHaveBeenCalledTimes(1);
+    const [name, category, context] = reportNonFatal.mock.calls[0];
+    expect(name).toBe('FaceDetectionError');
+    expect(category).toBe('too_small');
+    expect(nativeError.faceDetectionKind).toBe('too_small');
+    expect(context).toEqual({
+      source: 'manual_pick',
+      width: 2048,
+      height: 1536,
+      scale: 0.5,
+      stage: 'detect',
+      code: undefined,
+      image: 'downscaled',
+      detector: 'manual',
+      platform: 'android',
+    });
+    expect(JSON.stringify(context)).not.toMatch(/mock-cache|media\/1/);
+  });
+
+  test('does not report when detection succeeds', async () => {
+    AIService.manualPickFaceDetector.detectFaces.mockResolvedValueOnce({ faces: [] });
+    await AIService.extractBestMatchingFaceCrop('file://photo.jpg', 'cover-b64');
+    expect(reportNonFatal).not.toHaveBeenCalled();
   });
 
   test('returns no_faces_found when the lenient detector finds nothing', async () => {

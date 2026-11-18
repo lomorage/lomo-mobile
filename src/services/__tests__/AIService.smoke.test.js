@@ -70,8 +70,8 @@ jest.mock('./../TaskSchedulerService', () => ({
 jest.mock('@infinitered/react-native-mlkit-text-recognition', () => ({
   recognizeText: jest.fn(),
 }));
-jest.mock('@infinitered/react-native-mlkit-face-detection', () => ({
-  RNMLKitFaceDetector: jest.fn().mockImplementation(() => ({
+jest.mock('./../ai/mlkitFaceDetector', () => ({
+  MlKitFaceDetector: jest.fn().mockImplementation(() => ({
     detectFaces: jest.fn().mockResolvedValue({ faces: [] }),
     initialize: jest.fn().mockResolvedValue(),
   })),

@@ -154,7 +154,7 @@ describe('a refusal belongs to the bytes it was given for', () => {
     const [sql, params] = raw.runAsync.mock.calls[raw.runAsync.mock.calls.length - 1];
     expect(sql).toContain('uploadRejected = CASE WHEN hash IS ? THEN uploadRejected ELSE 0 END');
     expect(sql).toContain('uploadRejectedReason = CASE WHEN hash IS ? THEN uploadRejectedReason ELSE NULL END');
-    expect(params).toEqual(['new-hash', 123, 'new-hash', 'new-hash', 'a1']);
+    expect(params).toEqual(['new-hash', 123, 'new-hash', 'new-hash', 'new-hash', 'a1']);
   });
 
   test('without the columns it falls back to the plain update', async () => {
@@ -174,6 +174,50 @@ describe('a refusal belongs to the bytes it was given for', () => {
     });
 
     await expect(AssetDBService.getUploadRejected()).resolves.toEqual([]);
+  });
+});
+
+// The statement updateAssetHash sends, run on real SQLite: a face detection
+// failure belongs to the old bytes, so a changed hash puts the photo back to
+// pending, and the same hash leaves every state alone.
+describe('a face detection failure belongs to the bytes it was given for', () => {
+  const { DatabaseSync } = require('node:sqlite');
+
+  const runUpdate = async (columns, start, newHash) => {
+    await initWith(columns);
+    const sqlite = new DatabaseSync(':memory:');
+    sqlite.exec(`CREATE TABLE MediaAsset (id TEXT, hash TEXT, hashModificationTime INTEGER, uploaded INTEGER,
+      uploadRejected INTEGER, uploadRejectedReason TEXT, faceRecVersion INTEGER)`);
+    sqlite.prepare('INSERT INTO MediaAsset (id, hash, uploaded, faceRecVersion) VALUES (?, ?, 1, ?)')
+      .run('a1', start.hash, start.faceRecVersion);
+
+    await AssetDBService.updateAssetHash('a1', newHash, 9.5);
+
+    const [sql, params] = raw.runAsync.mock.calls[raw.runAsync.mock.calls.length - 1];
+    sqlite.prepare(sql).run(...params);
+    return sqlite.prepare('SELECT hash, faceRecVersion FROM MediaAsset WHERE id = ?').get('a1');
+  };
+
+  describe.each([
+    ['with the refused-upload columns', V17_COLUMNS],
+    ['without them', BASE_COLUMNS],
+  ])('%s', (_label, columns) => {
+    test.each([
+      [-2, 0], [-1, 0], [-4, 0], [1, 1], [0, 0], [null, null],
+    ])('a new hash turns %p into %p', async (before, after) => {
+      const row = await runUpdate(columns, { hash: 'old', faceRecVersion: before }, 'new');
+      expect(row).toEqual({ hash: 'new', faceRecVersion: after });
+    });
+
+    test.each([-2, -1, 1, null])('the same hash keeps %p', async (before) => {
+      const row = await runUpdate(columns, { hash: 'same', faceRecVersion: before }, 'same');
+      expect(row.faceRecVersion).toBe(before);
+    });
+
+    test('clearing the hash for a rehash also clears a failure', async () => {
+      const row = await runUpdate(columns, { hash: 'old', faceRecVersion: -2 }, null);
+      expect(row).toEqual({ hash: null, faceRecVersion: 0 });
+    });
   });
 });
 

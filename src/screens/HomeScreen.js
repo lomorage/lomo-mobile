@@ -1461,6 +1461,12 @@ export default function HomeScreen({ navigation, route }) {
                 clearTimeout(exifWaitTimer);
                 if (takenTimes) applyTakenTimes(takenTimes);
                 else missingTakenTimes.then(applyTakenTimes);
+                // Sync saves each hash with updateAssetHash, an UPDATE: a hash worked out
+                // before its photo's row exists is lost, and the insert does not write one.
+                // The face scan waits for a hash, so such a photo would sit until a later
+                // sync. The insert started before the remote overview and the EXIF wait,
+                // so this is normally already done. A failed insert is logged above.
+                await localRowsSaved.catch(() => {});
                 const diff = await SyncService.sync(cumulativeLocalAssets, () => {});
                 syncSucceeded = true;
                 logMetric('scan', Date.now() - scanStartedAt, {

@@ -19,7 +19,7 @@ import ThumbnailLoadTracker from './ThumbnailLoadTracker';
 import { isAiAllowed } from './liteMode';
 import ModelAssetService from './ModelAssetService';
 import { recognizeText } from '@infinitered/react-native-mlkit-text-recognition';
-import { RNMLKitFaceDetector } from '@infinitered/react-native-mlkit-face-detection';
+import { MlKitFaceDetector } from './ai/mlkitFaceDetector';
 import { pinyin } from 'pinyin-pro';
 import { startKeepAlive, stopKeepAlive } from '../../modules/expo-background-keepalive';
 import { readJpegExifOrientation, readImagePhysicalDimensions, base64ToFloat32Array } from './ai/imageBinaryParsing';
@@ -30,6 +30,114 @@ import { buildFaceBoundingBox, isFaceTooSmall, isBystanderFace, minFaceSizeForSc
 import { translateToEnglish } from './ai/translateQuery';
 import { rankFaceAlbumMatches, groupDuplicateFaceAlbums, titleForFaceAlbumMerge, DEFAULT_FACE_MATCH_THRESHOLD } from './ai/faceAlbumMatching';
 import { clusterDuplicateAssets } from './ai/duplicateDetection';
+import { reportNonFatal } from './crashReporting';
+
+// What kind of file ML Kit was handed, without the path itself.
+function describeFaceImage(uri) {
+  const value = String(uri || '');
+  if (/\/analysis-\d+\.jpg$/.test(value)) return 'downscaled';
+  if (value.includes('temp_face_cover_')) return 'cover';
+  if (value.startsWith('content://')) return 'content';
+  if (FileSystem.cacheDirectory && value.startsWith(FileSystem.cacheDirectory)) return 'cache';
+  if (value.startsWith('file://')) return 'file';
+  return 'other';
+}
+
+// faceRecVersion:
+//    1  done
+//    0 / NULL  pending
+//   -1  failed outside detection (embedding, network, database); the remote
+//       scan retries it on the next sync, the local scan does not
+//   -2  given up: smaller than ML Kit's 32px minimum, or detection failed
+//       MAX_FACE_DETECT_FAILURES times in a row
+//   -3, -4, ...  detection failed 1, 2, ... times so far (unreadable file,
+//       ML Kit failing on it, a failed Android downscale); both scans retry it
+//       on their next pass. Counted, because a remote retry downloads the
+//       preview again: without a limit, one photo the detector always fails on
+//       was fetched from the server on every sync. A detector that is unusable
+//       as a whole (DETECTOR_UNAVAILABLE_KINDS) leaves the state unchanged.
+// The reset/rebuild actions, a new hash for the photo, and Free Up Space
+// re-keying a row to the remote one set 0 again.
+export const FACE_REC_FAILED = -1;
+export const FACE_REC_GIVEN_UP = -2;
+export const FACE_REC_FIRST_RETRY = -3;
+export const MAX_FACE_DETECT_FAILURES = 3;
+// Failures that say the device's detector is unusable, not that this photo is.
+// out_of_memory is not one: a huge photo can cause it on its own.
+const DETECTOR_UNAVAILABLE_KINDS = new Set(['init_failed', 'module_missing', 'not_initialized']);
+// expo-lomo-hasher's code for "the downscaled copy could not be written".
+export const ANALYSIS_CACHE_WRITE_ERROR = 'ERR_ANALYSIS_CACHE_WRITE';
+
+// Local photos whose face step is still owed: never tried, or failed in
+// detection but not yet given up on. -1 is left out: the local scan has never
+// retried those. Only once the photo has a hash: faces are filed into server
+// albums by hash, and without one the scan would create an album and add
+// [null] to it. Such a photo waits, pending, until backup or sync hashes it.
+// Shared by the status count, the progress total and the batch query so the
+// three agree.
+const LOCAL_FACE_PENDING_SQL = `hash IS NOT NULL AND hash != '' AND (faceRecVersion IS NULL OR faceRecVersion = 0 OR faceRecVersion <= ${FACE_REC_FIRST_RETRY})`;
+
+function faceDetectFailuresIn(faceRecVersion) {
+  return faceRecVersion <= FACE_REC_FIRST_RETRY ? FACE_REC_FIRST_RETRY + 1 - faceRecVersion : 0;
+}
+
+// One more failed detection: -3, -4, then -2.
+export function faceRecCountedFailureVersion(previousVersion) {
+  const failures = faceDetectFailuresIn(previousVersion) + 1;
+  return failures >= MAX_FACE_DETECT_FAILURES ? FACE_REC_GIVEN_UP : FACE_REC_FIRST_RETRY + 1 - failures;
+}
+
+// The detector itself was not usable (it could not be set up, ML Kit's face
+// module is missing, or no detector was installed), as opposed to failing on
+// one photo.
+export function isFaceDetectorUnavailable(error) {
+  const kind = error?.faceDetectionKind;
+  if (!kind) return false;
+  return error.faceDetectionStage === 'initialize' || DETECTOR_UNAVAILABLE_KINDS.has(kind);
+}
+
+// The state to save after a failure, given the state before it. Only a
+// failure _detectFaces tagged is a detection failure: the same catch also sees
+// embedding and database errors, which stay -1.
+export function faceRecFailureVersion(error, previousVersion) {
+  const kind = error?.faceDetectionKind;
+  if (!kind) return FACE_REC_FAILED;
+  // Nothing was learned about this photo. Keep its state (pending, or the
+  // failures counted so far), so a detector that recovers later still gets
+  // every photo it missed.
+  if (isFaceDetectorUnavailable(error)) return previousVersion ?? null;
+  if (kind === 'too_small') return FACE_REC_GIVEN_UP;
+  return faceRecCountedFailureVersion(previousVersion);
+}
+
+// A row can be selected for another step (OCR, phash, CLIP) while its face
+// state is already final.
+export function needsFaceDetection(faceRecVersion) {
+  return !faceRecVersion || (faceRecVersion < 1 && faceRecVersion !== FACE_REC_GIVEN_UP);
+}
+
+// ML Kit's own failure texts, grouped. Read on the device only: the message
+// embeds the file path and is never sent.
+//
+// Order matters: a read error carries the file name, and a name can contain
+// any of the phrases below ("at least 32 guests.jpg"). So the read error is
+// recognised first, by RNMLKitImage's fixed prefix, and "too small" (the only
+// category that gives up at once) needs ML Kit's whole sentence ending a line.
+const RNMLKIT_IMAGE_LOAD_PREFIX = 'RNMLKitImage: Could not load image from ';
+const MLKIT_TOO_SMALL = /(^|: )InputImage width and height should be at least 32!$/m;
+
+export function classifyFaceDetectionError(error) {
+  const message = String(error?.message || error || '');
+  if (message.includes(RNMLKIT_IMAGE_LOAD_PREFIX)) return 'load_failed';
+  if (MLKIT_TOO_SMALL.test(message)) return 'too_small';
+  if (/Could not load image|could not be resolved|FileNotFound|No such file|ENOENT/i.test(message)) return 'load_failed';
+  if (/not initialized/i.test(message)) return 'not_initialized';
+  if (/bundled face module/i.test(message)) return 'module_missing';
+  if (/Failed to init/i.test(message)) return 'init_failed';
+  if (/Failed to run/i.test(message)) return 'run_failed';
+  if (/OutOfMemory/i.test(message)) return 'out_of_memory';
+  return 'other';
+}
 
 export const BACKGROUND_AI_SYNC_TASK = 'LOMO_AI_SYNC_TASK';
 class AIService {
@@ -64,13 +172,11 @@ class AIService {
     // result. This second detector is only used for that explicit, one-photo
     // flow, where there's no "is this really the subject" ambiguity to guard
     // against.
-    // Native ML Kit keeps one detector for the whole app. Each constructor
-    // calls initialize() immediately, and the later call replaces the first,
-    // so building the lenient detector second made automatic clustering run
-    // at 0.02. Defer both, and install the one we are about to use inside
-    // _detectFaces.
-    this.faceDetector = new RNMLKitFaceDetector({ performanceMode: 'accurate', minFaceSize: 0.1, landmarkMode: true }, true);
-    this.manualPickFaceDetector = new RNMLKitFaceDetector({ performanceMode: 'accurate', minFaceSize: 0.02, landmarkMode: true }, true);
+    // Native ML Kit keeps one detector for the whole app, so the later
+    // initialize() replaces the first. Neither is installed here: _detectFaces
+    // installs the one it is about to use.
+    this.faceDetector = new MlKitFaceDetector({ performanceMode: 'accurate', minFaceSize: 0.1, landmarkMode: true });
+    this.manualPickFaceDetector = new MlKitFaceDetector({ performanceMode: 'accurate', minFaceSize: 0.02, landmarkMode: true });
     // Face clustering ships for real: face detection results are written to the
     // server by default. Set `lomorage_face_dry_run` / the Settings toggle to
     // run detection WITHOUT writing to DB or server (debug only).
@@ -282,7 +388,7 @@ class AIService {
         (clipEmbeddingVersion IS NULL OR clipEmbeddingVersion = 0)
         OR (phash IS NULL OR phash = "")
         OR (ocrText IS NULL)
-        OR (faceRecVersion IS NULL OR faceRecVersion = 0)
+        OR (${LOCAL_FACE_PENDING_SQL})
       )`);
 
       const semantic = await count('clipEmbeddingVersion IS NOT NULL AND clipEmbeddingVersion >= 1');
@@ -758,7 +864,9 @@ class AIService {
 
       // Attempt to detect landmarks in the cover image to align it properly for ArcFace
       try {
-        const coverFacesRes = await this._detectFaces(this.faceDetector, tempFileUri);
+        const coverFacesRes = await this._detectFaces(this.faceDetector, tempFileUri, {
+          context: { source: 'cover', width: size.w, height: size.h },
+        });
         const coverFaces = coverFacesRes?.faces || [];
         if (coverFaces.length > 0) {
           attachEyeLandmarks(coverBBox, coverFaces[0]);
@@ -918,10 +1026,33 @@ class AIService {
     return run;
   }
 
-  async _detectFaces(detector, uri, restoreDetector) {
+  // Rejects when ML Kit fails, so callers can mark the photo failed instead of
+  // "no faces". context: { source, width, height, scale } of the image handed
+  // to ML Kit, sent with the non-fatal report. Sizes only, no paths.
+  async _detectFaces(detector, uri, { restoreDetector, context } = {}) {
     return this._enqueueFaceDetection(async () => {
-      await detector.initialize();
-      const result = await detector.detectFaces(uri);
+      let stage = 'initialize';
+      let result;
+      try {
+        await detector.initialize();
+        stage = 'detect';
+        result = await detector.detectFaces(uri);
+      } catch (e) {
+        const kind = classifyFaceDetectionError(e);
+        if (e && typeof e === 'object') {
+          e.faceDetectionKind = kind;
+          e.faceDetectionStage = stage;
+        }
+        reportNonFatal('FaceDetectionError', kind, {
+          ...context,
+          stage,
+          code: e?.code,
+          image: describeFaceImage(uri),
+          detector: detector === this.manualPickFaceDetector ? 'manual' : 'strict',
+          platform: Platform.OS,
+        });
+        throw e;
+      }
       if (restoreDetector && restoreDetector !== detector) {
         try {
           await restoreDetector.initialize();
@@ -1045,7 +1176,10 @@ class AIService {
     try {
     let rawFaces = [];
     try {
-      const faceResponse = await this._detectFaces(this.manualPickFaceDetector, imageForFaces, this.faceDetector);
+      const faceResponse = await this._detectFaces(this.manualPickFaceDetector, imageForFaces, {
+        restoreDetector: this.faceDetector,
+        context: { source: 'manual_pick', width: analysis.width, height: analysis.height, scale: analysis.scale },
+      });
       rawFaces = faceResponse?.faces || [];
     } catch (e) {
       console.warn('[AIService] Face detection failed while picking a new cover:', e.message);
@@ -1232,7 +1366,9 @@ class AIService {
     const imageForFaces = analysis.uri || localPath;
     const faceFloor = minFaceSizeForScale(analysis.scale);
     try {
-    const faceResponse = await this._detectFaces(this.faceDetector, imageForFaces);
+    const faceResponse = await this._detectFaces(this.faceDetector, imageForFaces, {
+      context: { source: 'debug', width: analysis.width, height: analysis.height, scale: analysis.scale },
+    });
     let faces = faceResponse?.faces || [];
     
     // NMS (Non-Maximum Suppression) to remove overlapping phantom faces
@@ -1391,7 +1527,7 @@ class AIService {
         FROM MediaAsset 
         WHERE isLocal = 1 
           AND mediaType = "photo" 
-          AND ((clipEmbeddingVersion IS NULL OR clipEmbeddingVersion = 0) OR (phash IS NULL OR phash = "") OR (ocrText IS NULL) OR (faceRecVersion IS NULL OR faceRecVersion = 0))
+          AND ((clipEmbeddingVersion IS NULL OR clipEmbeddingVersion = 0) OR (phash IS NULL OR phash = "") OR (ocrText IS NULL) OR (${LOCAL_FACE_PENDING_SQL}))
       `);
       const total = totalRow?.count || 0;
       let processed = 0;
@@ -1406,6 +1542,10 @@ class AIService {
       DeviceEventEmitter.emit('ai_processing_status', this.status);
 
       let hasMore = true;
+      // By id, once per pass. A photo still pending after its turn (an unreadable
+      // file kept for a retry) waits for the next pass instead of being re-read
+      // at once, which would spend every retry in the same few seconds.
+      let lastLocalId = '';
       while (hasMore) {
         // Yield to user interactions
         await TaskSchedulerService.waitUntilIdle();
@@ -1423,14 +1563,17 @@ class AIService {
           FROM MediaAsset 
           WHERE isLocal = 1 
             AND mediaType = "photo" 
-            AND ((clipEmbeddingVersion IS NULL OR clipEmbeddingVersion = 0) OR (phash IS NULL OR phash = "") OR (ocrText IS NULL) OR (faceRecVersion IS NULL OR faceRecVersion = 0))
+            AND ((clipEmbeddingVersion IS NULL OR clipEmbeddingVersion = 0) OR (phash IS NULL OR phash = "") OR (ocrText IS NULL) OR (${LOCAL_FACE_PENDING_SQL}))
+            AND id > ?
+          ORDER BY id
           LIMIT ?
-        `, [limit]);
+        `, [lastLocalId, limit]);
 
         if (pending.length === 0) {
           hasMore = false;
           break;
         }
+        lastLocalId = pending[pending.length - 1].id;
 
         console.log(`[AIService] Processing batch of ${pending.length} local photos for embedding & phash...`);
         let didCalculateEmbeddingInBatch = false;
@@ -1550,7 +1693,9 @@ class AIService {
             // can't kill the process. analysis stays null when the downscale fails,
             // and those steps are skipped instead of falling back to the original.
             const wantsOcr = asset.ocrText === null;
-            const wantsFaces = !asset.faceRecVersion || asset.faceRecVersion < 1;
+            // A row can come back for OCR, phash or CLIP before it has a hash; its
+            // faces wait for one (see LOCAL_FACE_PENDING_SQL).
+            const wantsFaces = !!asset.hash && needsFaceDetection(asset.faceRecVersion);
             if ((wantsOcr || wantsFaces) && localPath) {
               try {
                 analysis = await this._prepareAnalysisImage(localPath);
@@ -1558,13 +1703,24 @@ class AIService {
                   console.log(`[AIService] Prepared ${asset.id} for on-device vision: ${analysis.width}x${analysis.height} scale=${analysis.scale}`);
                 }
               } catch (prepErr) {
-                console.warn(`[AIService] Could not downscale ${asset.id} for on-device vision:`, prepErr.message);
-                if (wantsOcr) await AssetDBService.saveAssetOCR(asset.id, 'failed');
-                if (wantsFaces) {
-                  await AssetDBService.db.runAsync(
-                    'UPDATE MediaAsset SET faceRecVersion = ? WHERE id = ?',
-                    [-1, asset.id]
-                  );
+                if (prepErr?.code === ANALYSIS_CACHE_WRITE_ERROR) {
+                  // The photo read fine; the cache is full. Leave OCR and faces
+                  // pending, so freeing space is all it takes, and go on: a photo
+                  // small enough to use as it is needs no copy. The id cursor keeps
+                  // this one from coming back before the next pass.
+                  console.warn(`[AIService] No room to downscale ${asset.id}; leaving it for the next pass.`);
+                } else {
+                  console.warn(`[AIService] Could not downscale ${asset.id} for on-device vision:`, prepErr.message);
+                  if (wantsOcr) await AssetDBService.saveAssetOCR(asset.id, 'failed');
+                  // Same budget as a failed detection: the size could not be read or
+                  // the file not decoded, and it may read next pass.
+                  if (wantsFaces) {
+                    // Same hash guard as the detection failure below.
+                    await AssetDBService.db.runAsync(
+                      'UPDATE MediaAsset SET faceRecVersion = ? WHERE id = ? AND hash IS ?',
+                      [faceRecCountedFailureVersion(asset.faceRecVersion), asset.id, asset.hash ?? null]
+                    );
+                  }
                 }
               }
             }
@@ -1604,11 +1760,13 @@ class AIService {
             }
 
             // D. Face Clustering
-            if (analysis && (!asset.faceRecVersion || asset.faceRecVersion < 1)) {
+            if (analysis && wantsFaces) {
               this.status = { ...this.status, currentStepLabel: '🙂 Detecting faces…' };
               DeviceEventEmitter.emit('ai_processing_status', this.status);
               try {
-                const faceResponse = await this._detectFaces(this.faceDetector, analysis.uri);
+                const faceResponse = await this._detectFaces(this.faceDetector, analysis.uri, {
+                  context: { source: 'local', width: analysis.width, height: analysis.height, scale: analysis.scale },
+                });
                 const faces = faceResponse?.faces || [];
                 let matchedExisting = false;
                 let validFaceCount = 0;
@@ -1717,16 +1875,24 @@ class AIService {
                   });
                 }
 
+                // Only for the bytes that were read, matched by the hash read with them. A
+                // backup that hashed the file meanwhile may have seen an edit, and a NULL
+                // hash cannot tell an edit from a first hash, so any change leaves the
+                // photo pending. Nothing is lost by detecting again: the albums above were
+                // given asset.hash, so a photo read without one was never attached.
                 await AssetDBService.db.runAsync(
-                  'UPDATE MediaAsset SET faceRecVersion = ? WHERE id = ?',
-                  [1, asset.id]
+                  'UPDATE MediaAsset SET faceRecVersion = ? WHERE id = ? AND hash IS ?',
+                  [1, asset.id, asset.hash ?? null]
                 );
                 console.log(`[AIService] Processed Face Detection for local asset ${asset.id}`);
               } catch (fe) {
                 console.warn(`[AIService] Failed Face Detection for local asset ${asset.id}:`, fe.message);
+                // Only if the bytes are still the ones read: a backup that saw the photo
+                // edited meanwhile gave it a new hash and a fresh pending state, which a
+                // failure about the old file must not undo.
                 await AssetDBService.db.runAsync(
-                  'UPDATE MediaAsset SET faceRecVersion = ? WHERE id = ?',
-                  [-1, asset.id]
+                  'UPDATE MediaAsset SET faceRecVersion = ? WHERE id = ? AND hash IS ?',
+                  [faceRecFailureVersion(fe, asset.faceRecVersion), asset.id, asset.hash ?? null]
                 );
               }
             }
@@ -2265,8 +2431,8 @@ class AIService {
           const totalRemoteRow = await db.getFirstAsync(`
             SELECT COUNT(*) as count 
             FROM MediaAsset 
-            WHERE isLocal = 0 
-              AND (clipEmbedding = "none" OR faceRecVersion IS NULL OR faceRecVersion < 1)
+            WHERE isLocal = 0
+              AND (clipEmbedding = "none" OR faceRecVersion IS NULL OR (faceRecVersion < 1 AND faceRecVersion != ${FACE_REC_GIVEN_UP}))
           `);
           const totalRemote = totalRemoteRow?.count || 0;
           let processedRemote = 0;
@@ -2275,13 +2441,17 @@ class AIService {
           // By id, like Part A: a row whose preview fails to download stays pending, and
           // re-reading it here re-downloaded the same preview in a tight loop.
           let lastRemoteIndexId = '';
+          // Set once the detector turns out unusable this sync. Every other photo
+          // would fail the same way, so previews wanted only for faces are not
+          // downloaded for the rest of it; those still owed a CLIP embedding are.
+          let faceDetectorUnavailable = false;
           while (hasMoreRemoteIndex) {
             // Fetch remote assets that don't have embeddings on server (marked as 'none')
             const remotePendingIndex = await db.getAllAsync(`
               SELECT id, hash, clipEmbedding, faceRecVersion 
               FROM MediaAsset 
-              WHERE isLocal = 0 
-                AND (clipEmbedding = "none" OR faceRecVersion IS NULL OR faceRecVersion < 1)
+              WHERE isLocal = 0
+                AND (clipEmbedding = "none" OR faceRecVersion IS NULL OR (faceRecVersion < 1 AND faceRecVersion != ${FACE_REC_GIVEN_UP}))
                 AND id > ?
               ORDER BY id
               LIMIT 10
@@ -2303,6 +2473,9 @@ class AIService {
                 message: `Extracting remote photo features (${Math.min(processedRemote, totalRemote)}/${totalRemote})...`
               };
               DeviceEventEmitter.emit('ai_processing_status', this.status);
+
+              const wantsRemoteFaces = !faceDetectorUnavailable && needsFaceDetection(asset.faceRecVersion);
+              if (asset.clipEmbedding !== "none" && !wantsRemoteFaces) continue;
 
               const tempUri = `${FileSystem.cacheDirectory}${asset.hash}.jpg`;
               try {
@@ -2343,9 +2516,11 @@ class AIService {
                 }
 
                 // 4. Face Detection for remote photo
-                if (!asset.faceRecVersion || asset.faceRecVersion < 1) {
+                if (wantsRemoteFaces) {
                   try {
-                    const faceResponse = await this._detectFaces(this.faceDetector, downloadRes.uri);
+                    const faceResponse = await this._detectFaces(this.faceDetector, downloadRes.uri, {
+                      context: { source: 'remote' },
+                    });
                     const faces = faceResponse?.faces || [];
 
                     if (faces.length > 0) {
@@ -2453,9 +2628,14 @@ class AIService {
                     console.log(`[AIService] Processed Face Detection for remote asset ${asset.hash}`);
                   } catch (fe) {
                     console.warn(`[AIService] Failed Face Detection for remote asset ${asset.hash}:`, fe.message);
+                    if (isFaceDetectorUnavailable(fe)) faceDetectorUnavailable = true;
+                    // This row only. The phone's copy shares the hash, but a preview the
+                    // server made (smaller, or unreadable) says nothing about the original,
+                    // and must not undo a result the phone already has. A success above
+                    // still marks both, so the same photo is not detected twice.
                     await AssetDBService.db.runAsync(
-                      'UPDATE MediaAsset SET faceRecVersion = ? WHERE hash = ?',
-                      [-1, asset.hash]
+                      'UPDATE MediaAsset SET faceRecVersion = ? WHERE id = ? AND isLocal = 0',
+                      [faceRecFailureVersion(fe, asset.faceRecVersion), asset.id]
                     );
                   }
                 }

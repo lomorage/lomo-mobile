@@ -5,6 +5,7 @@ import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
 import android.util.Log
+import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import java.io.File
@@ -506,10 +507,17 @@ class ExpoLomoHasherModule : Module() {
         val decoded = decodeAnalysisBitmap(context, uri)
         try {
           val out = File(context.cacheDir, "analysis-${System.nanoTime()}.jpg")
-          FileOutputStream(out).use { stream ->
-            if (!decoded.bitmap.compress(Bitmap.CompressFormat.JPEG, 90, stream)) {
-              throw Exception("Could not write downscaled image")
+          // A full or unwritable cache is not the photo's fault. A distinct code
+          // lets the scan keep the photo pending instead of spending its retries.
+          try {
+            FileOutputStream(out).use { stream ->
+              if (!decoded.bitmap.compress(Bitmap.CompressFormat.JPEG, 90, stream)) {
+                throw Exception("Could not write downscaled image")
+              }
             }
+          } catch (e: Exception) {
+            out.delete()
+            throw CodedException("ERR_ANALYSIS_CACHE_WRITE", "Could not write the downscaled copy to the cache", e)
           }
           mapOf(
             "uri" to Uri.fromFile(out).toString(),
