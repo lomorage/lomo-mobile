@@ -465,20 +465,36 @@ describe('local photos kept for a retry', () => {
     expect(mockNativeFace.detectFaces).toHaveBeenCalledTimes(2);
   });
 
-  test('a photo read before its first hash is still marked done when the hash appears meanwhile', async () => {
+  // A first hash can't be told from an edit hashed for the first time, so
+  // either way the photo is detected again, now with the hash its faces need.
+  test.each([
+    ['its first hash appears', 'first'],
+    ['it is edited and only then hashed', 'edited'],
+  ])('a photo read before it had a hash stays pending when %s meanwhile', async (_label, newHash) => {
     const db = localDb([{ id: 'p1', faceRecVersion: null }]);
     db.sqlite.prepare("UPDATE MediaAsset SET hash = NULL WHERE id = 'p1'").run();
     AssetDBService.db = db;
     mockNativeFace.detectFaces.mockImplementationOnce(async () => {
-      db.sqlite.prepare("UPDATE MediaAsset SET hash = 'first' WHERE id = 'p1'").run();
+      db.sqlite.prepare('UPDATE MediaAsset SET hash = ? WHERE id = ?').run(newHash, 'p1');
       return { faces: [] };
     });
 
     await pass();
 
-    expect(stateOf(db, 'p1')).toBe(1);
+    expect(stateOf(db, 'p1')).toBeNull();
     await pass();
-    expect(mockNativeFace.detectFaces).toHaveBeenCalledTimes(1);
+    expect(stateOf(db, 'p1')).toBe(1);
+    expect(mockNativeFace.detectFaces).toHaveBeenCalledTimes(2);
+  });
+
+  test('a photo without a hash throughout is marked done', async () => {
+    const db = localDb([{ id: 'p1', faceRecVersion: null }]);
+    db.sqlite.prepare("UPDATE MediaAsset SET hash = NULL WHERE id = 'p1'").run();
+    AssetDBService.db = db;
+
+    await pass();
+
+    expect(stateOf(db, 'p1')).toBe(1);
   });
 
   test('a missing face module three passes running uses up no photo\'s retries', async () => {

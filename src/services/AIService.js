@@ -1864,14 +1864,14 @@ class AIService {
                   });
                 }
 
-                // Not over an edit made meanwhile: a backup that saw the file change gave
-                // it a new hash, and the new bytes still need their own detection. A photo
-                // read before it had any hash is written anyway: its first hash appearing
-                // is the common case, and the bytes are the same ones; skipping it would
-                // detect it again and record its faces twice.
+                // Only for the bytes that were read, matched by the hash read with them. A
+                // backup that hashed the file meanwhile may have seen an edit, and a NULL
+                // hash cannot tell an edit from a first hash, so any change leaves the
+                // photo pending. Nothing is lost by detecting again: the albums above were
+                // given asset.hash, so a photo read without one was never attached.
                 await AssetDBService.db.runAsync(
-                  'UPDATE MediaAsset SET faceRecVersion = ? WHERE id = ? AND (hash IS ? OR ? IS NULL)',
-                  [1, asset.id, asset.hash ?? null, asset.hash ?? null]
+                  'UPDATE MediaAsset SET faceRecVersion = ? WHERE id = ? AND hash IS ?',
+                  [1, asset.id, asset.hash ?? null]
                 );
                 console.log(`[AIService] Processed Face Detection for local asset ${asset.id}`);
               } catch (fe) {
