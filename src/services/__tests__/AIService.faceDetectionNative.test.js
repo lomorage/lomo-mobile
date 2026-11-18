@@ -449,6 +449,49 @@ describe('local photos kept for a retry', () => {
     expect(stateOf(db, 'p1')).toBe(1);
   });
 
+  test('a success about the old file does not mark the edited photo done', async () => {
+    const db = localDb([{ id: 'p1', faceRecVersion: -3 }]);
+    AssetDBService.db = db;
+    mockNativeFace.detectFaces.mockImplementationOnce(async () => {
+      db.sqlite.prepare("UPDATE MediaAsset SET hash = 'edited', faceRecVersion = 0 WHERE id = 'p1'").run();
+      return { faces: [] };
+    });
+
+    await pass();
+
+    expect(stateOf(db, 'p1')).toBe(0);
+    await pass();
+    expect(stateOf(db, 'p1')).toBe(1);
+    expect(mockNativeFace.detectFaces).toHaveBeenCalledTimes(2);
+  });
+
+  test('a photo read before its first hash is still marked done when the hash appears meanwhile', async () => {
+    const db = localDb([{ id: 'p1', faceRecVersion: null }]);
+    db.sqlite.prepare("UPDATE MediaAsset SET hash = NULL WHERE id = 'p1'").run();
+    AssetDBService.db = db;
+    mockNativeFace.detectFaces.mockImplementationOnce(async () => {
+      db.sqlite.prepare("UPDATE MediaAsset SET hash = 'first' WHERE id = 'p1'").run();
+      return { faces: [] };
+    });
+
+    await pass();
+
+    expect(stateOf(db, 'p1')).toBe(1);
+    await pass();
+    expect(mockNativeFace.detectFaces).toHaveBeenCalledTimes(1);
+  });
+
+  test('a missing face module three passes running uses up no photo\'s retries', async () => {
+    const db = localDb([{ id: 'p1', faceRecVersion: null }, { id: 'p2', faceRecVersion: -4 }]);
+    AssetDBService.db = db;
+    mockNativeFace.detectFaces.mockRejectedValue(new Error('Failed to load the bundled face module'));
+
+    for (let i = 0; i < 3; i += 1) await pass();
+
+    expect(stateOf(db, 'p1')).toBeNull();
+    expect(stateOf(db, 'p2')).toBe(-4);
+  });
+
   test('the hash guard matches a photo that has no hash yet', async () => {
     const db = localDb([{ id: 'p1', faceRecVersion: null }]);
     db.sqlite.prepare("UPDATE MediaAsset SET hash = NULL WHERE id = 'p1'").run();
@@ -547,7 +590,13 @@ describe('faceRecFailureVersion', () => {
     ['load_failed', -4, -2],
     ['run_failed', undefined, -3],
     ['run_failed', -3, -4],
-    ['init_failed', -4, -2],
+    ['run_failed', -4, -2],
+    ['out_of_memory', -4, -2],
+    // The detector is unusable, not the photo: the state is kept.
+    ['init_failed', -4, -4],
+    ['module_missing', -3, -3],
+    ['not_initialized', undefined, null],
+    ['module_missing', 0, 0],
     ['other', 0, -3],
     // A -1 (failed outside detection) does not count toward the limit.
     ['run_failed', -1, -3],

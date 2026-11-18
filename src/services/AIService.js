@@ -51,16 +51,20 @@ function describeFaceImage(uri) {
 //   -2  given up: smaller than ML Kit's 32px minimum, or detection failed
 //       MAX_FACE_DETECT_FAILURES times in a row
 //   -3, -4, ...  detection failed 1, 2, ... times so far (unreadable file,
-//       detector error, a failed Android downscale); both scans retry it on
-//       their next pass. Counted, because a remote retry downloads the preview
-//       again: without a limit, one photo the detector always fails on was
-//       fetched from the server on every sync.
+//       ML Kit failing on it, a failed Android downscale); both scans retry it
+//       on their next pass. Counted, because a remote retry downloads the
+//       preview again: without a limit, one photo the detector always fails on
+//       was fetched from the server on every sync. A detector that is unusable
+//       as a whole (DETECTOR_UNAVAILABLE_KINDS) leaves the state unchanged.
 // The reset/rebuild actions, a new hash for the photo, and Free Up Space
 // re-keying a row to the remote one set 0 again.
 export const FACE_REC_FAILED = -1;
 export const FACE_REC_GIVEN_UP = -2;
 export const FACE_REC_FIRST_RETRY = -3;
 export const MAX_FACE_DETECT_FAILURES = 3;
+// Failures that say the device's detector is unusable, not that this photo is.
+// out_of_memory is not one: a huge photo can cause it on its own.
+const DETECTOR_UNAVAILABLE_KINDS = new Set(['init_failed', 'module_missing', 'not_initialized']);
 // expo-lomo-hasher's code for "the downscaled copy could not be written".
 export const ANALYSIS_CACHE_WRITE_ERROR = 'ERR_ANALYSIS_CACHE_WRITE';
 
@@ -86,10 +90,13 @@ export function faceRecCountedFailureVersion(previousVersion) {
 export function faceRecFailureVersion(error, previousVersion) {
   const kind = error?.faceDetectionKind;
   if (!kind) return FACE_REC_FAILED;
-  // The detector itself could not be set up: nothing was learned about this
-  // photo. Keep its state (pending, or the failures counted so far), so a
-  // detector that recovers later still gets every photo it missed.
-  if (error.faceDetectionStage === 'initialize') return previousVersion ?? null;
+  // The detector itself was not usable (it could not be set up, ML Kit's face
+  // module is missing, or no detector was installed): nothing was learned
+  // about this photo. Keep its state (pending, or the failures counted so
+  // far), so a detector that recovers later still gets every photo it missed.
+  if (error.faceDetectionStage === 'initialize' || DETECTOR_UNAVAILABLE_KINDS.has(kind)) {
+    return previousVersion ?? null;
+  }
   if (kind === 'too_small') return FACE_REC_GIVEN_UP;
   return faceRecCountedFailureVersion(previousVersion);
 }
@@ -1857,9 +1864,14 @@ class AIService {
                   });
                 }
 
+                // Not over an edit made meanwhile: a backup that saw the file change gave
+                // it a new hash, and the new bytes still need their own detection. A photo
+                // read before it had any hash is written anyway: its first hash appearing
+                // is the common case, and the bytes are the same ones; skipping it would
+                // detect it again and record its faces twice.
                 await AssetDBService.db.runAsync(
-                  'UPDATE MediaAsset SET faceRecVersion = ? WHERE id = ?',
-                  [1, asset.id]
+                  'UPDATE MediaAsset SET faceRecVersion = ? WHERE id = ? AND (hash IS ? OR ? IS NULL)',
+                  [1, asset.id, asset.hash ?? null, asset.hash ?? null]
                 );
                 console.log(`[AIService] Processed Face Detection for local asset ${asset.id}`);
               } catch (fe) {
