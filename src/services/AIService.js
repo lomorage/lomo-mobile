@@ -86,6 +86,10 @@ export function faceRecCountedFailureVersion(previousVersion) {
 export function faceRecFailureVersion(error, previousVersion) {
   const kind = error?.faceDetectionKind;
   if (!kind) return FACE_REC_FAILED;
+  // The detector itself could not be set up: nothing was learned about this
+  // photo. Keep its state (pending, or the failures counted so far), so a
+  // detector that recovers later still gets every photo it missed.
+  if (error.faceDetectionStage === 'initialize') return previousVersion ?? null;
   if (kind === 'too_small') return FACE_REC_GIVEN_UP;
   return faceRecCountedFailureVersion(previousVersion);
 }
@@ -1019,7 +1023,10 @@ class AIService {
         result = await detector.detectFaces(uri);
       } catch (e) {
         const kind = classifyFaceDetectionError(e);
-        if (e && typeof e === 'object') e.faceDetectionKind = kind;
+        if (e && typeof e === 'object') {
+          e.faceDetectionKind = kind;
+          e.faceDetectionStage = stage;
+        }
         reportNonFatal('FaceDetectionError', kind, {
           ...context,
           stage,
@@ -1523,9 +1530,6 @@ class AIService {
       // file kept for a retry) waits for the next pass instead of being re-read
       // at once, which would spend every retry in the same few seconds.
       let lastLocalId = '';
-      // Set when the downscaled copy could not be written (cache full). Ends the
-      // pass: every later photo would be decoded only to fail the same way.
-      let cacheUnwritable = false;
       while (hasMore) {
         // Yield to user interactions
         await TaskSchedulerService.waitUntilIdle();
@@ -1683,9 +1687,10 @@ class AIService {
               } catch (prepErr) {
                 if (prepErr?.code === ANALYSIS_CACHE_WRITE_ERROR) {
                   // The photo read fine; the cache is full. Leave OCR and faces
-                  // pending, so freeing space is all it takes.
-                  console.warn(`[AIService] No room to downscale ${asset.id}; ending this pass.`);
-                  cacheUnwritable = true;
+                  // pending, so freeing space is all it takes, and go on: a photo
+                  // small enough to use as it is needs no copy. The id cursor keeps
+                  // this one from coming back before the next pass.
+                  console.warn(`[AIService] No room to downscale ${asset.id}; leaving it for the next pass.`);
                 } else {
                   console.warn(`[AIService] Could not downscale ${asset.id} for on-device vision:`, prepErr.message);
                   if (wantsOcr) await AssetDBService.saveAssetOCR(asset.id, 'failed');
@@ -1700,7 +1705,6 @@ class AIService {
                 }
               }
             }
-            if (cacheUnwritable) break;
 
             // C. Calculate OCR if missing
             if (analysis && asset.ocrText === null) {
@@ -1932,10 +1936,6 @@ class AIService {
           }
 
           await new Promise(resolve => setTimeout(resolve, throttleDelay));
-        }
-        if (cacheUnwritable) {
-          hasMore = false;
-          break;
         }
         // Yield to the JS thread at the end of each batch
         const sleepDelay = AppState.currentState === 'active' ? 1000 : 100;

@@ -413,7 +413,7 @@ describe('local photos kept for a retry', () => {
     expect(stateOf(db, 'p1')).toBe(1);
   });
 
-  test('a full cache keeps OCR and faces pending, ends the pass, and the next pass finishes them', async () => {
+  test('a photo whose copy does not fit stays pending, and the photos after it still run', async () => {
     const db = localDb([{ id: 'p1', faceRecVersion: null, ocrText: null }, { id: 'p2', faceRecVersion: null, ocrText: null }]);
     AssetDBService.db = db;
     const full = Object.assign(new Error('Could not write the downscaled copy to the cache'), { code: 'ERR_ANALYSIS_CACHE_WRITE' });
@@ -422,11 +422,27 @@ describe('local photos kept for a retry', () => {
     await pass();
 
     expect(stateOf(db, 'p1')).toBeNull();
-    expect(stateOf(db, 'p2')).toBeNull();
     expect(AssetDBService.saveAssetOCR).not.toHaveBeenCalledWith('p1', 'failed');
-    // p2 was not even decoded: the pass stopped at the first full write.
-    expect(ExpoLomoHasher.prepareAnalysisImageAsync).toHaveBeenCalledTimes(1);
+    expect(stateOf(db, 'p2')).toBe(1);
+    // Not retried in the same pass.
+    expect(ExpoLomoHasher.prepareAnalysisImageAsync).toHaveBeenCalledTimes(2);
 
+    await pass();
+
+    expect(stateOf(db, 'p1')).toBe(1);
+  });
+
+  test('a detector that cannot initialize three passes running uses up no photo\'s retries', async () => {
+    const db = localDb([{ id: 'p1', faceRecVersion: null }, { id: 'p2', faceRecVersion: -4 }]);
+    AssetDBService.db = db;
+    mockNativeFace.initialize.mockRejectedValue(new Error('Failed to init face detector'));
+
+    for (let i = 0; i < 3; i += 1) await pass();
+
+    expect(stateOf(db, 'p1')).toBeNull();
+    expect(stateOf(db, 'p2')).toBe(-4);
+
+    mockNativeFace.initialize.mockResolvedValue(undefined);
     await pass();
 
     expect(stateOf(db, 'p1')).toBe(1);
@@ -497,6 +513,12 @@ describe('faceRecFailureVersion', () => {
   ])('%s after %p saves %p', (kind, previous, expected) => {
     expect(faceRecFailureVersion(tagged(kind), previous)).toBe(expected);
   });
+
+  test.each([[undefined, null], [null, null], [0, 0], [-4, -4]])(
+    'a failure to initialize the detector keeps %p as %p', (previous, expected) => {
+      const e = Object.assign(new Error('Failed to init'), { faceDetectionKind: 'init_failed', faceDetectionStage: 'initialize' });
+      expect(faceRecFailureVersion(e, previous)).toBe(expected);
+    });
 
   test('an untagged error is retryable whatever its text says', () => {
     expect(faceRecFailureVersion(new Error('InputImage width and height should be at least 32!'), 0)).toBe(-1);
