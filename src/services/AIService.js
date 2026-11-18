@@ -19,7 +19,7 @@ import ThumbnailLoadTracker from './ThumbnailLoadTracker';
 import { isAiAllowed } from './liteMode';
 import ModelAssetService from './ModelAssetService';
 import { recognizeText } from '@infinitered/react-native-mlkit-text-recognition';
-import { RNMLKitFaceDetector } from '@infinitered/react-native-mlkit-face-detection';
+import { MlKitFaceDetector } from './ai/mlkitFaceDetector';
 import { pinyin } from 'pinyin-pro';
 import { startKeepAlive, stopKeepAlive } from '../../modules/expo-background-keepalive';
 import { readJpegExifOrientation, readImagePhysicalDimensions, base64ToFloat32Array } from './ai/imageBinaryParsing';
@@ -40,6 +40,20 @@ function describeFaceImage(uri) {
   if (value.startsWith('content://')) return 'content';
   if (FileSystem.cacheDirectory && value.startsWith(FileSystem.cacheDirectory)) return 'cache';
   if (value.startsWith('file://')) return 'file';
+  return 'other';
+}
+
+// ML Kit's own failure texts, grouped. The message itself is scrubbed of
+// paths before it is sent; this keeps the cause readable at a glance.
+function classifyFaceDetectionError(error) {
+  const message = String(error?.message || error || '');
+  if (/at least 32/i.test(message)) return 'too_small';
+  if (/Could not load image|could not be resolved|FileNotFound|No such file|ENOENT/i.test(message)) return 'load_failed';
+  if (/not initialized/i.test(message)) return 'not_initialized';
+  if (/bundled face module/i.test(message)) return 'module_missing';
+  if (/Failed to init/i.test(message)) return 'init_failed';
+  if (/Failed to run/i.test(message)) return 'run_failed';
+  if (/OutOfMemory/i.test(message)) return 'out_of_memory';
   return 'other';
 }
 
@@ -76,13 +90,11 @@ class AIService {
     // result. This second detector is only used for that explicit, one-photo
     // flow, where there's no "is this really the subject" ambiguity to guard
     // against.
-    // Native ML Kit keeps one detector for the whole app. Each constructor
-    // calls initialize() immediately, and the later call replaces the first,
-    // so building the lenient detector second made automatic clustering run
-    // at 0.02. Defer both, and install the one we are about to use inside
-    // _detectFaces.
-    this.faceDetector = new RNMLKitFaceDetector({ performanceMode: 'accurate', minFaceSize: 0.1, landmarkMode: true }, true);
-    this.manualPickFaceDetector = new RNMLKitFaceDetector({ performanceMode: 'accurate', minFaceSize: 0.02, landmarkMode: true }, true);
+    // Native ML Kit keeps one detector for the whole app, so the later
+    // initialize() replaces the first. Neither is installed here: _detectFaces
+    // installs the one it is about to use.
+    this.faceDetector = new MlKitFaceDetector({ performanceMode: 'accurate', minFaceSize: 0.1, landmarkMode: true });
+    this.manualPickFaceDetector = new MlKitFaceDetector({ performanceMode: 'accurate', minFaceSize: 0.02, landmarkMode: true });
     // Face clustering ships for real: face detection results are written to the
     // server by default. Set `lomorage_face_dry_run` / the Settings toggle to
     // run detection WITHOUT writing to DB or server (debug only).
@@ -932,17 +944,22 @@ class AIService {
     return run;
   }
 
-  // context: { source, width, height, scale } of the image handed to ML Kit,
-  // sent with a non-fatal report when detection rejects. Sizes only, no paths.
+  // Rejects when ML Kit fails, so callers can mark the photo failed instead of
+  // "no faces". context: { source, width, height, scale } of the image handed
+  // to ML Kit, sent with the non-fatal report. Sizes only, no paths.
   async _detectFaces(detector, uri, { restoreDetector, context } = {}) {
     return this._enqueueFaceDetection(async () => {
-      await detector.initialize();
+      let stage = 'initialize';
       let result;
       try {
+        await detector.initialize();
+        stage = 'detect';
         result = await detector.detectFaces(uri);
       } catch (e) {
         reportNonFatal(e, 'FaceDetectionError', {
           ...context,
+          stage,
+          kind: classifyFaceDetectionError(e),
           image: describeFaceImage(uri),
           detector: detector === this.manualPickFaceDetector ? 'manual' : 'strict',
           platform: Platform.OS,

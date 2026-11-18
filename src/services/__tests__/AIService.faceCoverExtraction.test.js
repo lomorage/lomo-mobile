@@ -62,12 +62,13 @@ jest.mock('./../TaskSchedulerService', () => ({
 jest.mock('@infinitered/react-native-mlkit-text-recognition', () => ({
   recognizeText: jest.fn(),
 }));
-jest.mock('@infinitered/react-native-mlkit-face-detection', () => ({
-  // Each `new RNMLKitFaceDetector(...)` call gets its own independent
+jest.mock('./../ai/mlkitFaceDetector', () => ({
+  // Each `new MlKitFaceDetector(...)` call gets its own independent
   // detectFaces mock -- AIService constructs two instances (the strict
   // clustering one as `faceDetector`, and a lenient one as
   // `manualPickFaceDetector`), so tests can control each separately.
-  RNMLKitFaceDetector: jest.fn().mockImplementation(() => ({
+  // AIService.faceDetectionNative.test.js runs the real wrapper.
+  MlKitFaceDetector: jest.fn().mockImplementation(() => ({
     detectFaces: jest.fn().mockResolvedValue({ faces: [] }),
     initialize: jest.fn().mockResolvedValue(),
   })),
@@ -142,6 +143,8 @@ describe('AIService.extractBestMatchingFaceCrop', () => {
       width: 2048,
       height: 1536,
       scale: 0.5,
+      stage: 'detect',
+      kind: 'too_small',
       image: 'downscaled',
       detector: 'manual',
       platform: 'android',
