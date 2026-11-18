@@ -182,6 +182,7 @@ import HomeScreen from '../HomeScreen';
 const { performance: nodePerf } = require('perf_hooks');
 const MediaService = require('../../services/MediaService').default;
 const SyncService = require('../../services/SyncService').default;
+const AssetDBService = require('../../services/AssetDBService').default;
 const FirstBackupService = require('../../services/FirstBackupService').default;
 const KeepAwake = require('expo-keep-awake');
 
@@ -254,6 +255,44 @@ describe('HomeScreen first backup guidance', () => {
 
     expect(FirstBackupService.complete).toHaveBeenCalledTimes(1);
     expect(KeepAwake.deactivateKeepAwake).toHaveBeenCalledWith('lomorage-first-backup');
+    act(() => component.unmount());
+  });
+
+  // Sync saves hashes with an UPDATE, so a hash worked out before its photo's
+  // row exists would be lost, and the face scan waits for a hash.
+  test('the hash sync starts only once the local rows are saved', async () => {
+    MediaService.getAllAssets.mockResolvedValue([{ id: 'new-photo', mediaType: 'photo', creationTime: Date.now() }]);
+    let finishInsert;
+    AssetDBService.insertLocalAssets.mockImplementationOnce(() => new Promise(resolve => { finishInsert = resolve; }));
+
+    let component;
+    await act(async () => {
+      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn(), addListener: jest.fn(() => () => {}) }} />);
+      await flushPromises();
+    });
+    expect(AssetDBService.insertLocalAssets).toHaveBeenCalled();
+    expect(SyncService.sync).not.toHaveBeenCalled();
+
+    await act(async () => {
+      finishInsert();
+      await flushPromises();
+    });
+
+    expect(SyncService.sync).toHaveBeenCalledTimes(1);
+    act(() => component.unmount());
+  });
+
+  test('a failed insert of the local rows does not stop the hash sync', async () => {
+    MediaService.getAllAssets.mockResolvedValue([{ id: 'new-photo', mediaType: 'photo', creationTime: Date.now() }]);
+    AssetDBService.insertLocalAssets.mockImplementationOnce(() => Promise.reject(new Error('disk full')));
+
+    let component;
+    await act(async () => {
+      component = renderer.create(<HomeScreen navigation={{ navigate: jest.fn(), addListener: jest.fn(() => () => {}) }} />);
+      await flushPromises();
+    });
+
+    expect(SyncService.sync).toHaveBeenCalledTimes(1);
     act(() => component.unmount());
   });
 

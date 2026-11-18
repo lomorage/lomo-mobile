@@ -87,19 +87,25 @@ export function faceRecCountedFailureVersion(previousVersion) {
   return failures >= MAX_FACE_DETECT_FAILURES ? FACE_REC_GIVEN_UP : FACE_REC_FIRST_RETRY + 1 - failures;
 }
 
+// The detector itself was not usable (it could not be set up, ML Kit's face
+// module is missing, or no detector was installed), as opposed to failing on
+// one photo.
+export function isFaceDetectorUnavailable(error) {
+  const kind = error?.faceDetectionKind;
+  if (!kind) return false;
+  return error.faceDetectionStage === 'initialize' || DETECTOR_UNAVAILABLE_KINDS.has(kind);
+}
+
 // The state to save after a failure, given the state before it. Only a
 // failure _detectFaces tagged is a detection failure: the same catch also sees
 // embedding and database errors, which stay -1.
 export function faceRecFailureVersion(error, previousVersion) {
   const kind = error?.faceDetectionKind;
   if (!kind) return FACE_REC_FAILED;
-  // The detector itself was not usable (it could not be set up, ML Kit's face
-  // module is missing, or no detector was installed): nothing was learned
-  // about this photo. Keep its state (pending, or the failures counted so
-  // far), so a detector that recovers later still gets every photo it missed.
-  if (error.faceDetectionStage === 'initialize' || DETECTOR_UNAVAILABLE_KINDS.has(kind)) {
-    return previousVersion ?? null;
-  }
+  // Nothing was learned about this photo. Keep its state (pending, or the
+  // failures counted so far), so a detector that recovers later still gets
+  // every photo it missed.
+  if (isFaceDetectorUnavailable(error)) return previousVersion ?? null;
   if (kind === 'too_small') return FACE_REC_GIVEN_UP;
   return faceRecCountedFailureVersion(previousVersion);
 }
@@ -2435,6 +2441,10 @@ class AIService {
           // By id, like Part A: a row whose preview fails to download stays pending, and
           // re-reading it here re-downloaded the same preview in a tight loop.
           let lastRemoteIndexId = '';
+          // Set once the detector turns out unusable this sync. Every other photo
+          // would fail the same way, so previews wanted only for faces are not
+          // downloaded for the rest of it; those still owed a CLIP embedding are.
+          let faceDetectorUnavailable = false;
           while (hasMoreRemoteIndex) {
             // Fetch remote assets that don't have embeddings on server (marked as 'none')
             const remotePendingIndex = await db.getAllAsync(`
@@ -2463,6 +2473,9 @@ class AIService {
                 message: `Extracting remote photo features (${Math.min(processedRemote, totalRemote)}/${totalRemote})...`
               };
               DeviceEventEmitter.emit('ai_processing_status', this.status);
+
+              const wantsRemoteFaces = !faceDetectorUnavailable && needsFaceDetection(asset.faceRecVersion);
+              if (asset.clipEmbedding !== "none" && !wantsRemoteFaces) continue;
 
               const tempUri = `${FileSystem.cacheDirectory}${asset.hash}.jpg`;
               try {
@@ -2503,7 +2516,7 @@ class AIService {
                 }
 
                 // 4. Face Detection for remote photo
-                if (needsFaceDetection(asset.faceRecVersion)) {
+                if (wantsRemoteFaces) {
                   try {
                     const faceResponse = await this._detectFaces(this.faceDetector, downloadRes.uri, {
                       context: { source: 'remote' },
@@ -2615,6 +2628,7 @@ class AIService {
                     console.log(`[AIService] Processed Face Detection for remote asset ${asset.hash}`);
                   } catch (fe) {
                     console.warn(`[AIService] Failed Face Detection for remote asset ${asset.hash}:`, fe.message);
+                    if (isFaceDetectorUnavailable(fe)) faceDetectorUnavailable = true;
                     // This row only. The phone's copy shares the hash, but a preview the
                     // server made (smaller, or unreadable) says nothing about the original,
                     // and must not undo a result the phone already has. A success above

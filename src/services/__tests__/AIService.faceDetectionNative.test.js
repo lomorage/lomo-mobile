@@ -728,6 +728,45 @@ describe('remote photos, native face detection rejects', () => {
     expect(FileSystem.downloadAsync).toHaveBeenCalledTimes(3);
   });
 
+  test('once the detector is unusable, previews wanted only for faces are not downloaded for the rest of the sync', async () => {
+    const db = remoteDb([
+      { id: 'h1', hash: 'h1', clipEmbedding: 'E', faceRecVersion: null },
+      { id: 'h2', hash: 'h2', clipEmbedding: 'E', faceRecVersion: -3 },
+      { id: 'h3', hash: 'h3', clipEmbedding: 'none', faceRecVersion: 1 },
+      { id: 'h4', hash: 'h4', clipEmbedding: 'E', faceRecVersion: null },
+    ]);
+    AssetDBService.db = db;
+    mockNativeFace.detectFaces.mockRejectedValue(new Error('Failed to load the bundled face module'));
+
+    await AIService.syncEmbeddings(true);
+
+    // h1 found the detector unusable; h3 still needed its embedding; h2, h4 waited.
+    const downloaded = FileSystem.downloadAsync.mock.calls.map(([, to]) => to.match(/(h\d)\.jpg$/)[1]);
+    expect(downloaded).toEqual(['h1', 'h3']);
+    expect(mockNativeFace.detectFaces).toHaveBeenCalledTimes(1);
+    expect([faceVersionOf(db, 'h1'), faceVersionOf(db, 'h2'), faceVersionOf(db, 'h4')]).toEqual([null, -3, null]);
+
+    mockNativeFace.detectFaces.mockResolvedValue({ faces: [] });
+    AIService.isSyncing = false;
+    await AIService.syncEmbeddings(true);
+
+    expect([faceVersionOf(db, 'h1'), faceVersionOf(db, 'h2'), faceVersionOf(db, 'h4')]).toEqual([1, 1, 1]);
+  });
+
+  test('a detector failure on one preview does not stop the others', async () => {
+    const db = remoteDb([
+      { id: 'h1', hash: 'h1', clipEmbedding: 'E', faceRecVersion: null },
+      { id: 'h2', hash: 'h2', clipEmbedding: 'E', faceRecVersion: null },
+    ]);
+    AssetDBService.db = db;
+    mockNativeFace.detectFaces.mockRejectedValueOnce(new Error('Failed to run face detector.'));
+
+    await AIService.syncEmbeddings(true);
+
+    expect(FileSystem.downloadAsync).toHaveBeenCalledTimes(2);
+    expect([faceVersionOf(db, 'h1'), faceVersionOf(db, 'h2')]).toEqual([-3, 1]);
+  });
+
   test('a failed preview leaves the phone copy with the same hash alone', async () => {
     const db = remoteDb([
       { id: 'h1', hash: 'h1', clipEmbedding: 'E', faceRecVersion: null },
