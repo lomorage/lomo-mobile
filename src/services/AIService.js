@@ -46,47 +46,54 @@ function describeFaceImage(uri) {
 // faceRecVersion:
 //    1  done
 //    0 / NULL  pending
-//   -1  failed; remote photos retry on the next sync
-//   -2  failed for good: smaller than ML Kit's 32px minimum, or unreadable
-//       MAX_FACE_LOAD_FAILURES times in a row
-//   -3, -4, ...  unreadable 1, 2, ... times so far; retried like -1. A read
-//       can fail for a moment (a preview still being written), and
-//       RNMLKitImage reports every read error the same way.
-// The reset/rebuild actions, and a new hash for the photo, set 0 again.
+//   -1  failed outside detection (embedding, network, database); the remote
+//       scan retries it on the next sync, the local scan does not
+//   -2  given up: smaller than ML Kit's 32px minimum, or detection failed
+//       MAX_FACE_DETECT_FAILURES times in a row
+//   -3, -4, ...  detection failed 1, 2, ... times so far (unreadable file,
+//       detector error, a failed Android downscale); both scans retry it on
+//       their next pass. Counted, because a remote retry downloads the preview
+//       again: without a limit, one photo the detector always fails on was
+//       fetched from the server on every sync.
+// The reset/rebuild actions, a new hash for the photo, and Free Up Space
+// re-keying a row to the remote one set 0 again.
 export const FACE_REC_FAILED = -1;
-export const FACE_REC_UNREADABLE = -2;
-export const MAX_FACE_LOAD_FAILURES = 3;
+export const FACE_REC_GIVEN_UP = -2;
+export const FACE_REC_FIRST_RETRY = -3;
+export const MAX_FACE_DETECT_FAILURES = 3;
+// expo-lomo-hasher's code for "the downscaled copy could not be written".
+export const ANALYSIS_CACHE_WRITE_ERROR = 'ERR_ANALYSIS_CACHE_WRITE';
 
-// Local photos whose face step is still owed: never tried, or unreadable so
-// far but not yet given up on. -1 is left out: the local scan has never
+// Local photos whose face step is still owed: never tried, or failed in
+// detection but not yet given up on. -1 is left out: the local scan has never
 // retried those. Shared by the status count, the progress total and the
 // batch query so the three agree.
-const LOCAL_FACE_PENDING_SQL = 'faceRecVersion IS NULL OR faceRecVersion = 0 OR faceRecVersion <= -3';
+const LOCAL_FACE_PENDING_SQL = `faceRecVersion IS NULL OR faceRecVersion = 0 OR faceRecVersion <= ${FACE_REC_FIRST_RETRY}`;
 
-function faceLoadFailuresIn(faceRecVersion) {
-  return faceRecVersion <= -3 ? -faceRecVersion - 2 : 0;
+function faceDetectFailuresIn(faceRecVersion) {
+  return faceRecVersion <= FACE_REC_FIRST_RETRY ? FACE_REC_FIRST_RETRY + 1 - faceRecVersion : 0;
 }
 
-// One more failed read of the photo: -3, -4, then -2.
-export function faceRecLoadFailureVersion(previousVersion) {
-  const failures = faceLoadFailuresIn(previousVersion) + 1;
-  return failures >= MAX_FACE_LOAD_FAILURES ? FACE_REC_UNREADABLE : -(2 + failures);
+// One more failed detection: -3, -4, then -2.
+export function faceRecCountedFailureVersion(previousVersion) {
+  const failures = faceDetectFailuresIn(previousVersion) + 1;
+  return failures >= MAX_FACE_DETECT_FAILURES ? FACE_REC_GIVEN_UP : FACE_REC_FIRST_RETRY + 1 - failures;
 }
 
 // The state to save after a failure, given the state before it. Only a
-// failure _detectFaces tagged counts: the same catch also sees embedding and
-// database errors.
+// failure _detectFaces tagged is a detection failure: the same catch also sees
+// embedding and database errors, which stay -1.
 export function faceRecFailureVersion(error, previousVersion) {
   const kind = error?.faceDetectionKind;
-  if (kind === 'too_small') return FACE_REC_UNREADABLE;
-  if (kind === 'load_failed') return faceRecLoadFailureVersion(previousVersion);
-  return FACE_REC_FAILED;
+  if (!kind) return FACE_REC_FAILED;
+  if (kind === 'too_small') return FACE_REC_GIVEN_UP;
+  return faceRecCountedFailureVersion(previousVersion);
 }
 
 // A row can be selected for another step (OCR, phash, CLIP) while its face
 // state is already final.
 export function needsFaceDetection(faceRecVersion) {
-  return !faceRecVersion || (faceRecVersion < 1 && faceRecVersion !== FACE_REC_UNREADABLE);
+  return !faceRecVersion || (faceRecVersion < 1 && faceRecVersion !== FACE_REC_GIVEN_UP);
 }
 
 // ML Kit's own failure texts, grouped. Read on the device only: the message
@@ -1516,6 +1523,9 @@ class AIService {
       // file kept for a retry) waits for the next pass instead of being re-read
       // at once, which would spend every retry in the same few seconds.
       let lastLocalId = '';
+      // Set when the downscaled copy could not be written (cache full). Ends the
+      // pass: every later photo would be decoded only to fail the same way.
+      let cacheUnwritable = false;
       while (hasMore) {
         // Yield to user interactions
         await TaskSchedulerService.waitUntilIdle();
@@ -1671,19 +1681,26 @@ class AIService {
                   console.log(`[AIService] Prepared ${asset.id} for on-device vision: ${analysis.width}x${analysis.height} scale=${analysis.scale}`);
                 }
               } catch (prepErr) {
-                console.warn(`[AIService] Could not downscale ${asset.id} for on-device vision:`, prepErr.message);
-                if (wantsOcr) await AssetDBService.saveAssetOCR(asset.id, 'failed');
-                // Same budget as a read that fails inside ML Kit: whether the size
-                // could not be read, the file not decoded or the copy not written,
-                // there was no image to look at, and it may be there next pass.
-                if (wantsFaces) {
-                  await AssetDBService.db.runAsync(
-                    'UPDATE MediaAsset SET faceRecVersion = ? WHERE id = ?',
-                    [faceRecLoadFailureVersion(asset.faceRecVersion), asset.id]
-                  );
+                if (prepErr?.code === ANALYSIS_CACHE_WRITE_ERROR) {
+                  // The photo read fine; the cache is full. Leave OCR and faces
+                  // pending, so freeing space is all it takes.
+                  console.warn(`[AIService] No room to downscale ${asset.id}; ending this pass.`);
+                  cacheUnwritable = true;
+                } else {
+                  console.warn(`[AIService] Could not downscale ${asset.id} for on-device vision:`, prepErr.message);
+                  if (wantsOcr) await AssetDBService.saveAssetOCR(asset.id, 'failed');
+                  // Same budget as a failed detection: the size could not be read or
+                  // the file not decoded, and it may read next pass.
+                  if (wantsFaces) {
+                    await AssetDBService.db.runAsync(
+                      'UPDATE MediaAsset SET faceRecVersion = ? WHERE id = ?',
+                      [faceRecCountedFailureVersion(asset.faceRecVersion), asset.id]
+                    );
+                  }
                 }
               }
             }
+            if (cacheUnwritable) break;
 
             // C. Calculate OCR if missing
             if (analysis && asset.ocrText === null) {
@@ -1915,6 +1932,10 @@ class AIService {
           }
 
           await new Promise(resolve => setTimeout(resolve, throttleDelay));
+        }
+        if (cacheUnwritable) {
+          hasMore = false;
+          break;
         }
         // Yield to the JS thread at the end of each batch
         const sleepDelay = AppState.currentState === 'active' ? 1000 : 100;
@@ -2384,7 +2405,7 @@ class AIService {
             SELECT COUNT(*) as count 
             FROM MediaAsset 
             WHERE isLocal = 0
-              AND (clipEmbedding = "none" OR faceRecVersion IS NULL OR (faceRecVersion < 1 AND faceRecVersion != ${FACE_REC_UNREADABLE}))
+              AND (clipEmbedding = "none" OR faceRecVersion IS NULL OR (faceRecVersion < 1 AND faceRecVersion != ${FACE_REC_GIVEN_UP}))
           `);
           const totalRemote = totalRemoteRow?.count || 0;
           let processedRemote = 0;
@@ -2399,7 +2420,7 @@ class AIService {
               SELECT id, hash, clipEmbedding, faceRecVersion 
               FROM MediaAsset 
               WHERE isLocal = 0
-                AND (clipEmbedding = "none" OR faceRecVersion IS NULL OR (faceRecVersion < 1 AND faceRecVersion != ${FACE_REC_UNREADABLE}))
+                AND (clipEmbedding = "none" OR faceRecVersion IS NULL OR (faceRecVersion < 1 AND faceRecVersion != ${FACE_REC_GIVEN_UP}))
                 AND id > ?
               ORDER BY id
               LIMIT 10
@@ -2573,9 +2594,13 @@ class AIService {
                     console.log(`[AIService] Processed Face Detection for remote asset ${asset.hash}`);
                   } catch (fe) {
                     console.warn(`[AIService] Failed Face Detection for remote asset ${asset.hash}:`, fe.message);
+                    // This row only. The phone's copy shares the hash, but a preview the
+                    // server made (smaller, or unreadable) says nothing about the original,
+                    // and must not undo a result the phone already has. A success above
+                    // still marks both, so the same photo is not detected twice.
                     await AssetDBService.db.runAsync(
-                      'UPDATE MediaAsset SET faceRecVersion = ? WHERE hash = ?',
-                      [faceRecFailureVersion(fe, asset.faceRecVersion), asset.hash]
+                      'UPDATE MediaAsset SET faceRecVersion = ? WHERE id = ? AND isLocal = 0',
+                      [faceRecFailureVersion(fe, asset.faceRecVersion), asset.id]
                     );
                   }
                 }

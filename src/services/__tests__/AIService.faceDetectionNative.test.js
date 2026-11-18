@@ -196,14 +196,14 @@ describe('background scan, native face detection rejects', () => {
     expect(faceRecWrites(db)).toEqual([[-2, 7]]);
   });
 
-  test('marks a detector failure retryable (-1)', async () => {
+  test('counts a detector failure toward the retry limit (-3)', async () => {
     const db = oneLocalPhotoDb();
     AssetDBService.db = db;
     mockNativeFace.detectFaces.mockRejectedValueOnce(new Error('RNMLKitFaceDetection - Error: Failed to run face detector.'));
 
     await AIService.processLocalEmbeddings(10, true);
 
-    expect(faceRecWrites(db)).toEqual([[-1, 7]]);
+    expect(faceRecWrites(db)).toEqual([[-3, 7]]);
   });
 
   test('an error after detection (embedding) is retryable even if its text looks like a load failure', async () => {
@@ -313,8 +313,8 @@ describe('local photos kept for a retry', () => {
       clipEmbeddingVersion INTEGER, phash TEXT, ocrText TEXT, faceRecVersion INTEGER,
       uploaded INTEGER DEFAULT 0, clipEmbedding TEXT)`);
     const insert = sqlite.prepare(`INSERT INTO MediaAsset (id, hash, isLocal, mediaType, clipEmbeddingVersion, phash, ocrText, faceRecVersion)
-      VALUES (?, ?, 1, 'photo', 1, '1', 'done', ?)`);
-    for (const r of rows) insert.run(r.id, r.id, r.faceRecVersion);
+      VALUES (?, ?, 1, 'photo', 1, '1', ?, ?)`);
+    for (const r of rows) insert.run(r.id, r.id, r.ocrText === undefined ? 'done' : r.ocrText, r.faceRecVersion);
     // expo-sqlite accepts "photo" as a string; node:sqlite only takes 'photo'.
     const prep = (sql) => sqlite.prepare(sql.replace(/"([^"]*)"/g, "'$1'"));
     return {
@@ -413,6 +413,37 @@ describe('local photos kept for a retry', () => {
     expect(stateOf(db, 'p1')).toBe(1);
   });
 
+  test('a full cache keeps OCR and faces pending, ends the pass, and the next pass finishes them', async () => {
+    const db = localDb([{ id: 'p1', faceRecVersion: null, ocrText: null }, { id: 'p2', faceRecVersion: null, ocrText: null }]);
+    AssetDBService.db = db;
+    const full = Object.assign(new Error('Could not write the downscaled copy to the cache'), { code: 'ERR_ANALYSIS_CACHE_WRITE' });
+    ExpoLomoHasher.prepareAnalysisImageAsync.mockRejectedValueOnce(full);
+
+    await pass();
+
+    expect(stateOf(db, 'p1')).toBeNull();
+    expect(stateOf(db, 'p2')).toBeNull();
+    expect(AssetDBService.saveAssetOCR).not.toHaveBeenCalledWith('p1', 'failed');
+    // p2 was not even decoded: the pass stopped at the first full write.
+    expect(ExpoLomoHasher.prepareAnalysisImageAsync).toHaveBeenCalledTimes(1);
+
+    await pass();
+
+    expect(stateOf(db, 'p1')).toBe(1);
+    expect(stateOf(db, 'p2')).toBe(1);
+  });
+
+  test('a full cache three passes running does not use up the photo\'s retries', async () => {
+    const db = localDb([{ id: 'p1', faceRecVersion: -4 }]);
+    AssetDBService.db = db;
+    const full = Object.assign(new Error('x'), { code: 'ERR_ANALYSIS_CACHE_WRITE' });
+    ExpoLomoHasher.prepareAnalysisImageAsync.mockRejectedValue(full);
+
+    for (let i = 0; i < 3; i += 1) await pass();
+
+    expect(stateOf(db, 'p1')).toBe(-4);
+  });
+
   test('-1 and -2 are not picked up again; -3 and -4 are', async () => {
     const db = localDb([
       { id: 'a', faceRecVersion: -1 }, { id: 'b', faceRecVersion: -2 },
@@ -457,8 +488,12 @@ describe('faceRecFailureVersion', () => {
     ['load_failed', -1, -3],
     ['load_failed', -3, -4],
     ['load_failed', -4, -2],
-    ['run_failed', -3, -1],
-    ['init_failed', undefined, -1],
+    ['run_failed', undefined, -3],
+    ['run_failed', -3, -4],
+    ['init_failed', -4, -2],
+    ['other', 0, -3],
+    // A -1 (failed outside detection) does not count toward the limit.
+    ['run_failed', -1, -3],
   ])('%s after %p saves %p', (kind, previous, expected) => {
     expect(faceRecFailureVersion(tagged(kind), previous)).toBe(expected);
   });
@@ -478,8 +513,8 @@ describe('remote photos, native face detection rejects', () => {
   function remoteDb(rows) {
     const sqlite = new DatabaseSync(':memory:');
     sqlite.exec('CREATE TABLE MediaAsset (id TEXT, hash TEXT, isLocal INTEGER, clipEmbedding TEXT, faceRecVersion INTEGER)');
-    const insert = sqlite.prepare('INSERT INTO MediaAsset VALUES (?, ?, 0, ?, ?)');
-    for (const r of rows) insert.run(r.id, r.hash, r.clipEmbedding, r.faceRecVersion);
+    const insert = sqlite.prepare('INSERT INTO MediaAsset VALUES (?, ?, ?, ?, ?)');
+    for (const r of rows) insert.run(r.id, r.hash, r.isLocal ?? 0, r.clipEmbedding, r.faceRecVersion);
     // expo-sqlite accepts "none" as a string; node:sqlite only takes 'none'.
     const prep = (sql) => sqlite.prepare(sql.replace(/"([^"]*)"/g, "'$1'"));
     const isPartC = (sql) => sql.includes('faceRecVersion') && sql.includes('isLocal = 0');
@@ -548,17 +583,49 @@ describe('remote photos, native face detection rejects', () => {
     expect(faceVersionOf(db, 'r1')).toBe(1);
   });
 
-  test('a detector failure is retried on the next sync', async () => {
+  test('a preview the detector always fails on is downloaded three times, not on every sync', async () => {
     const db = remoteDb([{ id: 'r1', hash: 'h1', clipEmbedding: 'E', faceRecVersion: null }]);
     AssetDBService.db = db;
     mockNativeFace.detectFaces.mockRejectedValue(new Error('Failed to run face detector.'));
 
-    await AIService.syncEmbeddings(true);
-    AIService.isSyncing = false;
+    const states = [];
+    for (let sync = 0; sync < 5; sync += 1) {
+      AIService.isSyncing = false;
+      await AIService.syncEmbeddings(true);
+      states.push(faceVersionOf(db, 'r1'));
+    }
+
+    expect(states).toEqual([-3, -4, -2, -2, -2]);
+    expect(FileSystem.downloadAsync).toHaveBeenCalledTimes(3);
+  });
+
+  test('a failed preview leaves the phone copy with the same hash alone', async () => {
+    const db = remoteDb([
+      { id: 'h1', hash: 'h1', clipEmbedding: 'E', faceRecVersion: null },
+      { id: '501', hash: 'h1', isLocal: 1, clipEmbedding: 'E', faceRecVersion: 1 },
+      { id: '502', hash: 'h1', isLocal: 1, clipEmbedding: 'E', faceRecVersion: null },
+    ]);
+    AssetDBService.db = db;
+    mockNativeFace.detectFaces.mockRejectedValue(new Error('InputImage width and height should be at least 32!'));
+
     await AIService.syncEmbeddings(true);
 
-    expect(faceVersionOf(db, 'r1')).toBe(-1);
-    expect(FileSystem.downloadAsync).toHaveBeenCalledTimes(2);
+    expect(faceVersionOf(db, 'h1')).toBe(-2);
+    expect(faceVersionOf(db, '501')).toBe(1);
+    expect(faceVersionOf(db, '502')).toBeNull();
+  });
+
+  test('a successful preview still marks the phone copy done, so it is not detected twice', async () => {
+    const db = remoteDb([
+      { id: 'h1', hash: 'h1', clipEmbedding: 'E', faceRecVersion: null },
+      { id: '502', hash: 'h1', isLocal: 1, clipEmbedding: 'E', faceRecVersion: null },
+    ]);
+    AssetDBService.db = db;
+
+    await AIService.syncEmbeddings(true);
+
+    expect(faceVersionOf(db, 'h1')).toBe(1);
+    expect(faceVersionOf(db, '502')).toBe(1);
   });
 
   test('a photo selected for its embedding does not rerun detection when its face state is final', async () => {
