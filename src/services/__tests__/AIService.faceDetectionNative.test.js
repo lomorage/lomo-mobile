@@ -155,7 +155,8 @@ function oneLocalPhotoDb() {
 function faceRecWrites(db) {
   return db.runAsync.mock.calls
     .filter(([sql]) => typeof sql === 'string' && sql.includes('SET faceRecVersion = ?'))
-    .map(([, params]) => params);
+    // (state, id); a hash guard after them is covered with real SQLite below.
+    .map(([, params]) => params.slice(0, 2));
 }
 
 beforeEach(() => {
@@ -430,6 +431,46 @@ describe('local photos kept for a retry', () => {
     await pass();
 
     expect(stateOf(db, 'p1')).toBe(1);
+  });
+
+  test('a failure about the old file does not undo the pending state an edit gave the photo', async () => {
+    const db = localDb([{ id: 'p1', faceRecVersion: null }]);
+    AssetDBService.db = db;
+    // Backup notices the edit while ML Kit is still reading the old bytes.
+    mockNativeFace.detectFaces.mockImplementationOnce(async () => {
+      db.sqlite.prepare("UPDATE MediaAsset SET hash = 'edited', faceRecVersion = 0 WHERE id = 'p1'").run();
+      throw new Error('InputImage width and height should be at least 32!');
+    });
+
+    await pass();
+
+    expect(stateOf(db, 'p1')).toBe(0);
+    await pass();
+    expect(stateOf(db, 'p1')).toBe(1);
+  });
+
+  test('the hash guard matches a photo that has no hash yet', async () => {
+    const db = localDb([{ id: 'p1', faceRecVersion: null }]);
+    db.sqlite.prepare("UPDATE MediaAsset SET hash = NULL WHERE id = 'p1'").run();
+    AssetDBService.db = db;
+    mockNativeFace.detectFaces.mockRejectedValueOnce(new Error('InputImage width and height should be at least 32!'));
+
+    await pass();
+
+    expect(stateOf(db, 'p1')).toBe(-2);
+  });
+
+  test('a failed downscale of the old file does not undo the edit either', async () => {
+    const db = localDb([{ id: 'p1', faceRecVersion: null }]);
+    AssetDBService.db = db;
+    ExpoLomoHasher.prepareAnalysisImageAsync.mockImplementationOnce(async () => {
+      db.sqlite.prepare("UPDATE MediaAsset SET hash = 'edited', faceRecVersion = 0 WHERE id = 'p1'").run();
+      throw new Error('Could not read image size');
+    });
+
+    await pass();
+
+    expect(stateOf(db, 'p1')).toBe(0);
   });
 
   test('a detector that cannot initialize three passes running uses up no photo\'s retries', async () => {

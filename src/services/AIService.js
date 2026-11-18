@@ -1697,9 +1697,10 @@ class AIService {
                   // Same budget as a failed detection: the size could not be read or
                   // the file not decoded, and it may read next pass.
                   if (wantsFaces) {
+                    // Same hash guard as the detection failure below.
                     await AssetDBService.db.runAsync(
-                      'UPDATE MediaAsset SET faceRecVersion = ? WHERE id = ?',
-                      [faceRecCountedFailureVersion(asset.faceRecVersion), asset.id]
+                      'UPDATE MediaAsset SET faceRecVersion = ? WHERE id = ? AND hash IS ?',
+                      [faceRecCountedFailureVersion(asset.faceRecVersion), asset.id, asset.hash ?? null]
                     );
                   }
                 }
@@ -1863,9 +1864,12 @@ class AIService {
                 console.log(`[AIService] Processed Face Detection for local asset ${asset.id}`);
               } catch (fe) {
                 console.warn(`[AIService] Failed Face Detection for local asset ${asset.id}:`, fe.message);
+                // Only if the bytes are still the ones read: a backup that saw the photo
+                // edited meanwhile gave it a new hash and a fresh pending state, which a
+                // failure about the old file must not undo.
                 await AssetDBService.db.runAsync(
-                  'UPDATE MediaAsset SET faceRecVersion = ? WHERE id = ?',
-                  [faceRecFailureVersion(fe, asset.faceRecVersion), asset.id]
+                  'UPDATE MediaAsset SET faceRecVersion = ? WHERE id = ? AND hash IS ?',
+                  [faceRecFailureVersion(fe, asset.faceRecVersion), asset.id, asset.hash ?? null]
                 );
               }
             }
