@@ -135,16 +135,17 @@ describe('AIService.extractBestMatchingFaceCrop', () => {
     await AIService.extractBestMatchingFaceCrop('content://media/1', 'cover-b64');
 
     expect(reportNonFatal).toHaveBeenCalledTimes(1);
-    const [error, name, context] = reportNonFatal.mock.calls[0];
-    expect(error).toBe(nativeError);
+    const [name, category, context] = reportNonFatal.mock.calls[0];
     expect(name).toBe('FaceDetectionError');
+    expect(category).toBe('too_small');
+    expect(nativeError.faceDetectionKind).toBe('too_small');
     expect(context).toEqual({
       source: 'manual_pick',
       width: 2048,
       height: 1536,
       scale: 0.5,
       stage: 'detect',
-      kind: 'too_small',
+      code: undefined,
       image: 'downscaled',
       detector: 'manual',
       platform: 'android',

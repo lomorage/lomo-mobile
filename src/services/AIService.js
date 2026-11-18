@@ -43,8 +43,27 @@ function describeFaceImage(uri) {
   return 'other';
 }
 
-// ML Kit's own failure texts, grouped. The message itself is scrubbed of
-// paths before it is sent; this keeps the cause readable at a glance.
+// faceRecVersion: 1 done, 0/NULL pending, -1 failed (remote photos retry it
+// on the next sync), -2 failed for good: the same file would fail again.
+// The reset/rebuild actions set 0, which retries these too.
+export const FACE_REC_FAILED = -1;
+export const FACE_REC_UNREADABLE = -2;
+const PERMANENT_FACE_FAILURES = new Set(['too_small', 'load_failed']);
+
+// Only a failure _detectFaces tagged counts: the same catch also sees
+// embedding and database errors.
+export function faceRecFailureVersion(error) {
+  return PERMANENT_FACE_FAILURES.has(error?.faceDetectionKind) ? FACE_REC_UNREADABLE : FACE_REC_FAILED;
+}
+
+// A row can be selected for another step (OCR, phash, CLIP) while its face
+// state is already final.
+export function needsFaceDetection(faceRecVersion) {
+  return !faceRecVersion || (faceRecVersion < 1 && faceRecVersion !== FACE_REC_UNREADABLE);
+}
+
+// ML Kit's own failure texts, grouped. Read on the device only: the message
+// embeds the file path and is never sent.
 function classifyFaceDetectionError(error) {
   const message = String(error?.message || error || '');
   if (/at least 32/i.test(message)) return 'too_small';
@@ -956,10 +975,12 @@ class AIService {
         stage = 'detect';
         result = await detector.detectFaces(uri);
       } catch (e) {
-        reportNonFatal(e, 'FaceDetectionError', {
+        const kind = classifyFaceDetectionError(e);
+        if (e && typeof e === 'object') e.faceDetectionKind = kind;
+        reportNonFatal('FaceDetectionError', kind, {
           ...context,
           stage,
-          kind: classifyFaceDetectionError(e),
+          code: e?.code,
           image: describeFaceImage(uri),
           detector: detector === this.manualPickFaceDetector ? 'manual' : 'strict',
           platform: Platform.OS,
@@ -1599,7 +1620,7 @@ class AIService {
             // can't kill the process. analysis stays null when the downscale fails,
             // and those steps are skipped instead of falling back to the original.
             const wantsOcr = asset.ocrText === null;
-            const wantsFaces = !asset.faceRecVersion || asset.faceRecVersion < 1;
+            const wantsFaces = needsFaceDetection(asset.faceRecVersion);
             if ((wantsOcr || wantsFaces) && localPath) {
               try {
                 analysis = await this._prepareAnalysisImage(localPath);
@@ -1653,7 +1674,7 @@ class AIService {
             }
 
             // D. Face Clustering
-            if (analysis && (!asset.faceRecVersion || asset.faceRecVersion < 1)) {
+            if (analysis && wantsFaces) {
               this.status = { ...this.status, currentStepLabel: '🙂 Detecting faces…' };
               DeviceEventEmitter.emit('ai_processing_status', this.status);
               try {
@@ -1777,7 +1798,7 @@ class AIService {
                 console.warn(`[AIService] Failed Face Detection for local asset ${asset.id}:`, fe.message);
                 await AssetDBService.db.runAsync(
                   'UPDATE MediaAsset SET faceRecVersion = ? WHERE id = ?',
-                  [-1, asset.id]
+                  [faceRecFailureVersion(fe), asset.id]
                 );
               }
             }
@@ -2316,8 +2337,8 @@ class AIService {
           const totalRemoteRow = await db.getFirstAsync(`
             SELECT COUNT(*) as count 
             FROM MediaAsset 
-            WHERE isLocal = 0 
-              AND (clipEmbedding = "none" OR faceRecVersion IS NULL OR faceRecVersion < 1)
+            WHERE isLocal = 0
+              AND (clipEmbedding = "none" OR faceRecVersion IS NULL OR (faceRecVersion < 1 AND faceRecVersion != ${FACE_REC_UNREADABLE}))
           `);
           const totalRemote = totalRemoteRow?.count || 0;
           let processedRemote = 0;
@@ -2331,8 +2352,8 @@ class AIService {
             const remotePendingIndex = await db.getAllAsync(`
               SELECT id, hash, clipEmbedding, faceRecVersion 
               FROM MediaAsset 
-              WHERE isLocal = 0 
-                AND (clipEmbedding = "none" OR faceRecVersion IS NULL OR faceRecVersion < 1)
+              WHERE isLocal = 0
+                AND (clipEmbedding = "none" OR faceRecVersion IS NULL OR (faceRecVersion < 1 AND faceRecVersion != ${FACE_REC_UNREADABLE}))
                 AND id > ?
               ORDER BY id
               LIMIT 10
@@ -2394,7 +2415,7 @@ class AIService {
                 }
 
                 // 4. Face Detection for remote photo
-                if (!asset.faceRecVersion || asset.faceRecVersion < 1) {
+                if (needsFaceDetection(asset.faceRecVersion)) {
                   try {
                     const faceResponse = await this._detectFaces(this.faceDetector, downloadRes.uri, {
                       context: { source: 'remote' },
@@ -2508,7 +2529,7 @@ class AIService {
                     console.warn(`[AIService] Failed Face Detection for remote asset ${asset.hash}:`, fe.message);
                     await AssetDBService.db.runAsync(
                       'UPDATE MediaAsset SET faceRecVersion = ? WHERE hash = ?',
-                      [-1, asset.hash]
+                      [faceRecFailureVersion(fe), asset.hash]
                     );
                   }
                 }
