@@ -57,6 +57,12 @@ export const FACE_REC_FAILED = -1;
 export const FACE_REC_UNREADABLE = -2;
 export const MAX_FACE_LOAD_FAILURES = 3;
 
+// Local photos whose face step is still owed: never tried, or unreadable so
+// far but not yet given up on. -1 is left out: the local scan has never
+// retried those. Shared by the status count, the progress total and the
+// batch query so the three agree.
+const LOCAL_FACE_PENDING_SQL = 'faceRecVersion IS NULL OR faceRecVersion = 0 OR faceRecVersion <= -3';
+
 function faceLoadFailuresIn(faceRecVersion) {
   return faceRecVersion <= -3 ? -faceRecVersion - 2 : 0;
 }
@@ -82,9 +88,18 @@ export function needsFaceDetection(faceRecVersion) {
 
 // ML Kit's own failure texts, grouped. Read on the device only: the message
 // embeds the file path and is never sent.
-function classifyFaceDetectionError(error) {
+//
+// Order matters: a read error carries the file name, and a name can contain
+// any of the phrases below ("at least 32 guests.jpg"). So the read error is
+// recognised first, by RNMLKitImage's fixed prefix, and "too small" (the only
+// category that gives up at once) needs ML Kit's whole sentence ending a line.
+const RNMLKIT_IMAGE_LOAD_PREFIX = 'RNMLKitImage: Could not load image from ';
+const MLKIT_TOO_SMALL = /(^|: )InputImage width and height should be at least 32!$/m;
+
+export function classifyFaceDetectionError(error) {
   const message = String(error?.message || error || '');
-  if (/at least 32/i.test(message)) return 'too_small';
+  if (message.includes(RNMLKIT_IMAGE_LOAD_PREFIX)) return 'load_failed';
+  if (MLKIT_TOO_SMALL.test(message)) return 'too_small';
   if (/Could not load image|could not be resolved|FileNotFound|No such file|ENOENT/i.test(message)) return 'load_failed';
   if (/not initialized/i.test(message)) return 'not_initialized';
   if (/bundled face module/i.test(message)) return 'module_missing';
@@ -343,7 +358,7 @@ class AIService {
         (clipEmbeddingVersion IS NULL OR clipEmbeddingVersion = 0)
         OR (phash IS NULL OR phash = "")
         OR (ocrText IS NULL)
-        OR (faceRecVersion IS NULL OR faceRecVersion = 0)
+        OR (${LOCAL_FACE_PENDING_SQL})
       )`);
 
       const semantic = await count('clipEmbeddingVersion IS NOT NULL AND clipEmbeddingVersion >= 1');
@@ -1479,7 +1494,7 @@ class AIService {
         FROM MediaAsset 
         WHERE isLocal = 1 
           AND mediaType = "photo" 
-          AND ((clipEmbeddingVersion IS NULL OR clipEmbeddingVersion = 0) OR (phash IS NULL OR phash = "") OR (ocrText IS NULL) OR (faceRecVersion IS NULL OR faceRecVersion = 0))
+          AND ((clipEmbeddingVersion IS NULL OR clipEmbeddingVersion = 0) OR (phash IS NULL OR phash = "") OR (ocrText IS NULL) OR (${LOCAL_FACE_PENDING_SQL}))
       `);
       const total = totalRow?.count || 0;
       let processed = 0;
@@ -1494,6 +1509,10 @@ class AIService {
       DeviceEventEmitter.emit('ai_processing_status', this.status);
 
       let hasMore = true;
+      // By id, once per pass. A photo still pending after its turn (an unreadable
+      // file kept for a retry) waits for the next pass instead of being re-read
+      // at once, which would spend every retry in the same few seconds.
+      let lastLocalId = '';
       while (hasMore) {
         // Yield to user interactions
         await TaskSchedulerService.waitUntilIdle();
@@ -1511,14 +1530,17 @@ class AIService {
           FROM MediaAsset 
           WHERE isLocal = 1 
             AND mediaType = "photo" 
-            AND ((clipEmbeddingVersion IS NULL OR clipEmbeddingVersion = 0) OR (phash IS NULL OR phash = "") OR (ocrText IS NULL) OR (faceRecVersion IS NULL OR faceRecVersion = 0))
+            AND ((clipEmbeddingVersion IS NULL OR clipEmbeddingVersion = 0) OR (phash IS NULL OR phash = "") OR (ocrText IS NULL) OR (${LOCAL_FACE_PENDING_SQL}))
+            AND id > ?
+          ORDER BY id
           LIMIT ?
-        `, [limit]);
+        `, [lastLocalId, limit]);
 
         if (pending.length === 0) {
           hasMore = false;
           break;
         }
+        lastLocalId = pending[pending.length - 1].id;
 
         console.log(`[AIService] Processing batch of ${pending.length} local photos for embedding & phash...`);
         let didCalculateEmbeddingInBatch = false;

@@ -279,6 +279,145 @@ describe('background scan, native face detection rejects', () => {
   });
 });
 
+describe('classifyFaceDetectionError', () => {
+  const { classifyFaceDetectionError } = require('../AIService');
+  const expoWrapped = (inner) =>
+    `Call to function 'RNMLKitFaceDetection.detectFaces' has been rejected.\n→ Caused by: RNMLKitFaceDetection - Error: ${inner}`;
+  const loadError = (name) => `RNMLKitImage: Could not load image from file:///storage/emulated/0/DCIM/${name}`;
+
+  test.each([
+    ['ML Kit size check, bare', 'InputImage width and height should be at least 32!', 'too_small'],
+    ['ML Kit size check, Expo-wrapped', expoWrapped('InputImage width and height should be at least 32!'), 'too_small'],
+    ['read error', expoWrapped(loadError('IMG_1.jpg')), 'load_failed'],
+    ['read error, name says "at least 32"', expoWrapped(loadError('at least 32 guests.jpg')), 'load_failed'],
+    ['read error, name is the whole ML Kit sentence', expoWrapped(loadError('InputImage width and height should be at least 32!')), 'load_failed'],
+    ['read error, name says "Failed to run"', loadError('Failed to run face detector.jpg'), 'load_failed'],
+    ['read error, name says "not initialized"', loadError('not initialized.png'), 'load_failed'],
+    ['"at least 32" outside the ML Kit sentence', 'Need at least 32 bytes', 'other'],
+    ['detector run failure', expoWrapped('Failed to run face detector.'), 'run_failed'],
+    ['detector init failure', 'Failed to init face detector.', 'init_failed'],
+    ['not initialized', expoWrapped('Face Detector not initialized'), 'not_initialized'],
+  ])('%s', (_label, message, expected) => {
+    expect(classifyFaceDetectionError(new Error(message))).toBe(expected);
+  });
+});
+
+// processLocalEmbeddings on real SQLite: the pending condition and the paging
+// cursor are what decide whether a photo is tried again, and when.
+describe('local photos kept for a retry', () => {
+  const { DatabaseSync } = require('node:sqlite');
+
+  function localDb(rows) {
+    const sqlite = new DatabaseSync(':memory:');
+    sqlite.exec(`CREATE TABLE MediaAsset (id TEXT PRIMARY KEY, hash TEXT, isLocal INTEGER, mediaType TEXT,
+      clipEmbeddingVersion INTEGER, phash TEXT, ocrText TEXT, faceRecVersion INTEGER,
+      uploaded INTEGER DEFAULT 0, clipEmbedding TEXT)`);
+    const insert = sqlite.prepare(`INSERT INTO MediaAsset (id, hash, isLocal, mediaType, clipEmbeddingVersion, phash, ocrText, faceRecVersion)
+      VALUES (?, ?, 1, 'photo', 1, '1', 'done', ?)`);
+    for (const r of rows) insert.run(r.id, r.id, r.faceRecVersion);
+    // expo-sqlite accepts "photo" as a string; node:sqlite only takes 'photo'.
+    const prep = (sql) => sqlite.prepare(sql.replace(/"([^"]*)"/g, "'$1'"));
+    return {
+      sqlite,
+      getAllAsync: jest.fn(async (sql, params = []) => prep(sql).all(...params)),
+      getFirstAsync: jest.fn(async (sql, params = []) => prep(sql).get(...params)),
+      runAsync: jest.fn(async (sql, params = []) => prep(sql).run(...params)),
+    };
+  }
+  const stateOf = (db, id) => db.sqlite.prepare('SELECT faceRecVersion FROM MediaAsset WHERE id = ?').get(id).faceRecVersion;
+  const pass = async () => {
+    AIService.isProcessing = false;
+    await AIService.processLocalEmbeddings(10, true);
+  };
+
+  // The scan sleeps 500ms per photo and 1s per batch in the foreground; the
+  // background pacing (100ms) keeps several passes inside the test timeout.
+  const { AppState } = require('react-native');
+  let foregroundState;
+
+  beforeEach(() => {
+    foregroundState = AppState.currentState;
+    AppState.currentState = 'background';
+    global.currentAiThrottle = undefined;
+    // A SecureStore that remembers, as the phone's does. Each pass starts with
+    // one-time repairs that set faceRecVersion = 0 on every row and then write
+    // a "done" flag; a store that forgets would rerun them every pass. A phone
+    // that has failure states to retry ran them long ago.
+    const store = new Map([
+      ['lomorage_face_bug_fixed_v1', 'true'],
+      ['lomorage_clip_version_bug_fixed_v1', 'true'],
+    ]);
+    SecureStore.getItemAsync.mockImplementation(async (key) => (store.has(key) ? store.get(key) : null));
+    SecureStore.setItemAsync.mockImplementation(async (key, value) => { store.set(key, value); });
+    MediaService.getAssetInfo.mockImplementation(async (id) => ({ localUri: `file:///storage/${id}.jpg`, width: 800, height: 600 }));
+    ExpoLomoHasher.prepareAnalysisImageAsync.mockImplementation(async (uri) => ({ uri, width: 800, height: 600, scale: 1 }));
+  });
+
+  afterEach(() => {
+    AppState.currentState = foregroundState;
+    global.currentAiThrottle = undefined;
+  });
+
+  test('a photo unreadable once is tried again on the next pass, and done once it reads', async () => {
+    const db = localDb([{ id: 'p1', faceRecVersion: null }]);
+    AssetDBService.db = db;
+    mockNativeFace.detectFaces
+      .mockRejectedValueOnce(new Error(loadErrorFor('p1')))
+      .mockResolvedValueOnce({ faces: [] });
+
+    await pass();
+    expect(stateOf(db, 'p1')).toBe(-3);
+    await pass();
+    expect(stateOf(db, 'p1')).toBe(1);
+  });
+
+  test('each pass tries it once, so three failures take three passes', async () => {
+    const db = localDb([{ id: 'p1', faceRecVersion: null }]);
+    AssetDBService.db = db;
+    mockNativeFace.detectFaces.mockRejectedValue(new Error(loadErrorFor('p1')));
+
+    const states = [];
+    for (let i = 0; i < 4; i += 1) {
+      await pass();
+      states.push(stateOf(db, 'p1'));
+    }
+
+    expect(states).toEqual([-3, -4, -2, -2]);
+    expect(mockNativeFace.detectFaces).toHaveBeenCalledTimes(3);
+  });
+
+  test('-1 and -2 are not picked up again; -3 and -4 are', async () => {
+    const db = localDb([
+      { id: 'a', faceRecVersion: -1 }, { id: 'b', faceRecVersion: -2 },
+      { id: 'c', faceRecVersion: -3 }, { id: 'd', faceRecVersion: -4 }, { id: 'e', faceRecVersion: 1 },
+    ]);
+    AssetDBService.db = db;
+
+    await pass();
+
+    expect(mockNativeFace.detectFaces.mock.calls.map(([uri]) => uri))
+      .toEqual(['file:///storage/c.jpg', 'file:///storage/d.jpg']);
+  });
+
+  test('the Settings pending count agrees with what the scan picks up', async () => {
+    AssetDBService.db = localDb([
+      { id: 'a', faceRecVersion: -1 }, { id: 'b', faceRecVersion: -2 },
+      { id: 'c', faceRecVersion: -3 }, { id: 'd', faceRecVersion: -4 }, { id: 'e', faceRecVersion: 1 },
+      { id: 'f', faceRecVersion: null }, { id: 'g', faceRecVersion: 0 },
+    ]);
+
+    const status = await AIService.getDetailedIndexStatus();
+
+    // Pending: c, d (retry), f, g (never tried). Analyzed: a, b (given up), e (done).
+    expect(status.onDevice.total).toBe(7);
+    expect(status.onDevice.analyzed).toBe(3);
+  });
+
+  function loadErrorFor(id) {
+    return `RNMLKitFaceDetection - Error: RNMLKitImage: Could not load image from file:///storage/${id}.jpg`;
+  }
+});
+
 describe('faceRecFailureVersion', () => {
   const { faceRecFailureVersion } = require('../AIService');
   const tagged = (kind) => Object.assign(new Error('x'), { faceDetectionKind: kind });
