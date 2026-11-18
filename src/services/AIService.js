@@ -67,16 +67,19 @@ function faceLoadFailuresIn(faceRecVersion) {
   return faceRecVersion <= -3 ? -faceRecVersion - 2 : 0;
 }
 
+// One more failed read of the photo: -3, -4, then -2.
+export function faceRecLoadFailureVersion(previousVersion) {
+  const failures = faceLoadFailuresIn(previousVersion) + 1;
+  return failures >= MAX_FACE_LOAD_FAILURES ? FACE_REC_UNREADABLE : -(2 + failures);
+}
+
 // The state to save after a failure, given the state before it. Only a
 // failure _detectFaces tagged counts: the same catch also sees embedding and
 // database errors.
 export function faceRecFailureVersion(error, previousVersion) {
   const kind = error?.faceDetectionKind;
   if (kind === 'too_small') return FACE_REC_UNREADABLE;
-  if (kind === 'load_failed') {
-    const failures = faceLoadFailuresIn(previousVersion) + 1;
-    return failures >= MAX_FACE_LOAD_FAILURES ? FACE_REC_UNREADABLE : -(2 + failures);
-  }
+  if (kind === 'load_failed') return faceRecLoadFailureVersion(previousVersion);
   return FACE_REC_FAILED;
 }
 
@@ -1670,10 +1673,13 @@ class AIService {
               } catch (prepErr) {
                 console.warn(`[AIService] Could not downscale ${asset.id} for on-device vision:`, prepErr.message);
                 if (wantsOcr) await AssetDBService.saveAssetOCR(asset.id, 'failed');
+                // Same budget as a read that fails inside ML Kit: whether the size
+                // could not be read, the file not decoded or the copy not written,
+                // there was no image to look at, and it may be there next pass.
                 if (wantsFaces) {
                   await AssetDBService.db.runAsync(
                     'UPDATE MediaAsset SET faceRecVersion = ? WHERE id = ?',
-                    [-1, asset.id]
+                    [faceRecLoadFailureVersion(asset.faceRecVersion), asset.id]
                   );
                 }
               }

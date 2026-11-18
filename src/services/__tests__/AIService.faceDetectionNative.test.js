@@ -386,6 +386,33 @@ describe('local photos kept for a retry', () => {
     expect(mockNativeFace.detectFaces).toHaveBeenCalledTimes(3);
   });
 
+  test('a photo whose size cannot be read before ML Kit gets the same retries', async () => {
+    const db = localDb([{ id: 'p1', faceRecVersion: null }]);
+    AssetDBService.db = db;
+    ExpoLomoHasher.prepareAnalysisImageAsync.mockRejectedValue(new Error('Could not read image size: file:///storage/p1.jpg'));
+
+    const states = [];
+    for (let i = 0; i < 4; i += 1) {
+      await pass();
+      states.push(stateOf(db, 'p1'));
+    }
+
+    expect(states).toEqual([-3, -4, -2, -2]);
+    expect(ExpoLomoHasher.prepareAnalysisImageAsync).toHaveBeenCalledTimes(3);
+    expect(mockNativeFace.detectFaces).not.toHaveBeenCalled();
+  });
+
+  test('a photo in the retry queue keeps its place when the next try fails before ML Kit', async () => {
+    const db = localDb([{ id: 'p1', faceRecVersion: -3 }]);
+    AssetDBService.db = db;
+    ExpoLomoHasher.prepareAnalysisImageAsync.mockRejectedValueOnce(new Error('Could not read image size: file:///storage/p1.jpg'));
+
+    await pass();
+    expect(stateOf(db, 'p1')).toBe(-4);
+    await pass();
+    expect(stateOf(db, 'p1')).toBe(1);
+  });
+
   test('-1 and -2 are not picked up again; -3 and -4 are', async () => {
     const db = localDb([
       { id: 'a', faceRecVersion: -1 }, { id: 'b', faceRecVersion: -2 },

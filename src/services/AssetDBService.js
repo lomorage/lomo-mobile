@@ -722,8 +722,11 @@ class AssetDBService {
            AND hash IN (SELECT id FROM MediaAsset WHERE isLocal = 0)`,
         chunk
       );
+      // A face detection failure (faceRecVersion below 0) was about the phone's file. The remote
+      // scan reads the server's preview instead, which deserves its own try.
       await this.db.runAsync(
-        `UPDATE OR IGNORE MediaAsset SET id = hash, isLocal = 0
+        `UPDATE OR IGNORE MediaAsset SET id = hash, isLocal = 0,
+           faceRecVersion = CASE WHEN faceRecVersion < 0 THEN 0 ELSE faceRecVersion END
          WHERE isLocal = 1 AND id IN (${marks}) AND hash IS NOT NULL`,
         chunk
       );

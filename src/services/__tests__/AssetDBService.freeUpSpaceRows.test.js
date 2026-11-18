@@ -46,7 +46,8 @@ describeWithSqlite('markAssetsRemovedLocally (real SQLite)', () => {
       id TEXT PRIMARY KEY, hash TEXT, isLocal INTEGER NOT NULL DEFAULT 0, hasGeo INTEGER NOT NULL DEFAULT 0,
       latitude REAL DEFAULT 0.0, longitude REAL DEFAULT 0.0, createTime INTEGER DEFAULT 0, mediaType TEXT,
       filename TEXT, isFavorite INTEGER DEFAULT 0, localCachePath TEXT, phash TEXT, clipEmbedding TEXT,
-      ocrText TEXT, uploaded INTEGER DEFAULT 0, fileSize INTEGER, backupExcluded INTEGER DEFAULT 0
+      ocrText TEXT, uploaded INTEGER DEFAULT 0, fileSize INTEGER, backupExcluded INTEGER DEFAULT 0,
+      faceRecVersion INTEGER
     )`);
     previousDb = AssetDBService.db;
     AssetDBService.db = adapter();
@@ -100,6 +101,27 @@ describeWithSqlite('markAssetsRemovedLocally (real SQLite)', () => {
     expect(rows()).toHaveLength(1);
     expect(byId('H1')).toMatchObject({ isLocal: 0, hash: 'H1', phash: 'ph-local', filename: 'PXL_1.jpg', createTime: 5000 });
     expect(byId('phone-1')).toBeUndefined();
+  });
+
+  // A face detection failure was about the phone's file; the remote scan reads the server's
+  // preview, so the re-keyed row goes back to pending. A finished result stays.
+  test.each([
+    [-2, 0], [-1, 0], [-3, 0], [-4, 0], [1, 1], [0, 0], [null, null],
+  ])('re-keying it turns face state %p into %p', async (before, after) => {
+    local('phone-1', 'H1', { faceRecVersion: before });
+
+    await AssetDBService.markAssetsRemovedLocally(['phone-1']);
+
+    expect(byId('H1').faceRecVersion).toBe(after);
+  });
+
+  test('an existing remote row keeps its own face state', async () => {
+    local('phone-1', 'H1', { faceRecVersion: -2 });
+    remote('H1', { faceRecVersion: 1 });
+
+    await AssetDBService.markAssetsRemovedLocally(['phone-1']);
+
+    expect(byId('H1').faceRecVersion).toBe(1);
   });
 
   test('a later server sync neither duplicates nor drops it (the row is keyed like a synced one)', async () => {
