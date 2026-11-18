@@ -30,6 +30,18 @@ import { buildFaceBoundingBox, isFaceTooSmall, isBystanderFace, minFaceSizeForSc
 import { translateToEnglish } from './ai/translateQuery';
 import { rankFaceAlbumMatches, groupDuplicateFaceAlbums, titleForFaceAlbumMerge, DEFAULT_FACE_MATCH_THRESHOLD } from './ai/faceAlbumMatching';
 import { clusterDuplicateAssets } from './ai/duplicateDetection';
+import { reportNonFatal } from './crashReporting';
+
+// What kind of file ML Kit was handed, without the path itself.
+function describeFaceImage(uri) {
+  const value = String(uri || '');
+  if (/\/analysis-\d+\.jpg$/.test(value)) return 'downscaled';
+  if (value.includes('temp_face_cover_')) return 'cover';
+  if (value.startsWith('content://')) return 'content';
+  if (FileSystem.cacheDirectory && value.startsWith(FileSystem.cacheDirectory)) return 'cache';
+  if (value.startsWith('file://')) return 'file';
+  return 'other';
+}
 
 export const BACKGROUND_AI_SYNC_TASK = 'LOMO_AI_SYNC_TASK';
 class AIService {
@@ -758,7 +770,9 @@ class AIService {
 
       // Attempt to detect landmarks in the cover image to align it properly for ArcFace
       try {
-        const coverFacesRes = await this._detectFaces(this.faceDetector, tempFileUri);
+        const coverFacesRes = await this._detectFaces(this.faceDetector, tempFileUri, {
+          context: { source: 'cover', width: size.w, height: size.h },
+        });
         const coverFaces = coverFacesRes?.faces || [];
         if (coverFaces.length > 0) {
           attachEyeLandmarks(coverBBox, coverFaces[0]);
@@ -918,10 +932,23 @@ class AIService {
     return run;
   }
 
-  async _detectFaces(detector, uri, restoreDetector) {
+  // context: { source, width, height, scale } of the image handed to ML Kit,
+  // sent with a non-fatal report when detection rejects. Sizes only, no paths.
+  async _detectFaces(detector, uri, { restoreDetector, context } = {}) {
     return this._enqueueFaceDetection(async () => {
       await detector.initialize();
-      const result = await detector.detectFaces(uri);
+      let result;
+      try {
+        result = await detector.detectFaces(uri);
+      } catch (e) {
+        reportNonFatal(e, 'FaceDetectionError', {
+          ...context,
+          image: describeFaceImage(uri),
+          detector: detector === this.manualPickFaceDetector ? 'manual' : 'strict',
+          platform: Platform.OS,
+        });
+        throw e;
+      }
       if (restoreDetector && restoreDetector !== detector) {
         try {
           await restoreDetector.initialize();
@@ -1045,7 +1072,10 @@ class AIService {
     try {
     let rawFaces = [];
     try {
-      const faceResponse = await this._detectFaces(this.manualPickFaceDetector, imageForFaces, this.faceDetector);
+      const faceResponse = await this._detectFaces(this.manualPickFaceDetector, imageForFaces, {
+        restoreDetector: this.faceDetector,
+        context: { source: 'manual_pick', width: analysis.width, height: analysis.height, scale: analysis.scale },
+      });
       rawFaces = faceResponse?.faces || [];
     } catch (e) {
       console.warn('[AIService] Face detection failed while picking a new cover:', e.message);
@@ -1232,7 +1262,9 @@ class AIService {
     const imageForFaces = analysis.uri || localPath;
     const faceFloor = minFaceSizeForScale(analysis.scale);
     try {
-    const faceResponse = await this._detectFaces(this.faceDetector, imageForFaces);
+    const faceResponse = await this._detectFaces(this.faceDetector, imageForFaces, {
+      context: { source: 'debug', width: analysis.width, height: analysis.height, scale: analysis.scale },
+    });
     let faces = faceResponse?.faces || [];
     
     // NMS (Non-Maximum Suppression) to remove overlapping phantom faces
@@ -1608,7 +1640,9 @@ class AIService {
               this.status = { ...this.status, currentStepLabel: '🙂 Detecting faces…' };
               DeviceEventEmitter.emit('ai_processing_status', this.status);
               try {
-                const faceResponse = await this._detectFaces(this.faceDetector, analysis.uri);
+                const faceResponse = await this._detectFaces(this.faceDetector, analysis.uri, {
+                  context: { source: 'local', width: analysis.width, height: analysis.height, scale: analysis.scale },
+                });
                 const faces = faceResponse?.faces || [];
                 let matchedExisting = false;
                 let validFaceCount = 0;
@@ -2345,7 +2379,9 @@ class AIService {
                 // 4. Face Detection for remote photo
                 if (!asset.faceRecVersion || asset.faceRecVersion < 1) {
                   try {
-                    const faceResponse = await this._detectFaces(this.faceDetector, downloadRes.uri);
+                    const faceResponse = await this._detectFaces(this.faceDetector, downloadRes.uri, {
+                      context: { source: 'remote' },
+                    });
                     const faces = faceResponse?.faces || [];
 
                     if (faces.length > 0) {
