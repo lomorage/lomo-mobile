@@ -1,6 +1,7 @@
 import SyncService from '../SyncService';
 import axios from 'axios';
 import AssetDBService from '../AssetDBService';
+import { DeviceEventEmitter } from 'react-native';
 
 jest.mock('../MediaService', () => ({
   calculateHash: jest.fn(),
@@ -140,6 +141,63 @@ describe('SyncService original names', () => {
       await Promise.all([first, second]);
 
       expect(axios.post.mock.calls.map((c) => c[1].map((e) => e.Hash))).toEqual([['h1'], ['h2']]);
+    });
+  });
+
+  describe('signing out or switching account mid-request', () => {
+    // The answer for account A arrives once B is signed in: the same hash can be B's photo.
+    const answerAfterSwitch = (value) => () => new Promise((resolve) => {
+      mockToken = 'token-b';
+      setImmediate(() => resolve(value));
+    });
+
+    test('a report answer for the old account is dropped', async () => {
+      backlog([{ hash: 'h1', name: 'IMG_A.jpg' }]);
+      axios.post.mockImplementationOnce(answerAfterSwitch({ data: [{ Hash: 'h1', Name: 'IMG_A.jpg' }] }));
+
+      await SyncService.reportOriginalNames();
+
+      expect(AssetDBService.setRemoteOriginalNames).not.toHaveBeenCalled();
+      expect(axios.get).not.toHaveBeenCalled();
+    });
+
+    test('a feed page for the old account is dropped, with its place and the cached tree', async () => {
+      backlog([]);
+      const node = { origName: null };
+      SyncService.remoteTree = { getNodeByHash: () => node };
+      const save = jest.spyOn(SyncService, 'saveRemoteTree').mockResolvedValue();
+      axios.get.mockImplementationOnce(answerAfterSwitch({ data: { Rev: 4, Names: [{ Hash: 'h1', Name: 'IMG_A.jpg' }], More: false } }));
+
+      await SyncService.reportOriginalNames();
+
+      expect(AssetDBService.setRemoteOriginalNames).not.toHaveBeenCalled();
+      expect(AssetDBService.setSyncState).not.toHaveBeenCalled();
+      expect(node.origName).toBeNull();
+      expect(save).not.toHaveBeenCalled();
+      save.mockRestore();
+    });
+  });
+
+  describe('the open gallery', () => {
+    test('is told to reload when names were recorded', async () => {
+      const emit = jest.spyOn(DeviceEventEmitter, 'emit');
+      backlog([]);
+      axios.get.mockResolvedValue({ data: { Rev: 2, Names: [{ Hash: 'h1', Name: 'IMG_1.jpg' }], More: false } });
+
+      await SyncService.reportOriginalNames();
+
+      expect(emit).toHaveBeenCalledWith('remoteAssetsUpdated');
+      emit.mockRestore();
+    });
+
+    test('is left alone when nothing new came', async () => {
+      const emit = jest.spyOn(DeviceEventEmitter, 'emit');
+      backlog([]);
+
+      await SyncService.reportOriginalNames();
+
+      expect(emit).not.toHaveBeenCalledWith('remoteAssetsUpdated');
+      emit.mockRestore();
     });
   });
 

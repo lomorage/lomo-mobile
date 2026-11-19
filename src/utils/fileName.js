@@ -61,6 +61,16 @@ function splitExt(name) {
   return dot > 0 ? [name.slice(0, dot), name.slice(dot + 1)] : [name, ''];
 }
 
+// The name a copy of `asset` saved earlier as `cachedName` should have now: the original name's
+// stem with the copy's own extension (what lomod would name that download), once the original
+// name is known. Unchanged otherwise.
+export function cachedShareFileName(cachedName, asset) {
+  const [stem] = splitExt(safeFileName(asset?.originalName || ''));
+  if (!stem) return cachedName;
+  const [, ext] = splitExt(cachedName);
+  return ext ? `${stem}.${ext}` : stem;
+}
+
 // The name for a downloaded copy of `asset` (e.g. to share). `headers` are the download's
 // response headers: lomod names the file there (original name, with the extension of what it
 // actually sent, which may be a converted copy), and Content-Type tells the format otherwise.

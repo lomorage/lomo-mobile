@@ -1106,8 +1106,16 @@ class SyncService {
     if (!url || !token) return;
     const state = this._originalNamesState(token);
     if (state.unsupported) return;
-    await this._sendOriginalNames(url, token, state);
-    if (!state.unsupported) await this._fetchOriginalNames(url, token, state);
+    // Answers can arrive after the user signed out or switched account; one meant for the old
+    // account must not land on the new one's photos (same hash, other account).
+    const signedIn = () => AuthService.getToken() === token;
+    let applied = await this._sendOriginalNames(url, token, state, signedIn);
+    if (!state.unsupported && signedIn()) applied += await this._fetchOriginalNames(url, token, state, signedIn);
+    if (applied > 0 && signedIn()) {
+      // The gallery holds its own copy of the rows; let it pick up the names.
+      const { DeviceEventEmitter } = require('react-native');
+      DeviceEventEmitter.emit('remoteAssetsUpdated');
+    }
   }
 
   _namesRequestFailed(e, state, what) {
@@ -1120,7 +1128,9 @@ class SyncService {
     }
   }
 
-  async _sendOriginalNames(url, token, state) {
+  // Returns how many names were recorded.
+  async _sendOriginalNames(url, token, state, signedIn) {
+    let applied = 0;
     for (let round = 0; round < 100; round++) {
       const batch = await AssetDBService.getOriginalNamesToReport(200, state.sent);
       if (batch.length === 0) break;
@@ -1141,17 +1151,22 @@ class SyncService {
         this._namesRequestFailed(e, state, 'report');
         break;
       }
+      if (!signedIn()) break;
       const stored = (Array.isArray(response.data) ? response.data : [])
         .filter(r => r && r.Hash)
         .map(r => ({ hash: r.Hash, name: r.Name || '' }));
       await AssetDBService.setRemoteOriginalNames(stored);
+      applied += stored.length;
       console.log(`[SyncService] Reported ${batch.length} original names; server confirmed ${stored.length}.`);
     }
+    return applied;
   }
 
-  async _fetchOriginalNames(url, token, state) {
+  // Returns how many names were recorded.
+  async _fetchOriginalNames(url, token, state, signedIn) {
     const cursorKey = `originalNamesRev:${state.key}`;
     let since = Number(await AssetDBService.getSyncState(cursorKey)) || 0;
+    let applied = 0;
     let treeChanged = false;
     for (let page = 0; page < 500; page++) {
       let data;
@@ -1167,6 +1182,7 @@ class SyncService {
         this._namesRequestFailed(e, state, 'fetch');
         break;
       }
+      if (!signedIn()) return applied;
       const names = (Array.isArray(data?.Names) ? data.Names : [])
         .filter(n => n && n.Hash)
         .map(n => ({ hash: String(n.Hash).toLowerCase(), name: n.Name || '' }));
@@ -1179,13 +1195,15 @@ class SyncService {
         }
       }
       await AssetDBService.setRemoteOriginalNames(names);
+      applied += names.length;
       if (Number.isFinite(data?.Rev) && data.Rev > since) {
         since = data.Rev;
         await AssetDBService.setSyncState(cursorKey, since);
       }
       if (!data?.More || names.length === 0) break;
     }
-    if (treeChanged) await this.saveRemoteTree();
+    if (treeChanged && signedIn()) await this.saveRemoteTree();
+    return applied;
   }
 
   async syncRemoteGPS() {

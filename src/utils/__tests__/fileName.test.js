@@ -1,4 +1,6 @@
-import { displayFileName, downloadFileName, fileUriIn, nameFromContentDisposition, safeFileName } from '../fileName';
+import {
+  cachedShareFileName, displayFileName, downloadFileName, fileUriIn, nameFromContentDisposition, safeFileName,
+} from '../fileName';
 
 describe('displayFileName', () => {
   test('prefers the name from the phone over the server name', () => {
@@ -41,6 +43,22 @@ describe('fileUriIn', () => {
     const parsed = new URL(uri);
     expect(parsed.hash).toBe('');
     expect(decodeURIComponent(parsed.pathname.split('/').pop())).toBe('IMG#1 ?été%.jpg');
+  });
+});
+
+describe('cachedShareFileName', () => {
+  test('a copy saved before the original name was known takes it, keeping its own format', () => {
+    expect(cachedShareFileName('photo_abcdef01.jpg', { originalName: 'IMG_1234.HEIC' })).toBe('IMG_1234.jpg');
+  });
+  test('a copy already named after it stays as it is', () => {
+    expect(cachedShareFileName('IMG_1234.heic', { originalName: 'IMG_1234.HEIC' })).toBe('IMG_1234.heic');
+  });
+  test('no original name known: unchanged', () => {
+    expect(cachedShareFileName('photo_abcdef01.jpg', { originalName: null })).toBe('photo_abcdef01.jpg');
+    expect(cachedShareFileName('photo_abcdef01.jpg', undefined)).toBe('photo_abcdef01.jpg');
+  });
+  test('the name is made safe first', () => {
+    expect(cachedShareFileName('x.png', { originalName: 'DCIM/a:b.jpg' })).toBe('a_b.png');
   });
 });
 

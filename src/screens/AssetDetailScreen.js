@@ -26,7 +26,7 @@ import ZoomableMedia from '../components/ZoomableMedia';
 import { useServerEpoch } from '../hooks/useServerEpoch';
 import { withRetryBuster } from '../hooks/useImageRetry';
 import { isNotFoundImageError } from '../utils/imageErrors';
-import { displayFileName, downloadFileName, fileUriIn } from '../utils/fileName';
+import { cachedShareFileName, displayFileName, downloadFileName, fileUriIn } from '../utils/fileName';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImageManipulator from 'expo-image-manipulator';
 
@@ -709,7 +709,16 @@ export default function AssetDetailScreen({ route, navigation }) {
                 const cached = (await FileSystem.readDirectoryAsync(dir).catch(() => []))
                     .find(name => name !== '.download');
                 if (cached) {
+                    // Saved before the app learned the photo's original name: same file, so
+                    // rename it rather than download it again.
+                    const wanted = cachedShareFileName(cached, currentAsset);
                     uriToShare = fileUriIn(dir, cached);
+                    if (wanted !== cached) {
+                        const renamed = fileUriIn(dir, wanted);
+                        await FileSystem.moveAsync({ from: uriToShare, to: renamed })
+                            .then(() => { uriToShare = renamed; })
+                            .catch(() => {});
+                    }
                 } else {
                     await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
                     const result = await FileSystem.downloadAsync(remoteUrl, downloadPath);
