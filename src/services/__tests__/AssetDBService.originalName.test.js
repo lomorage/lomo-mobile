@@ -162,6 +162,16 @@ describeWithSqlite('original file names (real SQLite)', () => {
       await expect(AssetDBService.getSyncState('originalNamesRev:b')).resolves.toBe('1');
     });
 
+    test('On This Day gets the original name too', async () => {
+      const lastYear = new Date();
+      lastYear.setFullYear(lastYear.getFullYear() - 1);
+      lastYear.setHours(12, 0, 0, 0);
+      remote('h1', { originalName: 'IMG_1.jpg', createTime: lastYear.getTime() });
+
+      const [asset] = await AssetDBService.getOnThisDayAssets();
+      expect(asset).toMatchObject({ hash: 'h1', filename: 'h1-server.jpg', originalName: 'IMG_1.jpg' });
+    });
+
     test('the gallery gets the original name next to the server one', async () => {
       remote('h1', { originalName: 'IMG_1.jpg' });
 

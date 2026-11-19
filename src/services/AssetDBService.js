@@ -1386,7 +1386,7 @@ class AssetDBService {
       const currentYear = now.getFullYear();
 
       const query = `
-        SELECT id, isLocal, hash, mediaType, createTime, filename 
+        SELECT id, isLocal, hash, mediaType, createTime, filename, ${this._originalNameColumn()}
         FROM MediaAsset 
         WHERE createTime > 0 
           AND strftime('%m-%d', createTime / 1000, 'unixepoch', 'localtime') = ?

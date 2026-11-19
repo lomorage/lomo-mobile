@@ -1370,7 +1370,8 @@ export default function HomeScreen({ navigation, route }) {
                     status: 'remote',
                     creationTime: asset.createTime || 0,
                     mediaType: asset.mediaType || (isVideoExtension(asset.filename) ? 'video' : 'photo'),
-                    filename: asset.filename || ''
+                    filename: asset.filename || '',
+                    originalName: asset.originalName || null
                 }));
             setOnThisDayAssets(mappedOnThisDay);
             GalleryStore.setAssets(mappedOnThisDay, 'onThisDay');

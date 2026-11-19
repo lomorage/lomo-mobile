@@ -161,6 +161,28 @@ describe('SyncService original names', () => {
       expect(axios.get).not.toHaveBeenCalled();
     });
 
+    test('names read while the account changed are not sent to the old account', async () => {
+      AssetDBService.getOriginalNamesToReport.mockImplementationOnce(async () => {
+        mockToken = 'token-b';
+        return [{ hash: 'h1', name: 'IMG_B.jpg' }];
+      }).mockResolvedValue([]);
+
+      await SyncService.reportOriginalNames();
+
+      expect(axios.post).not.toHaveBeenCalled();
+      expect(axios.get).not.toHaveBeenCalled();
+    });
+
+    test('the next feed page is not asked for the old account once the account changed', async () => {
+      backlog([]);
+      axios.get.mockResolvedValueOnce({ data: { Rev: 1, Names: [{ Hash: 'h1', Name: 'IMG_A.jpg' }], More: true } });
+      AssetDBService.setRemoteOriginalNames.mockImplementationOnce(async () => { mockToken = 'token-b'; });
+
+      await SyncService.reportOriginalNames();
+
+      expect(axios.get).toHaveBeenCalledTimes(1);
+    });
+
     test('a feed page for the old account is dropped, with its place and the cached tree', async () => {
       backlog([]);
       const node = { origName: null };

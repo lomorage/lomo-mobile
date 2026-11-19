@@ -1134,6 +1134,9 @@ class SyncService {
     for (let round = 0; round < 100; round++) {
       const batch = await AssetDBService.getOriginalNamesToReport(200, state.sent);
       if (batch.length === 0) break;
+      // Read from this phone's rows while the account may have changed: never send them to the
+      // old account, where the server would keep them as those photos' first names.
+      if (!signedIn()) break;
       batch.forEach(e => state.sent.add(e.hash));
       let response;
       try {
@@ -1169,6 +1172,7 @@ class SyncService {
     let applied = 0;
     let treeChanged = false;
     for (let page = 0; page < 500; page++) {
+      if (!signedIn()) return applied;
       let data;
       try {
         ({ data } = await axios.get(`${url}/assets/names?since=${since}`, {
