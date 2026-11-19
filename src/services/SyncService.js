@@ -852,12 +852,18 @@ class SyncService {
       const url = AuthService.getServerUrl();
       const token = AuthService.getToken();
       if (!url || !token) return null;
+      // The whole listing belongs to this sign-in: one finishing after signing out or switching
+      // account must not put the old account's photos and names back into the shared cache.
+      const session = AuthService.getSession();
+      const isCurrent = () => AuthService.getSession() === session;
       // Before this account's listing is applied: drop original names learned for another one.
       try {
         await this._forgetOriginalNamesOfOtherAccount();
       } catch (e) {
         console.warn('[SyncService] Failed to check the original names account:', e?.message);
       }
+      // Names are written only once the cache is known to be this account's.
+      const namesOwned = await this._originalNamesOwned();
 
       try {
         // Step 1: Fetch month-level tree (small payload)
@@ -986,14 +992,24 @@ class SyncService {
         }
 
         // Step 4: Rebuild assets map and save
+        if (!isCurrent()) {
+          console.log('[SyncService] Signed out or switched account during the listing; dropping it.');
+          return null;
+        }
         newRoot.updateAssetsMap();
         this.remoteTree = newRoot;
         await this.saveRemoteTree();
+        if (!isCurrent()) {
+          // The new sign-in may have cleared the cache while this was being written.
+          await this.clearRemoteTreeCache();
+          return null;
+        }
 
         // Insert into local SQLite cache for Photo Map and Gallery Grid
         await AssetDBService.init();
         const remoteAssets = Array.from(newRoot.assetsMap.values());
-        await AssetDBService.syncRemoteAssets(remoteAssets);
+        const applied = await AssetDBService.syncRemoteAssets(remoteAssets, { withNames: namesOwned, isCurrent });
+        if (applied === false) return null;
         // Sync the DB uploaded status
         await AssetDBService.syncUploadedStatus();
         await this.loadLocalHashCache();
@@ -1115,7 +1131,9 @@ class SyncService {
     await AssetDBService.init();
     const previous = await AssetDBService.getSyncState('originalNamesAccount');
     if (previous === key && key) return;
-    if (previous) {
+    // null: never recorded (first run with this feature), nothing to drop. '' (owner unknown, e.g.
+    // /system didn't answer at sign-in) counts as another account.
+    if (previous !== null && previous !== undefined) {
       await AssetDBService.clearRemoteOriginalNames();
       await this.clearRemoteTreeCache();
       if (key) await AssetDBService.setSyncState(`originalNamesRev:${key}`, '0');
@@ -1123,6 +1141,18 @@ class SyncService {
       console.log('[SyncService] Signed in to another account: original names will be read again.');
     }
     await AssetDBService.setSyncState('originalNamesAccount', key);
+  }
+
+  // Whether the original names in the cache are this account's: its id is known and recorded as
+  // their owner. Until then nothing writes names (an unknown owner can't be cleared for later).
+  async _originalNamesOwned() {
+    const accountId = AuthService.getAccountId();
+    if (!accountId) return false;
+    try {
+      return (await AssetDBService.getSyncState('originalNamesAccount')) === shortKey(accountId);
+    } catch (_e) {
+      return false;
+    }
   }
 
   // After signing in: make sure the cached server rows don't carry another account's original
@@ -1141,7 +1171,7 @@ class SyncService {
     const accountId = AuthService.getAccountId();
     if (!url || !token || !accountId) return;
     // Names learned so far may be another account's (e.g. a pass started before the listing).
-    if (await AssetDBService.getSyncState('originalNamesAccount') !== shortKey(accountId)) return;
+    if (!(await this._originalNamesOwned())) return;
     const state = this._originalNamesState(accountId);
     if (state.unsupported) return;
     // Answers can arrive after the user signed out or switched account; one meant for the old

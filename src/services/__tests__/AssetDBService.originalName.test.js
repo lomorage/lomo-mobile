@@ -201,6 +201,28 @@ describeWithSqlite('original file names (real SQLite)', () => {
       expect(byId('h4')).toMatchObject({ originalName: null, originalNameSynced: 0 });
     });
 
+    test('while the account is not known, the listing adds photos but no names', async () => {
+      remote('h1');
+      const node = (hash, origName) => ({ hash, tag: `${hash}-server.jpg`, date: new Date(5000), origName });
+
+      await AssetDBService.syncRemoteAssets([node('h1', 'IMG_1.jpg'), node('h2', 'IMG_2.jpg')], { withNames: false });
+
+      expect(byId('h1')).toMatchObject({ originalName: null, originalNameSynced: 0 });
+      expect(byId('h2')).toMatchObject({ filename: 'h2-server.jpg', originalName: null, originalNameSynced: 0 });
+    });
+
+    test('a listing whose sign-in ended writes nothing more', async () => {
+      remote('h1');
+      const node = (hash, origName) => ({ hash, tag: `${hash}-server.jpg`, date: new Date(5000), origName });
+
+      const result = await AssetDBService.syncRemoteAssets([node('h1', 'IMG_1.jpg'), node('h2', 'IMG_2.jpg')],
+        { isCurrent: () => false });
+
+      expect(result).toBe(false);
+      expect(byId('h1').originalName).toBeNull();
+      expect(byId('h2')).toBeUndefined();
+    });
+
     test('sync state is kept per key and replaced on update', async () => {
       sqlite.exec('CREATE TABLE IF NOT EXISTS SyncState (key TEXT PRIMARY KEY, value TEXT)');
       await expect(AssetDBService.getSyncState('originalNamesRev:a')).resolves.toBeNull();

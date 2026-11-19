@@ -227,12 +227,14 @@ class AuthService {
   }
 
   async determineBestConnection() {
+      // One sign-in for the whole probe: once the user signs in again (possibly to another
+      // server), nothing this probe finds may change where the app connects.
+      const session = this._session;
       // 1. Try Local URL first
       if (this.localUrl) {
           try {
              const controller = new AbortController();
              const timeoutId = setTimeout(() => controller.abort(), 800); // Reduced to 800ms for faster fallback
-             const session = this._session;
              const response = await fetch(`${this.localUrl}/system`, { method: 'GET', signal: controller.signal });
              clearTimeout(timeoutId);
              if (response.status === 200 && session === this._session) {
@@ -242,18 +244,18 @@ class AuthService {
              }
           } catch(e) {}
       }
-      
+      if (session !== this._session) return false;
+
       // 2. If Local URL failed, fire off a background mDNS probe in case the IP changed
       // We don't await this so we don't block the Remote URL fallback below
       this.autoProbe().catch(console.error);
-      
+
       // 3. Fallback to Remote URL immediately
       if (this.remoteUrl) {
           try {
              const controller = new AbortController();
              const timeoutId = setTimeout(() => controller.abort(), 3000);
-             const session = this._session;
-             const response = await fetch(`${this.remoteUrl}/system`, { method: 'GET', signal: controller.signal });
+             const response= await fetch(`${this.remoteUrl}/system`, { method: 'GET', signal: controller.signal });
              clearTimeout(timeoutId);
              if (response.status === 200 && session === this._session) {
                  await this.updateServerUrl(this.remoteUrl);
@@ -304,6 +306,11 @@ class AuthService {
   // across sign-ins, unlike the token. A sign-in from before the app kept Userid falls back to
   // the exact user name (unique on a server; "Alice" and "alice" are two accounts). Null until
   // known. For data kept per account on the phone.
+  // Changes on every sign-in and sign-out; work started in one compares it before applying results.
+  getSession() {
+    return this._session;
+  }
+
   getAccountId() {
     if (!this.token || !this.serverUuid) return null;
     if (this.userId) return `${this.serverUuid}|id:${this.userId}`;
@@ -359,10 +366,14 @@ class AuthService {
     if (this.isProbing) return false;
     this.isProbing = true;
     console.log('[AuthService] Starting auto-probe...');
+    // As in determineBestConnection: a probe from an earlier sign-in changes nothing.
+    const session = this._session;
+    const stale = () => session !== this._session;
 
     try {
       const DiscoveryService = require('./DiscoveryService').default;
       const discovered = await DiscoveryService.scan(5000);
+      if (stale()) return false;
 
       if (discovered.length === 0) {
         console.log('[AuthService] Auto-probe: no Lomorage servers found on network.');
@@ -399,6 +410,7 @@ class AuthService {
             signal: controller.signal,
           });
           clearTimeout(timeoutId);
+          if (stale()) return false;
           // Any response means the server is reachable
           console.log(`[AuthService] Auto-probe: ${server.fullUrl} is reachable (status ${response.status}). Updating.`);
           await this.setLocalUrl(server.fullUrl);

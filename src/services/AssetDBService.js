@@ -1053,8 +1053,13 @@ class AssetDBService {
   }
 
   // Sync remote assets discovered via SyncService
-  async syncRemoteAssets(assets) {
+  // `withNames`: write the original names the listing carries (only when the cache is known to be
+  // the signed-in account's). `isCurrent`: false once that sign-in is over; checked inside each
+  // write transaction, so nothing lands after a new sign-in cleared the cache. Returns false when
+  // it stopped for that reason.
+  async syncRemoteAssets(assets, { withNames: namesAllowed = true, isCurrent = () => true } = {}) {
     if (!this.db || !assets) return;
+    let stopped = false;
 
     return await MetricsTracker.measure('AssetDBService_syncRemoteAssets', async () => {
       try {
@@ -1073,7 +1078,12 @@ class AssetDBService {
           const chunkSize = 50;
           for (let i = 0; i < idsToDelete.length; i += chunkSize) {
             const chunk = idsToDelete.slice(i, i + chunkSize);
+            if (stopped) break;
             await this.db.withExclusiveTransactionAsync(async () => {
+              if (!isCurrent()) {
+                stopped = true;
+                return;
+              }
               const statement = await this.db.prepareAsync('DELETE FROM MediaAsset WHERE id = ? AND isLocal = 0');
               try {
                 for (const id of chunk) {
@@ -1106,7 +1116,12 @@ class AssetDBService {
           const chunkSize = 50;
           for (let i = 0; i < newAssets.length; i += chunkSize) {
             const chunk = newAssets.slice(i, i + chunkSize);
+            if (stopped) break;
             await this.db.withExclusiveTransactionAsync(async () => {
+              if (!isCurrent()) {
+                stopped = true;
+                return;
+              }
               const withName = this.hasOriginalName;
               const statement = await this.db.prepareAsync(withName ? `
                 INSERT OR IGNORE INTO MediaAsset
@@ -1126,7 +1141,8 @@ class AssetDBService {
                   const creationTime = asset.date ? asset.date.getTime() : (asset.creationTime || 0);
                   const mediaTypeStr = asset.mediaType || (isVideoExtension(filename) ? 'video' : 'photo');
                   const args = [asset.hash, asset.hash, creationTime, mediaTypeStr, filename];
-                  if (withName) args.push(asset.origName || null, asset.origName ? 1 : 0);
+                  const origName = namesAllowed ? asset.origName : null;
+                  if (withName) args.push(origName || null, origName ? 1 : 0);
                   statement.executeSync(...args);
                 }
               } finally {
@@ -1177,8 +1193,9 @@ class AssetDBService {
           console.log(`[AssetDBService] Repaired ${repairAssets.length} remote asset timestamps.`);
         }
 
+        if (stopped || !isCurrent()) return false;
         // Original names the server lists for rows already here without a confirmed one.
-        if (this.hasOriginalName) {
+        if (this.hasOriginalName && namesAllowed) {
           const unnamedRows = await this.db.getAllAsync(
             'SELECT id FROM MediaAsset WHERE isLocal = 0 AND COALESCE(originalNameSynced, 0) = 0'
           );

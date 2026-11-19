@@ -271,3 +271,47 @@ describe('account id', () => {
     expect(AuthService.getAccountId()).toBeNull();
   });
 });
+
+describe('connection probe across sign-ins', () => {
+  const realFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = realFetch;
+  });
+
+  test('a probe from before signing in again does not point the app back at the old server', async () => {
+    AuthService.localUrl = 'http://192.168.1.5:8000';
+    AuthService.remoteUrl = 'https://old.example';
+    AuthService.serverUrl = 'http://new-server:8000';
+    jest.spyOn(AuthService, 'autoProbe').mockResolvedValue(false);
+    const update = jest.spyOn(AuthService, 'updateServerUrl').mockResolvedValue();
+    global.fetch = jest.fn(async () => {
+      AuthService._session += 1; // signed in to another server while the old home address timed out
+      throw new Error('aborted');
+    });
+
+    await expect(AuthService.determineBestConnection()).resolves.toBe(false);
+
+    expect(global.fetch).toHaveBeenCalledTimes(1); // the old remote address isn't tried
+    expect(update).not.toHaveBeenCalled();
+    expect(AuthService.autoProbe).not.toHaveBeenCalled();
+    update.mockRestore();
+    AuthService.autoProbe.mockRestore();
+  });
+
+  test('a probe in the same sign-in still falls back to the remote address', async () => {
+    AuthService.localUrl = 'http://192.168.1.5:8000';
+    AuthService.remoteUrl = 'https://home.example';
+    jest.spyOn(AuthService, 'autoProbe').mockResolvedValue(false);
+    const update = jest.spyOn(AuthService, 'updateServerUrl').mockResolvedValue();
+    global.fetch = jest.fn(async (url) => {
+      if (url.startsWith('http://192.168.1.5')) throw new Error('aborted');
+      return { status: 200, json: async () => ({}) };
+    });
+
+    await expect(AuthService.determineBestConnection()).resolves.toBe(true);
+
+    expect(update).toHaveBeenCalledWith('https://home.example');
+    update.mockRestore();
+    AuthService.autoProbe.mockRestore();
+  });
+});
