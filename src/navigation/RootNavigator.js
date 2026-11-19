@@ -4,7 +4,8 @@ import { createStackNavigator, CardStyleInterpolators } from '@react-navigation/
 import { View, Text, ActivityIndicator, StatusBar, Platform, Linking, Alert } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { AuthProvider, useAuth } from '../context/AuthContext';
-import { SettingsProvider } from '../context/SettingsContext';
+import { SettingsProvider, useSettings } from '../context/SettingsContext';
+import useKeepScreenOnWhileCharging from '../hooks/useKeepScreenOnWhileCharging';
 
 import HomeScreen from '../screens/HomeScreen';
 import AssetDetailScreen from '../screens/AssetDetailScreen';
@@ -259,11 +260,19 @@ function Navigation() {
     );
 }
 
+// Applies the "Keep Screen On While Charging" setting app-wide.
+function KeepScreenOnWhileCharging() {
+    const { keepScreenOnWhileCharging } = useSettings();
+    useKeepScreenOnWhileCharging(!!keepScreenOnWhileCharging);
+    return null;
+}
+
 export default function RootNavigator() {
     return (
         <SafeAreaProvider>
             <AuthProvider>
                 <SettingsProvider>
+                    <KeepScreenOnWhileCharging />
                     <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }} edges={['top', 'bottom']}>
                         <StatusBar barStyle="dark-content" />
                         <Navigation />
