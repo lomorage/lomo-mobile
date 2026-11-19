@@ -28,7 +28,7 @@ jest.mock('../../screens/DuplicatesScreen', () => () => null);
 jest.mock('lucide-react-native', () => ({ Image: () => null, Folder: () => null }));
 jest.mock('expo-secure-store', () => ({ getItemAsync: jest.fn(async () => null), setItemAsync: jest.fn(async () => {}) }));
 jest.mock('../../services/AuthService', () => ({ __esModule: true, default: {} }));
-jest.mock('../../context/SettingsContext', () => ({ SettingsProvider: ({ children }) => children }));
+jest.mock('../../context/SettingsContext', () => ({ SettingsProvider: ({ children }) => children, useSettings: () => ({}) }));
 jest.mock('react-native-safe-area-context', () => {
   const React = require('react');
   const { View } = require('react-native');

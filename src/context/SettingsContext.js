@@ -12,6 +12,8 @@ async function startModelDownload(liteMode) {
     await ModelAssetService.ensureModels();
 }
 
+export const KEEP_SCREEN_ON_KEY = 'lomorage_keep_screen_on_charging';
+
 const SettingsContext = createContext({});
 
 export function SettingsProvider({ children }) {
@@ -35,6 +37,8 @@ export function SettingsProvider({ children }) {
     // "face clustering is now on — index your library?" prompt answered.
     const [faceDryRunMigrationNeeded, setFaceDryRunMigrationNeeded] = useState(false);
     const [iosBackgroundKeepAlive, setIosBackgroundKeepAlive] = useState(false);
+    // Off by default: a screen left on for hours is the user's call.
+    const [keepScreenOnWhileCharging, setKeepScreenOnWhileCharging] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
 
     useEffect(() => {
@@ -132,6 +136,7 @@ export function SettingsProvider({ children }) {
             if (savedIosKeepAlive !== null) {
                 setIosBackgroundKeepAlive(savedIosKeepAlive === 'true');
             }
+            setKeepScreenOnWhileCharging((await SecureStore.getItemAsync(KEEP_SCREEN_ON_KEY)) === 'true');
         } catch (error) {
             console.error('Failed to load settings', error);
         } finally {
@@ -272,6 +277,16 @@ export function SettingsProvider({ children }) {
             }
         } catch (error) {
             console.error('Failed to update AI Wi-Fi only setting', error);
+        }
+    };
+
+    const toggleKeepScreenOnWhileCharging = async () => {
+        try {
+            const newValue = !keepScreenOnWhileCharging;
+            await SecureStore.setItemAsync(KEEP_SCREEN_ON_KEY, newValue.toString());
+            setKeepScreenOnWhileCharging(newValue);
+        } catch (error) {
+            console.error('Failed to update keep screen on setting', error);
         }
     };
 
@@ -445,6 +460,8 @@ export function SettingsProvider({ children }) {
             resolveFaceDryRunMigration,
             iosBackgroundKeepAlive,
             updateIosBackgroundKeepAlive,
+            keepScreenOnWhileCharging,
+            toggleKeepScreenOnWhileCharging,
             isLoading
         }}>
             {children}

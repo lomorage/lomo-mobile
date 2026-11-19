@@ -307,3 +307,25 @@ describe('updateSearchThreshold / updateHashConcurrency', () => {
     expect(latestSettings.hashConcurrency).toBe(4);
   });
 });
+
+describe('Keep Screen On While Charging', () => {
+  test('is off until the user turns it on', async () => {
+    await renderSettingsProvider();
+    expect(latestSettings.keepScreenOnWhileCharging).toBe(false);
+  });
+
+  test('restores a saved choice', async () => {
+    SecureStore.getItemAsync.mockImplementation(async (key) => (key === 'lomorage_keep_screen_on_charging' ? 'true' : null));
+    await renderSettingsProvider();
+    expect(latestSettings.keepScreenOnWhileCharging).toBe(true);
+  });
+
+  test('toggling saves it and flips it', async () => {
+    await renderSettingsProvider();
+    await act(async () => {
+      await latestSettings.toggleKeepScreenOnWhileCharging();
+    });
+    expect(SecureStore.setItemAsync).toHaveBeenCalledWith('lomorage_keep_screen_on_charging', 'true');
+    expect(latestSettings.keepScreenOnWhileCharging).toBe(true);
+  });
+});

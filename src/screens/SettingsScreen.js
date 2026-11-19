@@ -172,7 +172,9 @@ export default function SettingsScreen({ navigation, route }) {
         faceDryRunMigrationNeeded,
         resolveFaceDryRunMigration,
         iosBackgroundKeepAlive,
-        updateIosBackgroundKeepAlive
+        updateIosBackgroundKeepAlive,
+        keepScreenOnWhileCharging,
+        toggleKeepScreenOnWhileCharging
     } = useSettings();
     const { logout } = useAuth();
     const [stats, setStats] = React.useState({ local: 0, remote: 0 });
@@ -657,6 +659,21 @@ export default function SettingsScreen({ navigation, route }) {
                         />
                     </View>
                 )}
+
+                <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 8 }]}>
+                    <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabel}>Keep Screen On While Charging</Text>
+                        <Text style={styles.settingDescription}>
+                            While Lomorage is open and your phone is charging, the screen stays on so backup and photo analysis keep going at full speed.
+                        </Text>
+                    </View>
+                    <Switch
+                        value={!!keepScreenOnWhileCharging}
+                        onValueChange={toggleKeepScreenOnWhileCharging}
+                        trackColor={{ false: '#d1d1d1', true: '#4CAF50' }}
+                        thumbColor={'#fff'}
+                    />
+                </View>
 
             </View>
 
