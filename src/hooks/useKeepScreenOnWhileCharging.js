@@ -23,12 +23,17 @@ export default function useKeepScreenOnWhileCharging(enabled) {
             return undefined;
         }
         let live = true;
-        Battery.getBatteryStateAsync()
-            .then((state) => { if (live) setCharging(isChargingState(state)); })
-            .catch(() => {});
+        // Subscribe first, and drop the initial read once an event has come in:
+        // a read that resolves late would otherwise replace a newer unplug with
+        // the old "charging" and keep the screen on.
+        let heardEvent = false;
         const subscription = Battery.addBatteryStateListener(({ batteryState }) => {
+            heardEvent = true;
             if (live) setCharging(isChargingState(batteryState));
         });
+        Battery.getBatteryStateAsync()
+            .then((state) => { if (live && !heardEvent) setCharging(isChargingState(state)); })
+            .catch(() => {});
         return () => {
             live = false;
             subscription?.remove?.();

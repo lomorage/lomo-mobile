@@ -87,6 +87,28 @@ test('turning the setting off while charging lets the screen sleep and stops wat
   act(() => root.unmount());
 });
 
+test('a first reading that arrives after an unplug event does not turn the screen back on', async () => {
+  let resolveRead;
+  Battery.getBatteryStateAsync.mockImplementation(() => new Promise((resolve) => { resolveRead = resolve; }));
+  const root = await mount(true);
+
+  await plug(Battery.BatteryState.UNPLUGGED);
+  await act(async () => {
+    resolveRead(Battery.BatteryState.CHARGING);
+  });
+
+  expect(KeepAwake.activateKeepAwakeAsync).not.toHaveBeenCalled();
+  act(() => root.unmount());
+});
+
+test('the battery is watched before the first reading is taken', async () => {
+  const root = await mount(true);
+
+  expect(Battery.addBatteryStateListener.mock.invocationCallOrder[0])
+    .toBeLessThan(Battery.getBatteryStateAsync.mock.invocationCallOrder[0]);
+  act(() => root.unmount());
+});
+
 test('a battery reading that fails leaves the screen to sleep normally', async () => {
   Battery.getBatteryStateAsync.mockRejectedValue(new Error('no battery service'));
   const root = await mount(true);
