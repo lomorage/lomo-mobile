@@ -16,6 +16,7 @@ const LOCAL_SERVER_KEY = 'lomo_local_server_url';
 const USERNAME_KEY = 'lomo_username';
 const SERVER_NAME_KEY = 'lomo_server_name';
 const WEBP_PREVIEW_KEY = 'lomo_webp_preview';
+const SERVER_UUID_KEY = 'lomo_server_uuid';
 
 const SALT_POSTFIX = '@lomorage.lomoware';
 
@@ -166,6 +167,8 @@ class AuthService {
       this.localUrl = await SecureStore.getItemAsync(LOCAL_SERVER_KEY);
       this.serverName = await SecureStore.getItemAsync(SERVER_NAME_KEY);
       this.webpPreview = (await SecureStore.getItemAsync(WEBP_PREVIEW_KEY)) === '1';
+      this.username = await SecureStore.getItemAsync(USERNAME_KEY);
+      this.serverUuid = await SecureStore.getItemAsync(SERVER_UUID_KEY);
       
       if (this.isAuthenticated()) {
           this.determineBestConnection();
@@ -268,6 +271,14 @@ class AuthService {
    */
   async applySystemInfo(info) {
     if (!info || typeof info !== 'object') return;
+    if (typeof info.UUID === 'string' && info.UUID && info.UUID !== this.serverUuid) {
+      this.serverUuid = info.UUID;
+      try {
+        await SecureStore.setItemAsync(SERVER_UUID_KEY, info.UUID);
+      } catch (e) {
+        console.warn('[AuthService] Failed to persist server id', e);
+      }
+    }
     const webp = info.WebpPreview === true;
     if (webp === this.webpPreview) return;
     this.webpPreview = webp;
@@ -276,6 +287,14 @@ class AuthService {
     } catch (e) {
       console.warn('[AuthService] Failed to persist preview codec', e);
     }
+  }
+
+  // Which account on which server this is: the server's own id (/system UUID, the same at its
+  // home and remote address) and the user name. Stays the same across sign-ins, unlike the
+  // token. Null until both are known. For data kept per account on the phone.
+  getAccountId() {
+    if (!this.token || !this.serverUuid || !this.username) return null;
+    return `${this.serverUuid}|${String(this.username).toLowerCase()}`;
   }
 
   async refreshSystemInfo() {
@@ -416,6 +435,9 @@ class AuthService {
 
       this.serverUrl = url;
       this.serverName = serverName;
+      // Possibly another server: its id is read again below (/system).
+      this.serverUuid = null;
+      SecureStore.deleteItemAsync(SERVER_UUID_KEY).catch(() => {});
 
       // Hash the password with Argon2id, matching the lomo-ios implementation
       console.log('Hashing password with Argon2id...');
@@ -457,6 +479,7 @@ class AuthService {
         
         await SecureStore.setItemAsync(SERVER_KEY, this.serverUrl);
         await SecureStore.setItemAsync(USERNAME_KEY, trimmedUsername);
+        this.username = trimmedUsername;
         if (this.serverName) {
             await SecureStore.setItemAsync(SERVER_NAME_KEY, this.serverName);
         }
@@ -761,11 +784,28 @@ axios.interceptors.response.use(
     }
 );
 
+// The token a request was sent with (Authorization "token=..." or ?token=), null if none.
+export function tokenOfRequest(config) {
+    if (!config) return null;
+    const headers = config.headers || {};
+    const auth = typeof headers.get === 'function' ? headers.get('Authorization') : (headers.Authorization || headers.authorization);
+    const fromHeader = /(?:^|[\s,;])token=([^\s,;&]+)/.exec(String(auth || ''));
+    if (fromHeader) return fromHeader[1];
+    const fromUrl = /[?&]token=([^&#]+)/.exec(String(config.url || ''));
+    if (fromUrl) return decodeURIComponent(fromUrl[1]);
+    const params = config.params || {};
+    return params.token ? String(params.token) : null;
+}
+
 // Axios Interceptor for Session Expiry (401)
 axios.interceptors.response.use(
     response => response,
     async (error) => {
-        if (error.response && error.response.status === 401 && !authService._isShowingSessionAlert) {
+        // A request made with an earlier sign-in's token (still in flight when the user signed out
+        // or switched account) says nothing about the current session.
+        const sentToken = tokenOfRequest(error.config);
+        const stale = sentToken !== null && sentToken !== authService.token;
+        if (error.response && error.response.status === 401 && !stale && !authService._isShowingSessionAlert) {
             authService._isShowingSessionAlert = true;
             
             // Instantly log the user out so the screen transitions in the background

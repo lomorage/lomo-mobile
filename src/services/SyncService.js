@@ -11,16 +11,9 @@ import TaskSchedulerService from './TaskSchedulerService';
 import ThumbnailLoadTracker from './ThumbnailLoadTracker';
 import { isVideoExtension } from '../utils/mediaType';
 import { parseBackendDate } from '../utils/backendDate';
+import { shortKey } from '../utils/shortKey';
 
 
-
-// A short, non-reversible key for a secret such as the login token, for state kept per account.
-function shortKey(value) {
-  let h = 5381;
-  const s = String(value || '');
-  for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
-  return h.toString(16);
-}
 
 class MerkleNode {
   constructor(id = null, hash = null) {
@@ -859,6 +852,12 @@ class SyncService {
       const url = AuthService.getServerUrl();
       const token = AuthService.getToken();
       if (!url || !token) return null;
+      // Before this account's listing is applied: drop original names learned for another one.
+      try {
+        await this._forgetOriginalNamesOfOtherAccount();
+      } catch (e) {
+        console.warn('[SyncService] Failed to check the original names account:', e?.message);
+      }
 
       try {
         // Step 1: Fetch month-level tree (small payload)
@@ -1089,22 +1088,47 @@ class SyncService {
     return this._namesPass;
   }
 
-  // State for one server account, keyed on the login token: it differs between servers and
-  // accounts, but not between a server's home and remote address. `sent` holds the hashes
+  // State for one server account (AuthService.getAccountId: the server's id and the user, the
+  // same at the server's home and remote address and across sign-ins). `sent` holds the hashes
   // reported this session, so one the server doesn't answer for isn't resent forever.
-  _originalNamesState(token) {
-    const key = shortKey(token);
+  _originalNamesState(accountId) {
+    const key = shortKey(accountId);
     if (!this._namesState || this._namesState.key !== key) {
       this._namesState = { key, sent: new Set(), unsupported: false };
     }
     return this._namesState;
   }
 
+  // Server photo rows (and the cached tree) are shared by whichever account is signed in, keyed
+  // by content hash, so one account's photo can be another's. Original names are per account:
+  // when the account differs from the one they were learned for, the confirmed ones are dropped
+  // and the cached tree is cleared, so this account's full listing (names that came with the
+  // upload) and its name feed, read from the start (names reported later), bring its own.
+  async _forgetOriginalNamesOfOtherAccount() {
+    const accountId = AuthService.getAccountId();
+    if (!accountId) return;
+    const key = shortKey(accountId);
+    await AssetDBService.init();
+    const previous = await AssetDBService.getSyncState('originalNamesAccount');
+    if (previous === key) return;
+    if (previous) {
+      await AssetDBService.clearRemoteOriginalNames();
+      await this.clearRemoteTreeCache();
+      await AssetDBService.setSyncState(`originalNamesRev:${key}`, '0');
+      this._namesState = undefined;
+      console.log('[SyncService] Signed in to another account: original names will be read again.');
+    }
+    await AssetDBService.setSyncState('originalNamesAccount', key);
+  }
+
   async _syncOriginalNamesOnce() {
     const url = AuthService.getServerUrl();
     const token = AuthService.getToken();
-    if (!url || !token) return;
-    const state = this._originalNamesState(token);
+    const accountId = AuthService.getAccountId();
+    if (!url || !token || !accountId) return;
+    // Names learned so far may be another account's (e.g. a pass started before the listing).
+    if (await AssetDBService.getSyncState('originalNamesAccount') !== shortKey(accountId)) return;
+    const state = this._originalNamesState(accountId);
     if (state.unsupported) return;
     // Answers can arrive after the user signed out or switched account; one meant for the old
     // account must not land on the new one's photos (same hash, other account).
@@ -1131,12 +1155,16 @@ class SyncService {
   // Returns how many names were recorded.
   async _sendOriginalNames(url, token, state, signedIn) {
     let applied = 0;
-    for (let round = 0; round < 100; round++) {
-      const batch = await AssetDBService.getOriginalNamesToReport(200, state.sent);
-      if (batch.length === 0) break;
+    let after = '';
+    for (let round = 0; round < 1000; round++) {
+      const page = await AssetDBService.getOriginalNamesToReport(200, after);
+      if (page.length === 0) break;
+      after = page[page.length - 1].hash;
       // Read from this phone's rows while the account may have changed: never send them to the
       // old account, where the server would keep them as those photos' first names.
       if (!signedIn()) break;
+      const batch = page.filter(e => !state.sent.has(e.hash));
+      if (batch.length === 0) continue;
       batch.forEach(e => state.sent.add(e.hash));
       let response;
       try {

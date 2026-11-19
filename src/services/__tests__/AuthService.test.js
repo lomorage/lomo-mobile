@@ -10,7 +10,7 @@ jest.mock('@react-native-community/netinfo', () => ({
 
 import * as SecureStore from 'expo-secure-store';
 import axios from 'axios';
-import AuthService, { formatServerUrl } from '../AuthService';
+import AuthService, { formatServerUrl, tokenOfRequest } from '../AuthService';
 
 describe('formatServerUrl', () => {
   test('formats localhost correctly to http', () => {
@@ -173,5 +173,71 @@ describe('getOriginalsLocation', () => {
     await expect(AuthService.getOriginalsLocation()).resolves.toBeNull();
     jest.spyOn(axios, 'get').mockRejectedValue(new Error('Network Error'));
     await expect(AuthService.getOriginalsLocation()).resolves.toBeNull();
+  });
+});
+
+describe('session expiry (401)', () => {
+  // The interceptor AuthService registers last on the shared axios instance.
+  const onError = () => axios.interceptors.response.handlers.filter(Boolean).at(-1).rejected;
+  const unauthorized = (config) => ({ response: { status: 401 }, config });
+  let expired;
+
+  beforeEach(() => {
+    AuthService.token = 'token-b';
+    AuthService._isShowingSessionAlert = false;
+    expired = jest.fn();
+    AuthService._onSessionExpired = expired;
+  });
+
+  test('a 401 for the current sign-in signs out', async () => {
+    await expect(onError()(unauthorized({ url: 'http://pc/assets/names', headers: { Authorization: 'token=token-b' } })))
+      .rejects.toBeTruthy();
+    expect(expired).toHaveBeenCalledTimes(1);
+  });
+
+  test("a late 401 for an earlier sign-in's request leaves the current one alone", async () => {
+    await expect(onError()(unauthorized({ url: 'http://pc/assets/names', headers: { Authorization: 'token=token-a' } })))
+      .rejects.toBeTruthy();
+    await expect(onError()(unauthorized({ url: 'http://pc/preview/h?token=token-a' }))).rejects.toBeTruthy();
+    expect(expired).not.toHaveBeenCalled();
+  });
+
+  test('a 401 for a request without a token still signs out', async () => {
+    await expect(onError()(unauthorized({ url: 'http://pc/user' }))).rejects.toBeTruthy();
+    expect(expired).toHaveBeenCalledTimes(1);
+  });
+
+  test('reads the token from the header, the URL or the params', () => {
+    expect(tokenOfRequest({ headers: { Authorization: 'token=abc' } })).toBe('abc');
+    expect(tokenOfRequest({ url: 'http://pc/a?x=1&token=a%2Bb' })).toBe('a+b');
+    expect(tokenOfRequest({ params: { token: 'p' } })).toBe('p');
+    expect(tokenOfRequest({ headers: { Authorization: 'Basic xyz' } })).toBeNull();
+    expect(tokenOfRequest(undefined)).toBeNull();
+  });
+});
+
+describe('account id', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    AuthService.token = 't';
+    AuthService.username = 'Alice';
+    AuthService.serverUuid = null;
+  });
+
+  test('is the server id from /system and the user, the same for any token', async () => {
+    expect(AuthService.getAccountId()).toBeNull();
+    await AuthService.applySystemInfo({ UUID: 'srv-1' });
+    expect(SecureStore.setItemAsync).toHaveBeenCalledWith('lomo_server_uuid', 'srv-1');
+    expect(AuthService.getAccountId()).toBe('srv-1|alice');
+    AuthService.token = 'another-sign-in';
+    expect(AuthService.getAccountId()).toBe('srv-1|alice');
+    AuthService.username = 'bob';
+    expect(AuthService.getAccountId()).toBe('srv-1|bob');
+  });
+
+  test('is null when signed out', async () => {
+    await AuthService.applySystemInfo({ UUID: 'srv-1' });
+    AuthService.token = null;
+    expect(AuthService.getAccountId()).toBeNull();
   });
 });

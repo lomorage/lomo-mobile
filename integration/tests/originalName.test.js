@@ -75,7 +75,7 @@ describe('the name a photo had on the phone', () => {
     // Name unknown: no file name, and kept a day only, since one may be reported later.
     const unnamed = await fetch(`${server.url}/asset/${older}`, { headers: auth() });
     expect(unnamed.headers.get('content-disposition')).toBeNull();
-    expect(unnamed.headers.get('cache-control')).toBe('public, max-age=86400');
+    expect(unnamed.headers.get('cache-control')).toBe('private, max-age=86400');
     await unnamed.arrayBuffer();
 
     await AssetDBService.init();
@@ -87,7 +87,7 @@ describe('the name a photo had on the phone', () => {
     expect((await listedAsset(older, [2003, 11, 23])).OrigName).toBe('PXL_2.jpg');
     const namedDownload = await fetch(`${server.url}/asset/${older}`, { headers: auth() });
     expect(namedDownload.headers.get('content-disposition')).toContain("filename*=UTF-8''PXL_2.jpg");
-    expect(namedDownload.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
+    expect(namedDownload.headers.get('cache-control')).toBe('private, max-age=31536000, immutable');
     await namedDownload.arrayBuffer();
     const rows = await AssetDBService.getRemoteAssets();
     expect(rows.find((r) => r.hash === older)).toMatchObject({ originalName: 'PXL_2.jpg' });

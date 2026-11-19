@@ -15,7 +15,7 @@ jest.mock('expo-secure-store', () => ({ getItemAsync: jest.fn(async () => null),
 
 const axios = require('axios');
 const AuthService = require('../AuthService');
-import UploadService, { buildUploadUrl } from '../UploadService';
+import UploadService, { buildUploadUrl, loggableUploadUrl } from '../UploadService';
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -347,6 +347,16 @@ describe('buildUploadUrl', () => {
   test('no taken date and no EXIF date: the file time, never "now"', () => {
     const url = buildUploadUrl('http://pc:8000', 'abc', 'jpg', { creationTime: 0, modificationTime: modified });
     expect(url).toContain('createtime=2026-10-08T00%3A12%3A00.000Z');
+  });
+
+  test('the URL as logged leaves the file name out and keeps the rest', () => {
+    const url = buildUploadUrl('http://pc:8000', 'abc', 'jpg', { creationTime: taken, filename: 'Anna passport.jpg' });
+    const logged = loggableUploadUrl(url);
+    expect(logged).not.toMatch(/origname|Anna|passport/);
+    expect(logged).toBe('http://pc:8000/asset/abc?ext=jpg&createtime=2019-03-04T12%3A27%3A32.000Z');
+    expect(loggableUploadUrl('http://pc/asset/a?origname=x&ext=jpg')).toBe('http://pc/asset/a?ext=jpg');
+    expect(loggableUploadUrl('http://pc/asset/a?ext=jpg&origname=x&b=1')).toBe('http://pc/asset/a?ext=jpg&b=1');
+    expect(loggableUploadUrl('http://pc/asset/a?ext=jpg')).toBe('http://pc/asset/a?ext=jpg');
   });
 
   test('sends the name the file has on the phone, so the server can keep it', () => {

@@ -2,6 +2,7 @@ import SyncService from '../SyncService';
 import axios from 'axios';
 import AssetDBService from '../AssetDBService';
 import { DeviceEventEmitter } from 'react-native';
+import { shortKey } from '../../utils/shortKey';
 
 jest.mock('../MediaService', () => ({
   calculateHash: jest.fn(),
@@ -10,13 +11,18 @@ jest.mock('../MediaService', () => ({
 
 let mockServerUrl = 'http://localhost:8000';
 let mockToken = 'token-a';
+// The account follows the token here; a server's home and remote address share it.
+const accountOf = (token) => (token ? `server-uuid|${token}` : null);
 jest.mock('../AuthService', () => ({
   getServerUrl: () => mockServerUrl,
   getToken: () => mockToken,
+  getAccountId: () => accountOf(mockToken),
 }));
 
 const mockSyncState = new Map();
 jest.mock('../AssetDBService', () => ({
+  init: jest.fn().mockResolvedValue(),
+  clearRemoteOriginalNames: jest.fn().mockResolvedValue(),
   getOriginalNamesToReport: jest.fn(),
   setRemoteOriginalNames: jest.fn().mockResolvedValue(),
   getSyncState: jest.fn(async (key) => (mockSyncState.has(key) ? mockSyncState.get(key) : null)),
@@ -25,10 +31,15 @@ jest.mock('../AssetDBService', () => ({
 
 jest.mock('axios');
 
-// What AssetDBService.getOriginalNamesToReport does with its skip set, over a fixed backlog.
+// What AssetDBService.getOriginalNamesToReport does with its cursor, over a fixed backlog.
 function backlog(entries) {
-  AssetDBService.getOriginalNamesToReport.mockImplementation(async (limit, skip) =>
-    entries.filter((e) => !skip.has(e.hash)).slice(0, limit));
+  AssetDBService.getOriginalNamesToReport.mockImplementation(async (limit, after) =>
+    entries.filter((e) => e.hash > (after || '')).sort((a, b) => (a.hash < b.hash ? -1 : 1)).slice(0, limit));
+}
+
+// What the listing (fetchRemoteOverview) records before any names pass: whose names they are.
+function namesBelongTo(token) {
+  mockSyncState.set('originalNamesAccount', shortKey(accountOf(token)));
 }
 
 const emptyFeed = { data: { Rev: 0, Names: [], More: false } };
@@ -39,6 +50,7 @@ describe('SyncService original names', () => {
     mockSyncState.clear();
     mockServerUrl = 'http://localhost:8000';
     mockToken = 'token-a';
+    namesBelongTo('token-a');
     SyncService._namesPass = null;
     SyncService._namesAgain = false;
     SyncService._namesState = undefined;
@@ -93,6 +105,7 @@ describe('SyncService original names', () => {
       await SyncService.reportOriginalNames();
       mockServerUrl = 'http://other:8000';
       mockToken = 'token-b';
+      namesBelongTo('token-b');
       await SyncService.reportOriginalNames();
 
       expect(axios.post).toHaveBeenCalledTimes(2);
@@ -200,6 +213,44 @@ describe('SyncService original names', () => {
     });
   });
 
+  describe('signing in to another account', () => {
+    beforeEach(() => {
+      jest.spyOn(SyncService, 'clearRemoteTreeCache').mockResolvedValue();
+    });
+    afterEach(() => {
+      SyncService.clearRemoteTreeCache.mockRestore();
+    });
+
+    test("drops the confirmed names and the cached tree, and reads the new account's feed from the start", async () => {
+      mockToken = 'token-b';
+      mockSyncState.set(`originalNamesRev:${shortKey(accountOf('token-b'))}`, '40'); // B, some time ago
+
+      await SyncService._forgetOriginalNamesOfOtherAccount();
+
+      expect(AssetDBService.clearRemoteOriginalNames).toHaveBeenCalledTimes(1);
+      expect(SyncService.clearRemoteTreeCache).toHaveBeenCalledTimes(1);
+      expect(mockSyncState.get(`originalNamesRev:${shortKey(accountOf('token-b'))}`)).toBe('0');
+      expect(mockSyncState.get('originalNamesAccount')).toBe(shortKey(accountOf('token-b')));
+    });
+
+    test('keeps everything for the same account', async () => {
+      await SyncService._forgetOriginalNamesOfOtherAccount();
+
+      expect(AssetDBService.clearRemoteOriginalNames).not.toHaveBeenCalled();
+      expect(SyncService.clearRemoteTreeCache).not.toHaveBeenCalled();
+    });
+
+    test('the first time (after updating the app) only records the account', async () => {
+      mockSyncState.clear();
+
+      await SyncService._forgetOriginalNamesOfOtherAccount();
+
+      expect(AssetDBService.clearRemoteOriginalNames).not.toHaveBeenCalled();
+      expect(SyncService.clearRemoteTreeCache).not.toHaveBeenCalled();
+      expect(mockSyncState.get('originalNamesAccount')).toBe(shortKey(accountOf('token-a')));
+    });
+  });
+
   describe('the open gallery', () => {
     test('is told to reload when names were recorded', async () => {
       const emit = jest.spyOn(DeviceEventEmitter, 'emit');
@@ -258,11 +309,22 @@ describe('SyncService original names', () => {
       await SyncService.reportOriginalNames();
 
       mockToken = 'token-b';
+      namesBelongTo('token-b');
       axios.get.mockClear();
       await SyncService.reportOriginalNames();
 
       expect(axios.get.mock.calls[0][0]).toBe('http://localhost:8000/assets/names?since=0');
       expect([...mockSyncState.keys()].join()).not.toContain('token');
+    });
+
+    test("nothing is sent or fetched while the names on the phone are still another account's", async () => {
+      backlog([{ hash: 'h1', name: 'IMG_A.jpg' }]);
+      mockToken = 'token-b'; // signed in to B, but its listing hasn't run yet
+
+      await SyncService.reportOriginalNames();
+
+      expect(axios.post).not.toHaveBeenCalled();
+      expect(axios.get).not.toHaveBeenCalled();
     });
 
     test('a failed fetch keeps the place, to resume next sync', async () => {

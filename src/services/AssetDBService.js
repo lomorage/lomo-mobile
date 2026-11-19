@@ -1197,26 +1197,25 @@ class AssetDBService {
 
   // Up to `limit` server photos whose original name the server hasn't confirmed but this phone
   // knows: from the photo still on the phone, or kept when Free Up Space removed it. Each is
-  // { hash, name }; `skip` leaves out hashes already tried this session.
-  async getOriginalNamesToReport(limit = 200, skip = new Set()) {
+  // { hash, name }, in hash order after `after` (the last hash of the previous page), so a pass
+  // over a large library reads each row once instead of re-reading the whole backlog per page.
+  async getOriginalNamesToReport(limit = 200, after = '') {
     if (!this.db || !this.hasOriginalName) return [];
     try {
-      const rows = await this.db.getAllAsync(
-        `SELECT r.id AS hash,
-                COALESCE(NULLIF(r.originalName, ''),
-                  (SELECT l.filename FROM MediaAsset l
-                    WHERE l.isLocal = 1 AND l.hash = r.id AND l.filename IS NOT NULL AND l.filename <> ''
-                    LIMIT 1)) AS name
-         FROM MediaAsset r
-         WHERE r.isLocal = 0 AND COALESCE(r.originalNameSynced, 0) = 0`
+      return await this.db.getAllAsync(
+        `SELECT hash, name FROM (
+           SELECT r.id AS hash,
+                  COALESCE(NULLIF(r.originalName, ''),
+                    (SELECT l.filename FROM MediaAsset l
+                      WHERE l.isLocal = 1 AND l.hash = r.id AND l.filename IS NOT NULL AND l.filename <> ''
+                      LIMIT 1)) AS name
+           FROM MediaAsset r
+           WHERE r.isLocal = 0 AND COALESCE(r.originalNameSynced, 0) = 0 AND r.id > ?
+           ORDER BY r.id
+         ) WHERE name IS NOT NULL
+         LIMIT ?`,
+        [after || '', limit]
       );
-      const out = [];
-      for (const row of rows) {
-        if (!row.name || skip.has(row.hash)) continue;
-        out.push({ hash: row.hash, name: row.name });
-        if (out.length >= limit) break;
-      }
-      return out;
     } catch (error) {
       console.error('[AssetDBService] Failed to read original names to report:', error);
       return [];
@@ -1224,6 +1223,16 @@ class AssetDBService {
   }
 
   // Records original names the server has confirmed ({ hash, name } each).
+  // Drops the original names servers confirmed (another account's, after switching). Names this
+  // phone kept from its own files (Free Up Space, not yet confirmed) stay: they hold for any
+  // account and are reported to the new one.
+  async clearRemoteOriginalNames() {
+    if (!this.db || !this.hasOriginalName) return;
+    await this.db.runAsync(
+      'UPDATE MediaAsset SET originalName = NULL, originalNameSynced = 0 WHERE isLocal = 0 AND originalNameSynced = 1'
+    );
+  }
+
   async getSyncState(key) {
     if (!this.db) return null;
     try {

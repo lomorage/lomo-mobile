@@ -27,6 +27,7 @@ import { useServerEpoch } from '../hooks/useServerEpoch';
 import { withRetryBuster } from '../hooks/useImageRetry';
 import { isNotFoundImageError } from '../utils/imageErrors';
 import { cachedShareFileName, displayFileName, downloadFileName, fileUriIn } from '../utils/fileName';
+import { shortKey } from '../utils/shortKey';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImageManipulator from 'expo-image-manipulator';
 
@@ -704,7 +705,8 @@ export default function AssetDetailScreen({ route, navigation }) {
                 const remoteUrl = `${AuthService.getServerUrl()}/asset/${currentAsset.hash}?token=${AuthService.getToken()}`;
                 // Shared under the photo's own name (IMG_1234.HEIC) when known: the receiving app
                 // shows and saves it under the file name. One folder per photo keeps the names apart.
-                const dir = `${FileSystem.cacheDirectory}share/${currentAsset.hash}/`;
+                // Per account too: the same photo (hash) can have another name in another account.
+                const dir = `${FileSystem.cacheDirectory}share/${shortKey(AuthService.getAccountId() || '')}/${currentAsset.hash}/`;
                 const downloadPath = `${dir}.download`;
                 const cached = (await FileSystem.readDirectoryAsync(dir).catch(() => []))
                     .find(name => name !== '.download');

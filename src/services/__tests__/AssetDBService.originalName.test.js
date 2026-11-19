@@ -109,13 +109,47 @@ describeWithSqlite('original file names (real SQLite)', () => {
       ]);
     });
 
-    test('names to report honour the limit and the hashes already tried', async () => {
-      for (let i = 0; i < 5; i += 1) remote(`h${i}`, { originalName: `IMG_${i}.jpg` });
+    test('names to report come a page at a time after a cursor, each row read once', async () => {
+      for (let i = 0; i < 1000; i += 1) {
+        const hash = `h${String(i).padStart(4, '0')}`;
+        remote(hash, i % 10 === 0 ? {} : { originalName: `IMG_${i}.jpg` }); // every tenth has no name
+      }
+      const realGetAll = AssetDBService.db.getAllAsync;
+      let queries = 0;
+      let rowsRead = 0;
+      AssetDBService.db.getAllAsync = async (...args) => {
+        const rows = await realGetAll(...args);
+        queries += 1;
+        rowsRead += rows.length;
+        return rows;
+      };
 
-      const names = await AssetDBService.getOriginalNamesToReport(2, new Set(['h0']));
+      const seen = [];
+      let after = '';
+      for (;;) {
+        const page = await AssetDBService.getOriginalNamesToReport(200, after);
+        if (page.length === 0) break;
+        expect(page.length).toBeLessThanOrEqual(200);
+        seen.push(...page.map((n) => n.hash));
+        after = page[page.length - 1].hash;
+      }
 
-      expect(names).toHaveLength(2);
-      expect(names.map((n) => n.hash)).not.toContain('h0');
+      expect(seen).toHaveLength(900);
+      expect(new Set(seen).size).toBe(900);
+      expect(queries).toBe(6); // 5 pages of up to 200, then an empty one
+      expect(rowsRead).toBe(900); // not the whole backlog again for every page
+    });
+
+    test('switching account drops only the names servers confirmed', async () => {
+      remote('h1', { originalName: 'A-name.jpg', originalNameSynced: 1 });
+      remote('h2', { originalName: 'kept.jpg' }); // this phone's own, from Free Up Space
+      local('phone-3', 'h3', 'IMG_3.jpg', { originalName: null });
+
+      await AssetDBService.clearRemoteOriginalNames();
+
+      expect(byId('h1')).toMatchObject({ originalName: null, originalNameSynced: 0 });
+      expect(byId('h2')).toMatchObject({ originalName: 'kept.jpg', originalNameSynced: 0 });
+      expect(byId('phone-3').filename).toBe('IMG_3.jpg');
     });
 
     test('a confirmed name is recorded; an empty answer confirms without wiping a kept name', async () => {
