@@ -152,6 +152,16 @@ describeWithSqlite('original file names (real SQLite)', () => {
       expect(byId('h4')).toMatchObject({ originalName: null, originalNameSynced: 0 });
     });
 
+    test('sync state is kept per key and replaced on update', async () => {
+      sqlite.exec('CREATE TABLE IF NOT EXISTS SyncState (key TEXT PRIMARY KEY, value TEXT)');
+      await expect(AssetDBService.getSyncState('originalNamesRev:a')).resolves.toBeNull();
+      await AssetDBService.setSyncState('originalNamesRev:a', 7);
+      await AssetDBService.setSyncState('originalNamesRev:a', 9);
+      await AssetDBService.setSyncState('originalNamesRev:b', 1);
+      await expect(AssetDBService.getSyncState('originalNamesRev:a')).resolves.toBe('9');
+      await expect(AssetDBService.getSyncState('originalNamesRev:b')).resolves.toBe('1');
+    });
+
     test('the gallery gets the original name next to the server one', async () => {
       remote('h1', { originalName: 'IMG_1.jpg' });
 

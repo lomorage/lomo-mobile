@@ -49,6 +49,13 @@ export function safeFileName(name) {
   return base.replace(/[\u0000-\u001f\u007f:*?"<>|]/g, '_').trim().replace(/^\.+$/, '');
 }
 
+// The file:// URI of `name` in the directory URI `dir`. The name is a URI path segment, so it is
+// encoded: a raw "#" or "?" (IMG#1.jpg) would otherwise end the path, and the file would be
+// created and shared as "IMG" without its extension.
+export function fileUriIn(dir, name) {
+  return dir + encodeURIComponent(name);
+}
+
 function splitExt(name) {
   const dot = name.lastIndexOf('.');
   return dot > 0 ? [name.slice(0, dot), name.slice(dot + 1)] : [name, ''];

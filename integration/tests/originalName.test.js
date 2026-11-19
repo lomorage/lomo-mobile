@@ -26,7 +26,8 @@ async function listedAsset(hash, [y, m, d]) {
 async function uploadWithoutName(fixture, createdAt) {
   const hash = sha1(fixturePath(fixture));
   const createtime = encodeURIComponent(new Date(createdAt).toISOString());
-  const res = await fetch(`${server.url}/asset/${hash}?ext=jpg&createtime=${createtime}`, {
+  const ext = fixture.split('.').pop();
+  const res = await fetch(`${server.url}/asset/${hash}?ext=${ext}&createtime=${createtime}`, {
     method: 'POST',
     headers: { ...auth(), 'Content-Type': 'application/octet-stream' },
     body: fs.readFileSync(fixturePath(fixture)),
@@ -71,6 +72,11 @@ describe('the name a photo had on the phone', () => {
     const older = await uploadWithoutName('photo-2003-11-23.jpg', Date.UTC(2003, 10, 23, 12));
     addToCameraRoll('photo-2003-11-23.jpg', { filename: 'PXL_2.jpg', creationTime: Date.UTC(2003, 10, 23, 12) });
     expect((await listedAsset(older, [2003, 11, 23])).OrigName).toBeUndefined();
+    // Name unknown: no file name, and kept a day only, since one may be reported later.
+    const unnamed = await fetch(`${server.url}/asset/${older}`, { headers: auth() });
+    expect(unnamed.headers.get('content-disposition')).toBeNull();
+    expect(unnamed.headers.get('cache-control')).toBe('public, max-age=86400');
+    await unnamed.arrayBuffer();
 
     await AssetDBService.init();
     const roll = await cameraRoll();
@@ -79,6 +85,10 @@ describe('the name a photo had on the phone', () => {
     await SyncService.reportOriginalNames();
 
     expect((await listedAsset(older, [2003, 11, 23])).OrigName).toBe('PXL_2.jpg');
+    const namedDownload = await fetch(`${server.url}/asset/${older}`, { headers: auth() });
+    expect(namedDownload.headers.get('content-disposition')).toContain("filename*=UTF-8''PXL_2.jpg");
+    expect(namedDownload.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
+    await namedDownload.arrayBuffer();
     const rows = await AssetDBService.getRemoteAssets();
     expect(rows.find((r) => r.hash === older)).toMatchObject({ originalName: 'PXL_2.jpg' });
     // The name the upload carried came down with the listing.
@@ -98,6 +108,31 @@ describe('the name a photo had on the phone', () => {
     });
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual([{ Hash: named, Name: 'IMG_été 1.jpg' }]);
+  });
+
+  it('reported by another device reaches this one, though the server tree did not change', async () => {
+    if (!serverKeepsNames) return;
+    // Backed up by another phone with an old app, then named by that phone later.
+    const other = await uploadWithoutName('photo-remote-only.png', Date.UTC(2003, 10, 1, 12));
+    await SyncService.sync(await cameraRoll());
+    const before = (await AssetDBService.getRemoteAssets()).find((r) => r.hash === other);
+    expect(before).toBeTruthy();
+    expect(before.originalName).toBeNull();
+
+    const res = await fetch(`${server.url}/assets/names`, {
+      method: 'POST',
+      headers: { ...auth(), 'Content-Type': 'application/json' },
+      body: JSON.stringify([{ Hash: other, Name: 'FROM_OTHER_PHONE.jpg' }]),
+    });
+    expect(res.status).toBe(200);
+    await res.json();
+
+    await SyncService.sync(await cameraRoll());
+    await SyncService.reportOriginalNames();
+
+    const after = (await AssetDBService.getRemoteAssets()).find((r) => r.hash === other);
+    expect(after.originalName).toBe('FROM_OTHER_PHONE.jpg');
+    expect(SyncService.remoteTree.getNodeByHash(other).origName).toBe('FROM_OTHER_PHONE.jpg');
   });
 
   it('is refused when the request is malformed', async () => {

@@ -26,7 +26,7 @@ import ZoomableMedia from '../components/ZoomableMedia';
 import { useServerEpoch } from '../hooks/useServerEpoch';
 import { withRetryBuster } from '../hooks/useImageRetry';
 import { isNotFoundImageError } from '../utils/imageErrors';
-import { displayFileName, downloadFileName } from '../utils/fileName';
+import { displayFileName, downloadFileName, fileUriIn } from '../utils/fileName';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImageManipulator from 'expo-image-manipulator';
 
@@ -709,7 +709,7 @@ export default function AssetDetailScreen({ route, navigation }) {
                 const cached = (await FileSystem.readDirectoryAsync(dir).catch(() => []))
                     .find(name => name !== '.download');
                 if (cached) {
-                    uriToShare = dir + cached;
+                    uriToShare = fileUriIn(dir, cached);
                 } else {
                     await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
                     const result = await FileSystem.downloadAsync(remoteUrl, downloadPath);
@@ -717,7 +717,7 @@ export default function AssetDetailScreen({ route, navigation }) {
                         await FileSystem.deleteAsync(downloadPath, { idempotent: true }).catch(() => {});
                         throw new Error(`The server could not send this photo (HTTP ${result.status}).`);
                     }
-                    const fileUri = dir + downloadFileName(currentAsset, result.headers);
+                    const fileUri = fileUriIn(dir, downloadFileName(currentAsset, result.headers));
                     await FileSystem.moveAsync({ from: downloadPath, to: fileUri });
                     uriToShare = fileUri;
                 }

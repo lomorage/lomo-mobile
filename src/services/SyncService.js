@@ -14,6 +14,14 @@ import { parseBackendDate } from '../utils/backendDate';
 
 
 
+// A short, non-reversible key for a secret such as the login token, for state kept per account.
+function shortKey(value) {
+  let h = 5381;
+  const s = String(value || '');
+  for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+  return h.toString(16);
+}
+
 class MerkleNode {
   constructor(id = null, hash = null) {
     this.id = id;
@@ -1052,11 +1060,14 @@ class SyncService {
     }
   }
 
-  // Tells lomod the phone-side file names (IMG_1234.HEIC) of photos backed up before uploads
-  // carried them, so the server can show and download them under that name. lomod keeps the
-  // first name it is told and answers with the name each photo ends up with, which is recorded
-  // as confirmed. A lomod without the endpoint (404/405) isn't asked again for this server
-  // until the app restarts.
+  // Original file names (IMG_1234.HEIC) for photos on the server, both ways:
+  //  - tells lomod the names this phone knows for photos backed up before uploads carried them.
+  //    lomod keeps the first name it is told and answers with the name each photo ends up with,
+  //    which is recorded as confirmed;
+  //  - fetches names other devices reported since this one last asked (GET /assets/names?since=).
+  //    Those don't change the server's tree hashes, so the tree sync alone never brings them.
+  // A lomod without the endpoints (404/405) isn't asked again for that account until the app
+  // restarts.
   //
   // A call while a pass is running gets one more round after it (what it asked about may have
   // been saved after the running pass looked) and resolves when that is done.
@@ -1069,7 +1080,7 @@ class SyncService {
       try {
         do {
           this._namesAgain = false;
-          await this._reportOriginalNamesOnce();
+          await this._syncOriginalNamesOnce();
         } while (this._namesAgain);
       } finally {
         this._namesPass = null;
@@ -1078,16 +1089,42 @@ class SyncService {
     return this._namesPass;
   }
 
-  async _reportOriginalNamesOnce() {
+  // State for one server account, keyed on the login token: it differs between servers and
+  // accounts, but not between a server's home and remote address. `sent` holds the hashes
+  // reported this session, so one the server doesn't answer for isn't resent forever.
+  _originalNamesState(token) {
+    const key = shortKey(token);
+    if (!this._namesState || this._namesState.key !== key) {
+      this._namesState = { key, sent: new Set(), unsupported: false };
+    }
+    return this._namesState;
+  }
+
+  async _syncOriginalNamesOnce() {
     const url = AuthService.getServerUrl();
     const token = AuthService.getToken();
-    if (!url || !token || this._namesUnsupportedOn === url) return;
-    // Hashes already sent this session, so one the server doesn't answer for isn't resent forever.
-    if (!this._namesSent) this._namesSent = new Set();
+    if (!url || !token) return;
+    const state = this._originalNamesState(token);
+    if (state.unsupported) return;
+    await this._sendOriginalNames(url, token, state);
+    if (!state.unsupported) await this._fetchOriginalNames(url, token, state);
+  }
+
+  _namesRequestFailed(e, state, what) {
+    const status = e?.response?.status;
+    if (status === 404 || status === 405) {
+      state.unsupported = true;
+      console.log('[SyncService] This server does not keep original file names yet.');
+    } else {
+      console.warn(`[SyncService] Could not ${what} original names:`, e?.message);
+    }
+  }
+
+  async _sendOriginalNames(url, token, state) {
     for (let round = 0; round < 100; round++) {
-      const batch = await AssetDBService.getOriginalNamesToReport(200, this._namesSent);
+      const batch = await AssetDBService.getOriginalNamesToReport(200, state.sent);
       if (batch.length === 0) break;
-      batch.forEach(e => this._namesSent.add(e.hash));
+      batch.forEach(e => state.sent.add(e.hash));
       let response;
       try {
         response = await axios.post(`${url}/assets/names`,
@@ -1099,15 +1136,9 @@ class SyncService {
             groupId: 'SyncService'
           });
       } catch (e) {
-        const status = e?.response?.status;
-        if (status === 404 || status === 405) {
-          this._namesUnsupportedOn = url;
-          console.log('[SyncService] This server does not keep original file names yet.');
-        } else {
-          // Worth another try on the next sync.
-          batch.forEach(entry => this._namesSent.delete(entry.hash));
-          console.warn('[SyncService] Could not report original names:', e?.message);
-        }
+        // A 404 only means this server can't take them; another one may, so nothing is kept.
+        batch.forEach(entry => state.sent.delete(entry.hash));
+        this._namesRequestFailed(e, state, 'report');
         break;
       }
       const stored = (Array.isArray(response.data) ? response.data : [])
@@ -1116,6 +1147,45 @@ class SyncService {
       await AssetDBService.setRemoteOriginalNames(stored);
       console.log(`[SyncService] Reported ${batch.length} original names; server confirmed ${stored.length}.`);
     }
+  }
+
+  async _fetchOriginalNames(url, token, state) {
+    const cursorKey = `originalNamesRev:${state.key}`;
+    let since = Number(await AssetDBService.getSyncState(cursorKey)) || 0;
+    let treeChanged = false;
+    for (let page = 0; page < 500; page++) {
+      let data;
+      try {
+        ({ data } = await axios.get(`${url}/assets/names?since=${since}`, {
+          headers: { Authorization: `token=${token}` },
+          timeout: 30000,
+          skipAutoProbe: true,
+          priority: 4,
+          groupId: 'SyncService'
+        }));
+      } catch (e) {
+        this._namesRequestFailed(e, state, 'fetch');
+        break;
+      }
+      const names = (Array.isArray(data?.Names) ? data.Names : [])
+        .filter(n => n && n.Hash)
+        .map(n => ({ hash: String(n.Hash).toLowerCase(), name: n.Name || '' }));
+      // Also into the cached tree, which rows are rebuilt from.
+      for (const { hash, name } of names) {
+        const node = this.remoteTree?.getNodeByHash(hash);
+        if (node && name && node.origName !== name) {
+          node.origName = name;
+          treeChanged = true;
+        }
+      }
+      await AssetDBService.setRemoteOriginalNames(names);
+      if (Number.isFinite(data?.Rev) && data.Rev > since) {
+        since = data.Rev;
+        await AssetDBService.setSyncState(cursorKey, since);
+      }
+      if (!data?.More || names.length === 0) break;
+    }
+    if (treeChanged) await this.saveRemoteTree();
   }
 
   async syncRemoteGPS() {

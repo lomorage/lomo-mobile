@@ -377,6 +377,13 @@ class AssetDBService {
       this.hasUploadRejected = await this.hasColumns(db, ['uploadRejected', 'uploadRejectedReason']);
       // Same for the original-name columns (version 18).
       this.hasOriginalName = await this.hasColumns(db, ['originalName', 'originalNameSynced']);
+      // Small values sync keeps per server account (e.g. where it got to in a server feed). Lives
+      // in this database so it goes when the rows it describes go.
+      try {
+        await db.execAsync('CREATE TABLE IF NOT EXISTS SyncState (key TEXT PRIMARY KEY, value TEXT);');
+      } catch (e) {
+        console.warn('[AssetDBService] Could not create SyncState:', e.message);
+      }
 
       // Smooth migration: if local_hash_cache_v2.json exists, migrate it to SQLite
       await this.migrateLocalHashCache(db);
@@ -1217,6 +1224,21 @@ class AssetDBService {
   }
 
   // Records original names the server has confirmed ({ hash, name } each).
+  async getSyncState(key) {
+    if (!this.db) return null;
+    try {
+      const row = await this.db.getFirstAsync('SELECT value FROM SyncState WHERE key = ?', [key]);
+      return row ? row.value : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async setSyncState(key, value) {
+    if (!this.db) return;
+    await this.db.runAsync('INSERT OR REPLACE INTO SyncState (key, value) VALUES (?, ?)', [key, String(value)]);
+  }
+
   async setRemoteOriginalNames(entries) {
     if (!this.db || !this.hasOriginalName || !entries || entries.length === 0) return;
     const chunkSize = 100;

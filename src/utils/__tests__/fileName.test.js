@@ -1,4 +1,4 @@
-import { displayFileName, downloadFileName, nameFromContentDisposition, safeFileName } from '../fileName';
+import { displayFileName, downloadFileName, fileUriIn, nameFromContentDisposition, safeFileName } from '../fileName';
 
 describe('displayFileName', () => {
   test('prefers the name from the phone over the server name', () => {
@@ -31,6 +31,16 @@ describe('safeFileName', () => {
     expect(safeFileName('../DCIM/a:b*?.jpg')).toBe('a_b__.jpg');
     expect(safeFileName('C:\\x\\y.png')).toBe('y.png');
     expect(safeFileName('..')).toBe('');
+  });
+});
+
+describe('fileUriIn', () => {
+  test('keeps characters that end a URI path inside the file name', () => {
+    const uri = fileUriIn('file:///cache/share/abc/', 'IMG#1 ?été%.jpg');
+    expect(uri).toBe('file:///cache/share/abc/IMG%231%20%3F%C3%A9t%C3%A9%25.jpg');
+    const parsed = new URL(uri);
+    expect(parsed.hash).toBe('');
+    expect(decodeURIComponent(parsed.pathname.split('/').pop())).toBe('IMG#1 ?été%.jpg');
   });
 });
 
