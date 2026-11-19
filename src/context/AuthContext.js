@@ -1,6 +1,7 @@
 import React, { createContext, useState, useContext, useEffect } from 'react';
 import AuthService from '../services/AuthService';
 import FirstBackupService from '../services/FirstBackupService';
+import SyncService from '../services/SyncService';
 import { markPaired } from '../utils/scaleMetrics';
 import { clearLastBackupAt } from '../services/backupHistory';
 import { clearRegisterDraft } from '../utils/registerDraft';
@@ -45,6 +46,7 @@ export const AuthProvider = ({ children }) => {
 
   const login = async (server, username, password, serverName = null) => {
     await AuthService.login(server, username, password, serverName);
+    await SyncService.claimOriginalNamesForSignIn();
     await pairedWith(server, username);
     await FirstBackupService.beginIfNeeded().catch((error) => {
       console.warn('[AuthContext] Failed to initialize first-backup guidance:', error);
@@ -56,6 +58,7 @@ export const AuthProvider = ({ children }) => {
   const register = async (server, username, password, homedir, autoLogin = true, serverName = null) => {
     await AuthService.register(server, username, password, homedir, "", autoLogin, serverName);
     if (autoLogin) {
+      await SyncService.claimOriginalNamesForSignIn();
       await pairedWith(server, username);
       await FirstBackupService.beginIfNeeded().catch((error) => {
         console.warn('[AuthContext] Failed to initialize first-backup guidance:', error);

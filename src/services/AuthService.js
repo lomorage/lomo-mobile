@@ -17,6 +17,7 @@ const USERNAME_KEY = 'lomo_username';
 const SERVER_NAME_KEY = 'lomo_server_name';
 const WEBP_PREVIEW_KEY = 'lomo_webp_preview';
 const SERVER_UUID_KEY = 'lomo_server_uuid';
+const USER_ID_KEY = 'lomo_user_id';
 
 const SALT_POSTFIX = '@lomorage.lomoware';
 
@@ -94,6 +95,8 @@ const DISK_LOOKUP_TIMEOUT_MS = 8000;
 class AuthService {
   constructor() {
     this.token = null;
+    // Bumped on every sign-in and sign-out: answers to requests from an earlier one are dropped.
+    this._session = 0;
     this.serverUrl = null;
     this.remoteUrl = null;
     this.localUrl = null;
@@ -169,6 +172,7 @@ class AuthService {
       this.webpPreview = (await SecureStore.getItemAsync(WEBP_PREVIEW_KEY)) === '1';
       this.username = await SecureStore.getItemAsync(USERNAME_KEY);
       this.serverUuid = await SecureStore.getItemAsync(SERVER_UUID_KEY);
+      this.userId = await SecureStore.getItemAsync(USER_ID_KEY);
       
       if (this.isAuthenticated()) {
           this.determineBestConnection();
@@ -228,11 +232,12 @@ class AuthService {
           try {
              const controller = new AbortController();
              const timeoutId = setTimeout(() => controller.abort(), 800); // Reduced to 800ms for faster fallback
+             const session = this._session;
              const response = await fetch(`${this.localUrl}/system`, { method: 'GET', signal: controller.signal });
              clearTimeout(timeoutId);
-             if (response.status === 200) {
+             if (response.status === 200 && session === this._session) {
                  await this.updateServerUrl(this.localUrl);
-                 await this.applySystemInfo(await response.json().catch(() => null));
+                 await this.applySystemInfo(await response.json().catch(() => null), session);
                  return true;
              }
           } catch(e) {}
@@ -247,11 +252,12 @@ class AuthService {
           try {
              const controller = new AbortController();
              const timeoutId = setTimeout(() => controller.abort(), 3000);
+             const session = this._session;
              const response = await fetch(`${this.remoteUrl}/system`, { method: 'GET', signal: controller.signal });
              clearTimeout(timeoutId);
-             if (response.status === 200) {
+             if (response.status === 200 && session === this._session) {
                  await this.updateServerUrl(this.remoteUrl);
-                 await this.applySystemInfo(await response.json().catch(() => null));
+                 await this.applySystemInfo(await response.json().catch(() => null), session);
                  return true;
              }
           } catch(e) {}
@@ -269,8 +275,12 @@ class AuthService {
    * codec only (WebP unless lomod runs with --use-jpg); requesting the other one makes it
    * transcode the original on demand, which is slow and memory-hungry on a Raspberry Pi.
    */
-  async applySystemInfo(info) {
+  // `session`: this._session when the /system request was made. An answer to a request from an
+  // earlier sign-in (possibly another server) is ignored, or it would tie this account to that
+  // server's id.
+  async applySystemInfo(info, session = this._session) {
     if (!info || typeof info !== 'object') return;
+    if (session !== this._session) return;
     if (typeof info.UUID === 'string' && info.UUID && info.UUID !== this.serverUuid) {
       this.serverUuid = info.UUID;
       try {
@@ -290,19 +300,24 @@ class AuthService {
   }
 
   // Which account on which server this is: the server's own id (/system UUID, the same at its
-  // home and remote address) and the user name. Stays the same across sign-ins, unlike the
-  // token. Null until both are known. For data kept per account on the phone.
+  // home and remote address) and the user's id from the login answer (Userid). Stays the same
+  // across sign-ins, unlike the token. A sign-in from before the app kept Userid falls back to
+  // the exact user name (unique on a server; "Alice" and "alice" are two accounts). Null until
+  // known. For data kept per account on the phone.
   getAccountId() {
-    if (!this.token || !this.serverUuid || !this.username) return null;
-    return `${this.serverUuid}|${String(this.username).toLowerCase()}`;
+    if (!this.token || !this.serverUuid) return null;
+    if (this.userId) return `${this.serverUuid}|id:${this.userId}`;
+    if (this.username) return `${this.serverUuid}|name:${this.username}`;
+    return null;
   }
 
   async refreshSystemInfo() {
     if (!this.serverUrl) return;
     try {
+      const session = this._session;
       const response = await axios.get(`${this.serverUrl}/system`, { timeout: 5000, skipQueue: true });
       if (response.status === 200) {
-        await this.applySystemInfo(response.data);
+        await this.applySystemInfo(response.data, session);
       }
     } catch (e) {
       console.log('[AuthService] Failed to fetch /system:', e.message);
@@ -435,9 +450,13 @@ class AuthService {
 
       this.serverUrl = url;
       this.serverName = serverName;
-      // Possibly another server: its id is read again below (/system).
+      // A new sign-in, possibly to another server or account: its ids are read again below, and
+      // answers to requests made before this point are not applied to it.
+      this._session += 1;
       this.serverUuid = null;
+      this.userId = null;
       SecureStore.deleteItemAsync(SERVER_UUID_KEY).catch(() => {});
+      SecureStore.deleteItemAsync(USER_ID_KEY).catch(() => {});
 
       // Hash the password with Argon2id, matching the lomo-ios implementation
       console.log('Hashing password with Argon2id...');
@@ -463,6 +482,10 @@ class AuthService {
       // iOS parses: Token and Userid from response (capital T)
       if (response.status === 200 && response.data && response.data.Token) {
         this.token = response.data.Token;
+        if (response.data.Userid !== undefined && response.data.Userid !== null && response.data.Userid !== '') {
+          this.userId = String(response.data.Userid);
+          await SecureStore.setItemAsync(USER_ID_KEY, this.userId);
+        }
         
         await SecureStore.setItemAsync(TOKEN_KEY, this.token);
         
@@ -544,11 +567,12 @@ class AuthService {
   async getServerVersion() {
     if (!this.serverUrl) return 'Unknown';
     try {
+      const session = this._session;
       const response = await axios.get(`${this.serverUrl}/system`, {
          headers: this.token ? { 'Authorization': `token=${this.token}` } : {}
       });
       if (response.status === 200) {
-         await this.applySystemInfo(response.data);
+         await this.applySystemInfo(response.data, session);
       }
       if (response.status === 200 && response.data && response.data.LomodVersion) {
          return response.data.LomodVersion;
@@ -624,6 +648,7 @@ class AuthService {
 
   async logout() {
     this.token = null;
+    this._session += 1;
     try {
       await SecureStore.deleteItemAsync(TOKEN_KEY);
       // We keep serverUrl and username for convenience on next login

@@ -99,6 +99,10 @@ class AssetDBService {
       try { await db.execAsync('CREATE INDEX IF NOT EXISTS idx_phash ON MediaAsset(phash);'); } catch (e) {}
       try { await db.execAsync('CREATE INDEX IF NOT EXISTS idx_clipEmbedding ON MediaAsset(clipEmbedding);'); } catch (e) {}
       try { await db.execAsync('CREATE INDEX IF NOT EXISTS idx_createTime ON MediaAsset(createTime);'); } catch (e) {}
+      // Original names to report: server rows in id order after a cursor, and the phone's own row
+      // for each by hash (getOriginalNamesToReport). Without them each page scans and sorts.
+      try { await db.execAsync('CREATE INDEX IF NOT EXISTS idx_isLocal_id ON MediaAsset(isLocal, id);'); } catch (_e) {}
+      try { await db.execAsync('CREATE INDEX IF NOT EXISTS idx_isLocal_hash ON MediaAsset(isLocal, hash);'); } catch (_e) {}
 
       // Handle versioned migrations
       const { user_version } = await db.getFirstAsync('PRAGMA user_version');

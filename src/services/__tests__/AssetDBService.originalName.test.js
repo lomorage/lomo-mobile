@@ -140,6 +140,21 @@ describeWithSqlite('original file names (real SQLite)', () => {
       expect(rowsRead).toBe(900); // not the whole backlog again for every page
     });
 
+    test('with the indexes init makes, a page neither scans nor sorts the table', () => {
+      const init = require('fs').readFileSync(require('path').join(__dirname, '..', 'AssetDBService.js'), 'utf8');
+      for (const m of init.matchAll(/CREATE INDEX IF NOT EXISTS (idx_isLocal_(?:id|hash)) ON MediaAsset\(([^)]*)\)/g)) {
+        sqlite.exec(`CREATE INDEX ${m[1]} ON MediaAsset(${m[2]})`);
+      }
+      let sql;
+      AssetDBService.db.getAllAsync = async (q) => { sql = q; return []; };
+      AssetDBService.getOriginalNamesToReport(200, 'h1');
+      const plan = sqlite.prepare(`EXPLAIN QUERY PLAN ${sql}`).all('h1', 200).map((r) => r.detail).join(' | ');
+
+      expect(plan).toMatch(/idx_isLocal_id/);
+      expect(plan).toMatch(/idx_isLocal_hash/);
+      expect(plan).not.toMatch(/SCAN|TEMP B-TREE/);
+    });
+
     test('switching account drops only the names servers confirmed', async () => {
       remote('h1', { originalName: 'A-name.jpg', originalNameSynced: 1 });
       remote('h2', { originalName: 'kept.jpg' }); // this phone's own, from Free Up Space

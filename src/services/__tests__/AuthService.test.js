@@ -221,18 +221,48 @@ describe('account id', () => {
     jest.clearAllMocks();
     AuthService.token = 't';
     AuthService.username = 'Alice';
+    AuthService.userId = '7';
     AuthService.serverUuid = null;
   });
 
-  test('is the server id from /system and the user, the same for any token', async () => {
+  test('is the server id from /system and the user id, the same for any token', async () => {
     expect(AuthService.getAccountId()).toBeNull();
     await AuthService.applySystemInfo({ UUID: 'srv-1' });
     expect(SecureStore.setItemAsync).toHaveBeenCalledWith('lomo_server_uuid', 'srv-1');
-    expect(AuthService.getAccountId()).toBe('srv-1|alice');
+    expect(AuthService.getAccountId()).toBe('srv-1|id:7');
     AuthService.token = 'another-sign-in';
-    expect(AuthService.getAccountId()).toBe('srv-1|alice');
-    AuthService.username = 'bob';
-    expect(AuthService.getAccountId()).toBe('srv-1|bob');
+    expect(AuthService.getAccountId()).toBe('srv-1|id:7');
+    AuthService.userId = '8';
+    expect(AuthService.getAccountId()).toBe('srv-1|id:8');
+  });
+
+  test('"Alice" and "alice" are two accounts, also without a user id from an older sign-in', async () => {
+    await AuthService.applySystemInfo({ UUID: 'srv-1' });
+    AuthService.userId = null;
+    const alice = AuthService.getAccountId();
+    AuthService.username = 'alice';
+    expect(AuthService.getAccountId()).not.toBe(alice);
+  });
+
+  test('signing in keeps the user id from the answer', async () => {
+    const get = jest.spyOn(axios, 'get').mockImplementation(async (url) => (url.endsWith('/login')
+      ? { status: 200, data: { Token: 'tok', Userid: 12 } }
+      : { status: 200, data: { UUID: 'srv-2' } }));
+    require('react-native-argon2').mockResolvedValue({ rawHash: 'h', encodedHash: 'h' });
+    SecureStore.deleteItemAsync.mockResolvedValue();
+    SecureStore.setItemAsync.mockResolvedValue();
+    await AuthService.login('192.168.1.5:8000', 'alice', 'pw');
+    expect(AuthService.getAccountId()).toBe('srv-2|id:12');
+    expect(SecureStore.setItemAsync).toHaveBeenCalledWith('lomo_user_id', '12');
+    get.mockRestore();
+  });
+
+  test('a late /system answer from before signing in again is not taken as this server', async () => {
+    await AuthService.applySystemInfo({ UUID: 'srv-B' });
+    const before = AuthService._session;
+    AuthService._session += 1; // signed in again (e.g. to another server) meanwhile
+    await AuthService.applySystemInfo({ UUID: 'srv-A' }, before);
+    expect(AuthService.serverUuid).toBe('srv-B');
   });
 
   test('is null when signed out', async () => {

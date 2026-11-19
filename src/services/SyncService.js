@@ -1104,21 +1104,35 @@ class SyncService {
   // when the account differs from the one they were learned for, the confirmed ones are dropped
   // and the cached tree is cleared, so this account's full listing (names that came with the
   // upload) and its name feed, read from the start (names reported later), bring its own.
-  async _forgetOriginalNamesOfOtherAccount() {
+  //
+  // `atSignIn`: called right after signing in, before any screen reads the cached rows. If the
+  // account can't be told there (the server's /system didn't answer), names are dropped anyway:
+  // better read again than show another account's.
+  async _forgetOriginalNamesOfOtherAccount({ atSignIn = false } = {}) {
     const accountId = AuthService.getAccountId();
-    if (!accountId) return;
-    const key = shortKey(accountId);
+    if (!accountId && !atSignIn) return;
+    const key = accountId ? shortKey(accountId) : '';
     await AssetDBService.init();
     const previous = await AssetDBService.getSyncState('originalNamesAccount');
-    if (previous === key) return;
+    if (previous === key && key) return;
     if (previous) {
       await AssetDBService.clearRemoteOriginalNames();
       await this.clearRemoteTreeCache();
-      await AssetDBService.setSyncState(`originalNamesRev:${key}`, '0');
+      if (key) await AssetDBService.setSyncState(`originalNamesRev:${key}`, '0');
       this._namesState = undefined;
       console.log('[SyncService] Signed in to another account: original names will be read again.');
     }
     await AssetDBService.setSyncState('originalNamesAccount', key);
+  }
+
+  // After signing in: make sure the cached server rows don't carry another account's original
+  // names before the home screen shows them (the listing that would also check runs later).
+  async claimOriginalNamesForSignIn() {
+    try {
+      await this._forgetOriginalNamesOfOtherAccount({ atSignIn: true });
+    } catch (e) {
+      console.warn('[SyncService] Failed to check the original names account at sign-in:', e?.message);
+    }
   }
 
   async _syncOriginalNamesOnce() {

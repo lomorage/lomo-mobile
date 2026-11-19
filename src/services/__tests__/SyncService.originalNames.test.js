@@ -233,6 +233,24 @@ describe('SyncService original names', () => {
       expect(mockSyncState.get('originalNamesAccount')).toBe(shortKey(accountOf('token-b')));
     });
 
+    test("at sign-in, when the server couldn't say which account this is, names are dropped anyway", async () => {
+      mockToken = null; // stands in for an account id that isn't known yet
+
+      await SyncService.claimOriginalNamesForSignIn();
+
+      expect(AssetDBService.clearRemoteOriginalNames).toHaveBeenCalledTimes(1);
+      expect(SyncService.clearRemoteTreeCache).toHaveBeenCalledTimes(1);
+      expect(mockSyncState.get('originalNamesAccount')).toBe('');
+    });
+
+    test('during sync, an account not known yet leaves the names alone', async () => {
+      mockToken = null;
+
+      await SyncService._forgetOriginalNamesOfOtherAccount();
+
+      expect(AssetDBService.clearRemoteOriginalNames).not.toHaveBeenCalled();
+    });
+
     test('keeps everything for the same account', async () => {
       await SyncService._forgetOriginalNamesOfOtherAccount();
 
