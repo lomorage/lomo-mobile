@@ -85,6 +85,9 @@ export function buildUploadUrl(serverUrl, hash, ext, info, storedExifTime = null
     if (info.modificationTime > 0) {
         params.push(`modifiedtime=${encodeURIComponent(new Date(info.modificationTime).toISOString())}`);
     }
+    // The name on the phone (IMG_1234.HEIC): lomod files the photo under a date+id name and
+    // keeps this one to show and to name downloads. Older lomod ignores the parameter.
+    if (info.filename) params.push(`origname=${encodeURIComponent(info.filename)}`);
     return `${serverUrl}/asset/${hash.toLowerCase()}?${params.join('&')}`;
 }
 

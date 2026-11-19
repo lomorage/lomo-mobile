@@ -150,6 +150,7 @@ export default function AlbumDetailScreen() {
                         uri: MediaService.getPreviewUrl(hash, localAsset ? localAsset.mediaType : 'image'),
                         status: 'remote',
                         filename: localAsset ? localAsset.filename : '',
+                        originalName: localAsset ? localAsset.originalName : null,
                         // 0 = unknown: the detail screen then shows no date, not today's.
                         creationTime: localAsset ? localAsset.creationTime : 0,
                         mediaType: localAsset ? localAsset.mediaType : 'image', // Fallback to image if not in DB

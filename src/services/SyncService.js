@@ -19,6 +19,8 @@ class MerkleNode {
     this.id = id;
     this.hash = hash;
     this.tag = null;
+    // Asset level only: the file's name on the phone that backed it up, when lomod knows it.
+    this.origName = null;
     this.date = null;
     this.children = []; // nodeListOrdered in Swift
     this.parentNode = null;
@@ -97,6 +99,7 @@ class MerkleNode {
       id: this.id,
       hash: this.hash,
       tag: this.tag,
+      ...(this.origName ? { origName: this.origName } : {}),
       date: this.date,
       children: this.children.map(c => c.toJSON())
     };
@@ -149,6 +152,7 @@ class MerkleNode {
   static fromJSON(data) {
     const node = new MerkleNode(data.id, data.hash);
     node.tag = data.tag;
+    node.origName = data.origName || null;
     node.date = parseBackendDate(data.date);
     if (data.children) {
       node.children = data.children.map(c => {
@@ -173,6 +177,7 @@ class MerkleNode {
 
     const node = new MerkleNode(data.id, data.hash);
     node.tag = data.tag;
+    node.origName = data.origName || null;
     node.date = parseBackendDate(data.date);
     if (data.children) {
       const children = [];
@@ -194,7 +199,7 @@ class AssetMerkleRoot extends MerkleNode {
   }
 
   // Hierarchical addition: Year -> Month -> Day -> Asset
-  addAsset(year, month, day, assetHash, assetId, date) {
+  addAsset(year, month, day, assetHash, assetId, date, origName = null) {
     const normalizedHash = assetHash.toLowerCase();
 
     // Fast O(1) duplicate check across the entire tree
@@ -208,6 +213,7 @@ class AssetMerkleRoot extends MerkleNode {
     assetNode = new MerkleNode(day, normalizedHash);
     assetNode.setTag(assetId);
     assetNode.setDate(date);
+    assetNode.origName = origName || null;
 
     // Keep children ordered by hash (Asset level)
     const index = dayNode.children.findIndex(c => c.hash > normalizedHash);
@@ -949,6 +955,7 @@ class SyncService {
                   if (!newRoot.getNodeByHash(lowerHash)) {
                     const assetNode = new MerkleNode(d.Day, lowerHash);
                     assetNode.setTag(a.Name);
+                    assetNode.origName = a.OrigName || null;
                     if (a.Date) assetNode.setDate(parseBackendDate(a.Date));
                     dayNode.children.push(assetNode);
                     assetNode.parentNode = dayNode;
@@ -990,6 +997,7 @@ class SyncService {
 
         // Trigger background GPS sync
         this.syncRemoteGPS().catch(e => console.error('[SyncService] background remote GPS sync error:', e));
+        this.reportOriginalNames().catch(e => console.warn('[SyncService] reporting original names failed:', e?.message));
         this.syncLocalGPS().catch(e => console.error('[SyncService] background local GPS sync error:', e));
 
         return newRoot;
@@ -1015,6 +1023,7 @@ class SyncService {
   _cloneSubtree(node) {
     const clone = new MerkleNode(node.id, node.hash);
     clone.tag = node.tag;
+    clone.origName = node.origName;
     clone.date = node.date;
     for (const child of node.children) {
       const childClone = this._cloneSubtree(child);
@@ -1040,6 +1049,72 @@ class SyncService {
     } catch (e) {
       console.warn(`Failed to fetch remote month ${year}/${month}`, e);
       return null;
+    }
+  }
+
+  // Tells lomod the phone-side file names (IMG_1234.HEIC) of photos backed up before uploads
+  // carried them, so the server can show and download them under that name. lomod keeps the
+  // first name it is told and answers with the name each photo ends up with, which is recorded
+  // as confirmed. A lomod without the endpoint (404/405) isn't asked again for this server
+  // until the app restarts.
+  //
+  // A call while a pass is running gets one more round after it (what it asked about may have
+  // been saved after the running pass looked) and resolves when that is done.
+  reportOriginalNames() {
+    if (this._namesPass) {
+      this._namesAgain = true;
+      return this._namesPass;
+    }
+    this._namesPass = (async () => {
+      try {
+        do {
+          this._namesAgain = false;
+          await this._reportOriginalNamesOnce();
+        } while (this._namesAgain);
+      } finally {
+        this._namesPass = null;
+      }
+    })();
+    return this._namesPass;
+  }
+
+  async _reportOriginalNamesOnce() {
+    const url = AuthService.getServerUrl();
+    const token = AuthService.getToken();
+    if (!url || !token || this._namesUnsupportedOn === url) return;
+    // Hashes already sent this session, so one the server doesn't answer for isn't resent forever.
+    if (!this._namesSent) this._namesSent = new Set();
+    for (let round = 0; round < 100; round++) {
+      const batch = await AssetDBService.getOriginalNamesToReport(200, this._namesSent);
+      if (batch.length === 0) break;
+      batch.forEach(e => this._namesSent.add(e.hash));
+      let response;
+      try {
+        response = await axios.post(`${url}/assets/names`,
+          batch.map(e => ({ Hash: e.hash, Name: e.name })), {
+            headers: { Authorization: `token=${token}` },
+            timeout: 30000,
+            skipAutoProbe: true,
+            priority: 4,
+            groupId: 'SyncService'
+          });
+      } catch (e) {
+        const status = e?.response?.status;
+        if (status === 404 || status === 405) {
+          this._namesUnsupportedOn = url;
+          console.log('[SyncService] This server does not keep original file names yet.');
+        } else {
+          // Worth another try on the next sync.
+          batch.forEach(entry => this._namesSent.delete(entry.hash));
+          console.warn('[SyncService] Could not report original names:', e?.message);
+        }
+        break;
+      }
+      const stored = (Array.isArray(response.data) ? response.data : [])
+        .filter(r => r && r.Hash)
+        .map(r => ({ hash: r.Hash, name: r.Name || '' }));
+      await AssetDBService.setRemoteOriginalNames(stored);
+      console.log(`[SyncService] Reported ${batch.length} original names; server confirmed ${stored.length}.`);
     }
   }
 
@@ -1343,6 +1418,8 @@ class SyncService {
       await this.findDiffWithDrillDown(this.localTree, this.remoteTree, uploadAssets, downloadAssets, 'year');
 
       if (onProgress) onProgress({ current: localAssets.length, total: localAssets.length });
+      // Again now that the drill-down may have added server rows this phone has names for.
+      this.reportOriginalNames().catch(e => console.warn('[SyncService] reporting original names failed:', e?.message));
       return { uploadAssets, downloadAssets };
     } finally {
       this.isSyncing = false;
@@ -1407,7 +1484,7 @@ class SyncService {
         }
         if (detail && detail.Assets) {
           for (const a of detail.Assets) {
-            const assetNode = this.remoteTree.addAsset(year, month, day, a.Hash, a.Name, parseBackendDate(a.Date));
+            const assetNode = this.remoteTree.addAsset(year, month, day, a.Hash, a.Name, parseBackendDate(a.Date), a.OrigName);
             // Global check for downloads
             if (!this.localTree.getNodeByHash(assetNode.hash)) {
               download.push(assetNode);
@@ -1452,7 +1529,7 @@ class SyncService {
           }
           if (detail && detail.Assets) {
             for (const a of detail.Assets) {
-              this.remoteTree.addAsset(year, month, day, a.Hash, a.Name, parseBackendDate(a.Date));
+              this.remoteTree.addAsset(year, month, day, a.Hash, a.Name, parseBackendDate(a.Date), a.OrigName);
             }
           }
         }

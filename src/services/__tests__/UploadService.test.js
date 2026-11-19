@@ -348,4 +348,9 @@ describe('buildUploadUrl', () => {
     const url = buildUploadUrl('http://pc:8000', 'abc', 'jpg', { creationTime: 0, modificationTime: modified });
     expect(url).toContain('createtime=2026-10-08T00%3A12%3A00.000Z');
   });
+
+  test('sends the name the file has on the phone, so the server can keep it', () => {
+    const url = buildUploadUrl('http://pc:8000', 'abc', 'heic', { creationTime: taken, filename: 'IMG 1234&été.HEIC' });
+    expect(new URL(url).searchParams.get('origname')).toBe('IMG 1234&été.HEIC');
+  });
 });

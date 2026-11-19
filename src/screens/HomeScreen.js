@@ -878,6 +878,7 @@ export default function HomeScreen({ navigation, route }) {
                     creationTime: asset.creationTime || 0,
                     mediaType: asset.mediaType || (isVideoExtension(filename) ? 'video' : 'photo'),
                     filename: filename,
+                    originalName: asset.originalName || null,
                     isFavorite: asset.isFavorite,
                     localCachePath: asset.localCachePath
                 };

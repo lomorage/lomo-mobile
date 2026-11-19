@@ -26,6 +26,7 @@ import ZoomableMedia from '../components/ZoomableMedia';
 import { useServerEpoch } from '../hooks/useServerEpoch';
 import { withRetryBuster } from '../hooks/useImageRetry';
 import { isNotFoundImageError } from '../utils/imageErrors';
+import { displayFileName, downloadFileName } from '../utils/fileName';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImageManipulator from 'expo-image-manipulator';
 
@@ -701,14 +702,25 @@ export default function AssetDetailScreen({ route, navigation }) {
 
             if (currentAsset.status === 'remote' && currentAsset.hash) {
                 const remoteUrl = `${AuthService.getServerUrl()}/asset/${currentAsset.hash}?token=${AuthService.getToken()}`;
-                const extension = currentAsset.name ? currentAsset.name.split('.').pop() : (currentAsset.mediaType === 'video' ? 'mp4' : 'jpg');
-                const fileUri = FileSystem.cacheDirectory + `share_${currentAsset.hash}.${extension}`;
-                
-                const info = await FileSystem.getInfoAsync(fileUri);
-                if (!info.exists) {
-                    await FileSystem.downloadAsync(remoteUrl, fileUri);
+                // Shared under the photo's own name (IMG_1234.HEIC) when known: the receiving app
+                // shows and saves it under the file name. One folder per photo keeps the names apart.
+                const dir = `${FileSystem.cacheDirectory}share/${currentAsset.hash}/`;
+                const downloadPath = `${dir}.download`;
+                const cached = (await FileSystem.readDirectoryAsync(dir).catch(() => []))
+                    .find(name => name !== '.download');
+                if (cached) {
+                    uriToShare = dir + cached;
+                } else {
+                    await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
+                    const result = await FileSystem.downloadAsync(remoteUrl, downloadPath);
+                    if (result.status >= 400) {
+                        await FileSystem.deleteAsync(downloadPath, { idempotent: true }).catch(() => {});
+                        throw new Error(`The server could not send this photo (HTTP ${result.status}).`);
+                    }
+                    const fileUri = dir + downloadFileName(currentAsset, result.headers);
+                    await FileSystem.moveAsync({ from: downloadPath, to: fileUri });
+                    uriToShare = fileUri;
                 }
-                uriToShare = fileUri;
             }
 
             await Sharing.shareAsync(uriToShare);
@@ -1445,7 +1457,7 @@ export default function AssetDetailScreen({ route, navigation }) {
             </View>
 
             <View style={styles.footer}>
-                <Text style={styles.infoText}>{currentAsset.filename}</Text>
+                <Text style={styles.infoText}>{displayFileName(currentAsset)}</Text>
                 <Text style={styles.subInfoText}>
                     {formatTakenDate(currentAsset)}
                 </Text>
