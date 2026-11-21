@@ -893,25 +893,40 @@ export default function AssetDetailScreen({ route, navigation }) {
         if (!currentAsset || !currentAsset.id) return;
         
         const executeDelete = async (scope) => {
+            // The server refused after the phone's copy was already deleted ('both'): the photo
+            // stays, backup only, and the user is told.
+            let remoteError = null;
             try {
                 let isFullyDeleted = false;
                 let newStatus = currentAsset.status;
+                let deletedLocally = false;
 
                 if (scope === 'local' || scope === 'both') {
                     await MediaService.deleteLocalAsset(currentAsset.id);
+                    deletedLocally = true;
                     if (currentAsset.status === 'local' || scope === 'both') isFullyDeleted = true;
                     else if (currentAsset.status === 'synced') newStatus = 'remote';
                 }
-                
+
                 if (scope === 'remote' || scope === 'both') {
-                    await MediaService.deleteRemoteAsset(currentAsset.hash || currentAsset.id, !!currentAsset.hash);
-                    if (currentAsset.hash) {
-                        await SyncService.removeRemoteAsset(currentAsset.hash);
+                    try {
+                        await MediaService.deleteRemoteAsset(currentAsset.hash || currentAsset.id, !!currentAsset.hash);
+                    } catch (e) {
+                        if (!deletedLocally) throw e;
+                        remoteError = e;
                     }
-                    if (currentAsset.status === 'remote' || scope === 'both') isFullyDeleted = true;
-                    else if (currentAsset.status === 'synced') newStatus = 'local';
+                    if (remoteError) {
+                        isFullyDeleted = false;
+                        newStatus = 'remote';
+                    } else {
+                        if (currentAsset.hash) {
+                            await SyncService.removeRemoteAsset(currentAsset.hash);
+                        }
+                        if (currentAsset.status === 'remote' || scope === 'both') isFullyDeleted = true;
+                        else if (currentAsset.status === 'synced') newStatus = 'local';
+                    }
                 }
-                
+
                 if (isFullyDeleted) {
                     // Delete from local SQLite
                     await AssetDBService.deleteAsset(currentAsset.id);
@@ -951,6 +966,9 @@ export default function AssetDetailScreen({ route, navigation }) {
                     GalleryStore.setAssets(newAssets, source);
                     setAssets(newAssets);
                     DeviceEventEmitter.emit('assetUpdated', updatedAsset);
+                }
+                if (remoteError) {
+                    Alert.alert("Error", "Deleted from this device, but not from the Lomorage backup: " + remoteError.message);
                 }
             } catch (e) {
                 Alert.alert("Error", "Deletion failed: " + e.message);

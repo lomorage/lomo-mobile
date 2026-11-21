@@ -14,6 +14,15 @@ import { logMetric } from '../utils/scaleMetrics';
 // because "granted" stayed false.
 export const MEDIA_PERMISSIONS = ['photo', 'video'];
 
+// The items of a DELETE /asset answer the server did not delete: [{ id, reason }]. An answer
+// without per-item results (not lomod's shape) counts as all deleted, as before.
+export function failedDeletes(data) {
+  const list = Array.isArray(data?.List) ? data.List : [];
+  return list
+    .filter(item => item && item.Result === false)
+    .map(item => ({ id: item.ID, reason: item.Reason || '' }));
+}
+
 class MediaService {
   /**
    * Generates a preview URL that matches a preview the lomorage backend has already
@@ -448,7 +457,12 @@ class MediaService {
         data: payload
       });
 
-      return response.status === 200;
+      // lomod answers 200 even when it couldn't delete: the item's Result says (e.g. a file it
+      // still has open). Saying it was deleted then would let the photo vanish from the app
+      // while it stays in the backup.
+      const [failure] = failedDeletes(response.data);
+      if (failure) throw new Error(failure.reason || 'The server could not delete this photo.');
+      return true;
     } catch (error) {
       console.error('[MediaService] Error deleting remote asset:', error.message);
       throw error;
@@ -544,7 +558,10 @@ class MediaService {
         data: payload
       });
 
-      return response.status === 200;
+      // Each item's own result (see deleteRemoteAsset): the ones the server kept.
+      const failed = failedDeletes(response.data).map(f => f.id);
+      if (failed.length > 0) console.warn(`[MediaService] The server kept ${failed.length} of ${items.length} assets.`);
+      return { failed };
     } catch (error) {
       console.error('[MediaService] Error deleting remote assets in bulk:', error.message);
       throw error;

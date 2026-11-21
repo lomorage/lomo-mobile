@@ -22,6 +22,7 @@ import axios from 'axios';
 import AIService from '../services/AIService';
 import AssetDBService from '../services/AssetDBService';
 import MediaService from '../services/MediaService';
+import { deleteRemoteKeepingFailures, keptMessage } from '../utils/remoteCleanup';
 import AuthService from '../services/AuthService';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Device from 'expo-device';
@@ -653,20 +654,19 @@ export default function DuplicatesScreen() {
                             }
 
                             // 2. Delete remote assets in bulk from server
-                            if (remoteItemsToDelete.length > 0) {
-                                try {
-                                    await MediaService.deleteRemoteAssets(remoteItemsToDelete);
-                                } catch (re) {
-                                    console.warn('[DuplicatesScreen] Remote deletion failed:', re.message);
-                                }
-                            }
+                            const kept = await deleteRemoteKeepingFailures(remoteItemsToDelete);
 
-                            // 3. Remove from local SQLite database in a single transaction
-                            await AssetDBService.deleteAssets(allIdsOrHashes);
+                            // 3. Remove from local SQLite database in a single transaction (not
+                            // the photos the server kept: they're still in the backup)
+                            await AssetDBService.deleteAssets(allIdsOrHashes.filter(id => !kept.has(id)));
 
                             // 4. Reload duplicates list to reflect changes
                             AIService.clearDuplicateCache();
-                            Alert.alert('Success', `Selected photos cleaned up successfully!`);
+                            if (kept.size > 0) {
+                                Alert.alert('Not All Deleted', keptMessage(kept.size));
+                            } else {
+                                Alert.alert('Success', `Selected photos cleaned up successfully!`);
+                            }
                             loadDuplicates();
                         } catch (err) {
                             console.error('[DuplicatesScreen] Deletion error:', err);
@@ -739,21 +739,16 @@ export default function DuplicatesScreen() {
                             }
 
                             // 2. Delete remote assets
-                            if (remoteItemsToDelete.length > 0) {
-                                try {
-                                    await MediaService.deleteRemoteAssets(remoteItemsToDelete);
-                                } catch (re) {
-                                    console.warn('[DuplicatesScreen] Remote deletion failed:', re.message);
-                                }
-                            }
+                            const kept = await deleteRemoteKeepingFailures(remoteItemsToDelete);
 
-                            // 3. Remove from SQLite
-                            await AssetDBService.deleteAssets(allIdsOrHashes);
+                            // 3. Remove from SQLite (not the photos the server kept)
+                            await AssetDBService.deleteAssets(allIdsOrHashes.filter(id => !kept.has(id)));
 
                             // 4. Remove group from cache and UI state
                             const assetIds = group.map(a => a.id);
                             AIService.removeDuplicateGroupFromCache(assetIds);
                             setGroups(prev => prev.filter(g => g !== group));
+                            if (kept.size > 0) Alert.alert('Not All Deleted', keptMessage(kept.size));
                             
                         } catch (err) {
                             console.error('[DuplicatesScreen] Group deletion error:', err);
