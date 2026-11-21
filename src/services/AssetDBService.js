@@ -1203,7 +1203,7 @@ class AssetDBService {
           const named = assets
             .filter(asset => asset.origName && existingIds.has(asset.hash) && unnamed.has(asset.hash))
             .map(asset => ({ hash: asset.hash, name: asset.origName }));
-          if (named.length > 0) await this.setRemoteOriginalNames(named);
+          if (named.length > 0 && (await this.setRemoteOriginalNames(named, { isCurrent })) === false) return false;
         }
       } catch (error) {
         console.error('[AssetDBService] Failed to sync remote assets:', error);
@@ -1269,12 +1269,20 @@ class AssetDBService {
     await this.db.runAsync('INSERT OR REPLACE INTO SyncState (key, value) VALUES (?, ?)', [key, String(value)]);
   }
 
-  async setRemoteOriginalNames(entries) {
+  // `isCurrent`: false once the sign-in these names came for is over. Checked inside each write
+  // transaction (writes run one at a time, so a new sign-in's cleanup is either fully before or
+  // fully after it). Returns false when it stopped for that reason.
+  async setRemoteOriginalNames(entries, { isCurrent = () => true } = {}) {
     if (!this.db || !this.hasOriginalName || !entries || entries.length === 0) return;
     const chunkSize = 100;
-    for (let i = 0; i < entries.length; i += chunkSize) {
+    let stopped = false;
+    for (let i = 0; i < entries.length && !stopped; i += chunkSize) {
       const chunk = entries.slice(i, i + chunkSize);
       await this.db.withExclusiveTransactionAsync(async () => {
+        if (!isCurrent()) {
+          stopped = true;
+          return;
+        }
         const statement = await this.db.prepareAsync(
           `UPDATE MediaAsset SET originalName = COALESCE(NULLIF(?, ''), originalName), originalNameSynced = 1
            WHERE id = ? AND isLocal = 0`
@@ -1286,6 +1294,7 @@ class AssetDBService {
         }
       });
     }
+    return stopped ? false : undefined;
   }
 
   // Get remote assets that need their GPS data fetched

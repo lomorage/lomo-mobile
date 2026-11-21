@@ -315,3 +315,26 @@ describe('connection probe across sign-ins', () => {
     AuthService.autoProbe.mockRestore();
   });
 });
+
+describe('mDNS probe across sign-ins', () => {
+  test('signing in again while the found address is being saved keeps the new server', async () => {
+    jest.doMock('../DiscoveryService', () => ({
+      __esModule: true,
+      default: { scan: jest.fn().mockResolvedValue([{ name: 'old-pc', fullUrl: 'http://192.168.1.9:8000' }]) },
+    }));
+    AuthService.isProbing = false;
+    AuthService.serverName = 'old-pc';
+    AuthService.serverUrl = 'http://new-server:8000';
+    const setLocal = jest.spyOn(AuthService, 'setLocalUrl').mockImplementation(async () => {
+      AuthService._session += 1; // signed in to another server meanwhile
+    });
+    const update = jest.spyOn(AuthService, 'updateServerUrl').mockResolvedValue();
+
+    await expect(AuthService.autoProbe()).resolves.toBe(false);
+
+    expect(update).not.toHaveBeenCalled();
+    setLocal.mockRestore();
+    update.mockRestore();
+    jest.dontMock('../DiscoveryService');
+  });
+});

@@ -71,7 +71,7 @@ describe('SyncService original names', () => {
         expect.objectContaining({ headers: { Authorization: 'token=token-a' } }));
       expect(AssetDBService.setRemoteOriginalNames).toHaveBeenCalledWith([
         { hash: 'h1', name: 'IMG_1.jpg' }, { hash: 'h2', name: 'earlier.jpg' },
-      ]);
+      ], expect.anything());
     });
 
     test('a long backlog goes in batches, and a name the server does not answer for is not resent', async () => {
@@ -132,7 +132,7 @@ describe('SyncService original names', () => {
       await SyncService.reportOriginalNames();
 
       expect(axios.post).toHaveBeenCalledTimes(2);
-      expect(AssetDBService.setRemoteOriginalNames).toHaveBeenCalledWith([{ hash: 'h1', name: 'IMG_1.jpg' }]);
+      expect(AssetDBService.setRemoteOriginalNames).toHaveBeenCalledWith([{ hash: 'h1', name: 'IMG_1.jpg' }], expect.anything());
     });
 
     test('a call during a pass waits for it, and what was saved meanwhile gets one more round', async () => {
@@ -172,6 +172,18 @@ describe('SyncService original names', () => {
 
       expect(AssetDBService.setRemoteOriginalNames).not.toHaveBeenCalled();
       expect(axios.get).not.toHaveBeenCalled();
+    });
+
+    test('what the server confirmed is written only while the same sign-in lasts', async () => {
+      backlog([{ hash: 'h1', name: 'IMG_A.jpg' }]);
+      axios.post.mockResolvedValue({ data: [{ Hash: 'h1', Name: 'IMG_A.jpg' }] });
+
+      await SyncService.reportOriginalNames();
+
+      const { isCurrent } = AssetDBService.setRemoteOriginalNames.mock.calls[0][1];
+      expect(isCurrent()).toBe(true);
+      mockToken = 'token-b';
+      expect(isCurrent()).toBe(false);
     });
 
     test('names read while the account changed are not sent to the old account', async () => {
@@ -320,8 +332,8 @@ describe('SyncService original names', () => {
         'http://localhost:8000/assets/names?since=0',
         'http://localhost:8000/assets/names?since=7',
       ]);
-      expect(AssetDBService.setRemoteOriginalNames).toHaveBeenCalledWith([{ hash: 'aa', name: 'IMG_A.jpg' }]);
-      expect(AssetDBService.setRemoteOriginalNames).toHaveBeenCalledWith([{ hash: 'bb', name: 'IMG_B.jpg' }]);
+      expect(AssetDBService.setRemoteOriginalNames).toHaveBeenCalledWith([{ hash: 'aa', name: 'IMG_A.jpg' }], expect.anything());
+      expect(AssetDBService.setRemoteOriginalNames).toHaveBeenCalledWith([{ hash: 'bb', name: 'IMG_B.jpg' }], expect.anything());
       expect(node.origName).toBe('IMG_A.jpg');
       expect(save).toHaveBeenCalledTimes(1);
       save.mockRestore();
@@ -364,7 +376,7 @@ describe('SyncService original names', () => {
       axios.get.mockResolvedValue({ data: { Rev: 3, Names: [{ Hash: 'aa', Name: 'A.jpg' }], More: false } });
       await SyncService.reportOriginalNames();
       expect(axios.get.mock.calls[1][0]).toBe('http://localhost:8000/assets/names?since=0');
-      expect(AssetDBService.setRemoteOriginalNames).toHaveBeenCalledWith([{ hash: 'aa', name: 'A.jpg' }]);
+      expect(AssetDBService.setRemoteOriginalNames).toHaveBeenCalledWith([{ hash: 'aa', name: 'A.jpg' }], expect.anything());
     });
   });
 });

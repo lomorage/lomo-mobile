@@ -387,6 +387,7 @@ class AuthService {
         const match = discovered.find(s => s.name === this.serverName);
         if (match) {
           await this.setLocalUrl(match.fullUrl);
+          if (stale()) return false; // signed in again while that was being saved
           if (match.fullUrl !== this.serverUrl) {
             console.log(`[AuthService] Auto-probe: matched by name, new address: ${match.fullUrl}`);
             await this.updateServerUrl(match.fullUrl);
@@ -414,6 +415,7 @@ class AuthService {
           // Any response means the server is reachable
           console.log(`[AuthService] Auto-probe: ${server.fullUrl} is reachable (status ${response.status}). Updating.`);
           await this.setLocalUrl(server.fullUrl);
+          if (stale()) return false;
           await this.updateServerUrl(server.fullUrl, server.name);
           return true;
         } catch (e) {

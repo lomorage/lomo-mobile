@@ -211,6 +211,33 @@ describeWithSqlite('original file names (real SQLite)', () => {
       expect(byId('h2')).toMatchObject({ filename: 'h2-server.jpg', originalName: null, originalNameSynced: 0 });
     });
 
+    test("a sign-in ending while the listing looks up unnamed rows gets none of its names", async () => {
+      remote('h1');
+      let current = true;
+      const realGetAll = AssetDBService.db.getAllAsync;
+      AssetDBService.db.getAllAsync = async (sql, ...rest) => {
+        const rows = await realGetAll(sql, ...rest);
+        if (/originalNameSynced, 0\) = 0/.test(sql)) current = false; // signed in again meanwhile
+        return rows;
+      };
+      const node = (hash, origName) => ({ hash, tag: `${hash}-server.jpg`, date: new Date(5000), origName });
+
+      const result = await AssetDBService.syncRemoteAssets([node('h1', 'IMG_OLD.jpg')], { isCurrent: () => current });
+
+      expect(result).toBe(false);
+      expect(byId('h1')).toMatchObject({ originalName: null, originalNameSynced: 0 });
+    });
+
+    test('names for a sign-in that ended are not written', async () => {
+      remote('h1');
+
+      const result = await AssetDBService.setRemoteOriginalNames([{ hash: 'h1', name: 'IMG_OLD.jpg' }],
+        { isCurrent: () => false });
+
+      expect(result).toBe(false);
+      expect(byId('h1')).toMatchObject({ originalName: null, originalNameSynced: 0 });
+    });
+
     test('a listing whose sign-in ended writes nothing more', async () => {
       remote('h1');
       const node = (hash, origName) => ({ hash, tag: `${hash}-server.jpg`, date: new Date(5000), origName });

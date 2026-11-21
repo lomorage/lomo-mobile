@@ -674,7 +674,14 @@ class SyncService {
     // Case 1: JSON to SQLite migration
     if (sqlCount === 0 && treeAssets.length > 0) {
       console.log('[SyncService] Migrating remote assets from JSON cache to SQLite...');
-      await AssetDBService.syncRemoteAssets(treeAssets);
+      // Same rules as a listing: names only for the account the cache is known to belong to,
+      // and nothing once this sign-in is over.
+      const session = AuthService.getSession();
+      const applied = await AssetDBService.syncRemoteAssets(treeAssets, {
+        withNames: await this._originalNamesOwned(),
+        isCurrent: () => AuthService.getSession() === session,
+      });
+      if (applied === false) return;
       console.log('[SyncService] JSON to SQLite migration completed.');
 
       const { DeviceEventEmitter } = require('react-native');
@@ -997,6 +1004,11 @@ class SyncService {
           return null;
         }
         newRoot.updateAssetsMap();
+        // The cached tree keeps names only under the same rule as the rows: while the account is
+        // unknown they would outlive it (the tree is reused and rows are rebuilt from it).
+        if (!namesOwned) {
+          for (const node of newRoot.assetsMap.values()) node.origName = null;
+        }
         this.remoteTree = newRoot;
         await this.saveRemoteTree();
         if (!isCurrent()) {
@@ -1230,7 +1242,7 @@ class SyncService {
       const stored = (Array.isArray(response.data) ? response.data : [])
         .filter(r => r && r.Hash)
         .map(r => ({ hash: r.Hash, name: r.Name || '' }));
-      await AssetDBService.setRemoteOriginalNames(stored);
+      if ((await AssetDBService.setRemoteOriginalNames(stored, { isCurrent: signedIn })) === false) break;
       applied += stored.length;
       console.log(`[SyncService] Reported ${batch.length} original names; server confirmed ${stored.length}.`);
     }
@@ -1270,7 +1282,7 @@ class SyncService {
           treeChanged = true;
         }
       }
-      await AssetDBService.setRemoteOriginalNames(names);
+      if ((await AssetDBService.setRemoteOriginalNames(names, { isCurrent: signedIn })) === false) return applied;
       applied += names.length;
       if (Number.isFinite(data?.Rev) && data.Rev > since) {
         since = data.Rev;

@@ -80,6 +80,24 @@ describe('SyncService Incremental Remote Sync', () => {
       expect(AssetDBService.syncRemoteAssets).not.toHaveBeenCalled();
     });
 
+    test('keeps no names in the cached tree while the account is not known', async () => {
+      axios.get.mockImplementation(async (url) => ({ data: url.endsWith('/assets/merkletree') ? monthLevel : month }));
+
+      const result = await SyncService.fetchRemoteOverview();
+
+      expect(result.getNodeByHash('ha').origName).toBeNull();
+    });
+
+    test('rows rebuilt from the cached tree follow the same rule', async () => {
+      SyncService.remoteTree.addAsset(2024, 2, 1, 'hb', 'b.jpg', new Date('2024-02-01T12:00:00Z'), 'IMG_B.jpg');
+      AssetDBService.getRemoteAssetsCount.mockResolvedValue(0);
+
+      await SyncService._migrateAndHealRemoteAssets();
+
+      expect(AssetDBService.syncRemoteAssets).toHaveBeenCalledWith(expect.any(Array),
+        expect.objectContaining({ withNames: false }));
+    });
+
     test('writes the listing, without names while the account is not known', async () => {
       axios.get.mockImplementation(async (url) => ({ data: url.endsWith('/assets/merkletree') ? monthLevel : month }));
 
