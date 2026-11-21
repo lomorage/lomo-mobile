@@ -94,6 +94,27 @@ describe('AlbumDetailScreen - rows updated elsewhere', () => {
     act(() => tree.unmount());
   });
 
+  test('an earlier refresh that finishes last does not put the old rows back', async () => {
+    let tree;
+    await act(async () => { tree = renderer.create(<AlbumDetailScreen />); });
+    await flush();
+
+    let finishEarlier;
+    AssetDBService.getAssetsByHashes
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        finishEarlier = () => resolve([{ hash: 'hash1', id: '1', mediaType: 'photo', originalName: null }]);
+      }))
+      .mockResolvedValueOnce([{ hash: 'hash1', id: '1', mediaType: 'photo', originalName: 'IMG_1.HEIC' }]);
+    await act(async () => { DeviceEventEmitter.emit('remoteAssetsUpdated'); });
+    await act(async () => { DeviceEventEmitter.emit('remoteAssetsUpdated'); });
+    await flush();
+    await act(async () => { finishEarlier(); });
+    await flush();
+
+    expect(GalleryStore.setAssets).toHaveBeenLastCalledWith([expect.objectContaining({ originalName: 'IMG_1.HEIC' })], 'album_1');
+    act(() => tree.unmount());
+  });
+
   test('after leaving the album, the event changes nothing', async () => {
     let tree;
     await act(async () => { tree = renderer.create(<AlbumDetailScreen />); });

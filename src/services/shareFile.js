@@ -64,7 +64,10 @@ export async function prepareRemoteShareFile(asset) {
   tempDirsInUse.add(tempDir);
   try {
     const uri = await downloadForShare(asset, dir, remoteUrl, session);
-    return uri ? await restampTempCopy(tempDir, uri) : uri;
+    if (!uri) return uri;
+    const handed = await restampTempCopy(tempDir, uri);
+    // Checked again after the rename: the account may have changed while it ran.
+    return AuthService.getSession() === session ? handed : null;
   } finally {
     tempDirsInUse.delete(tempDir);
   }

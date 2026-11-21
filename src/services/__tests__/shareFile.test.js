@@ -118,6 +118,26 @@ describe('prepareRemoteShareFile', () => {
       clock.mockRestore();
     });
 
+    test('nothing for the share sheet when the account changed during the rename', async () => {
+      useFakeFolders();
+      const realMove = FileSystem.moveAsync.getMockImplementation();
+      FileSystem.moveAsync.mockImplementation(async (args) => {
+        if (args.from.startsWith(root) && !args.from.slice(root.length).includes('/')) mockSession = 2;
+        return realMove(args);
+      });
+      const start = Date.now();
+      const clock = jest.spyOn(Date, 'now').mockReturnValue(start);
+      FileSystem.downloadAsync.mockImplementationOnce(async (url, path) => {
+        folders.add(path.slice(root.length).split('/')[0]);
+        clock.mockReturnValue(start + 5000); // so the folder gets a new stamp
+        return downloaded;
+      });
+
+      await expect(prepareRemoteShareFile(asset)).resolves.toBeNull();
+      expect(FileSystem.moveAsync).toHaveBeenCalledWith(expect.objectContaining({ to: expect.stringContaining(`${start + 5000}-`) }));
+      clock.mockRestore();
+    });
+
     test('the handover time survives an app restart', async () => {
       useFakeFolders();
       const start = Date.now();

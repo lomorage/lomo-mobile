@@ -99,6 +99,9 @@ export default function AlbumDetailScreen() {
     // The latest items, for event listeners registered once per album.
     const assetsRef = useRef(assets);
     assetsRef.current = assets;
+    // Counts the album's reads: only the latest one's result is shown, so an earlier read that
+    // finishes last can't put older rows (e.g. without a just-learned name) back.
+    const readSeqRef = useRef(0);
     const [loading, setLoading] = useState(true);
     const [selectMode, setSelectMode] = useState(false);
     const [selectedHashes, setSelectedHashes] = useState(new Set());
@@ -153,9 +156,11 @@ export default function AlbumDetailScreen() {
         const sub3 = DeviceEventEmitter.addListener('remoteAssetsUpdated', async () => {
             const hashes = assetsRef.current.map(a => a.hash);
             if (hashes.length === 0) return;
+            const seq = ++readSeqRef.current;
             try {
                 const items = albumItems(hashes, await AssetDBService.getAssetsByHashes(hashes));
-                // Unless the album was reloaded or changed meanwhile.
+                // Unless a later read started, or the album was reloaded or changed meanwhile.
+                if (seq !== readSeqRef.current) return;
                 if (assetsRef.current.map(a => a.hash).join() !== hashes.join()) return;
                 setAssets(items);
                 GalleryStore.setAssets(items, `album_${albumId}`);
@@ -171,6 +176,8 @@ export default function AlbumDetailScreen() {
     }, [albumId]);
 
     const loadAlbumAssets = async () => {
+        // A refresh still reading drops its result: this load reads newer rows.
+        ++readSeqRef.current;
         setLoading(true);
         try {
             // 1. Get asset hashes for this album from server
