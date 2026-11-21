@@ -23,6 +23,7 @@ const mockSyncState = new Map();
 jest.mock('../AssetDBService', () => ({
   init: jest.fn().mockResolvedValue(),
   clearRemoteOriginalNames: jest.fn().mockResolvedValue(),
+  hideOriginalNames: jest.fn(),
   getOriginalNamesToReport: jest.fn(),
   setRemoteOriginalNames: jest.fn().mockResolvedValue(),
   getSyncState: jest.fn(async (key) => (mockSyncState.has(key) ? mockSyncState.get(key) : null)),
@@ -227,7 +228,7 @@ describe('SyncService original names', () => {
 
   describe('signing in to another account', () => {
     beforeEach(() => {
-      jest.spyOn(SyncService, 'clearRemoteTreeCache').mockResolvedValue();
+      jest.spyOn(SyncService, 'clearRemoteTreeCache').mockResolvedValue(true);
     });
     afterEach(() => {
       SyncService.clearRemoteTreeCache.mockRestore();
@@ -288,6 +289,29 @@ describe('SyncService original names', () => {
 
       expect(SyncService.clearRemoteTreeCache).toHaveBeenCalledTimes(1);
       expect(mockSyncState.get('originalNamesAccount')).toBe(shortKey(accountOf('token-a')));
+    });
+
+    test('if dropping the names fails, the owner stays and the names are hidden meanwhile', async () => {
+      mockToken = 'token-b';
+      AssetDBService.clearRemoteOriginalNames.mockRejectedValueOnce(new Error('disk I/O error'));
+
+      await SyncService.claimOriginalNamesForSignIn();
+
+      expect(mockSyncState.get('originalNamesAccount')).toBe(shortKey(accountOf('token-a')));
+      expect(AssetDBService.hideOriginalNames).toHaveBeenLastCalledWith(true);
+    });
+
+    test('if the cached tree file stays, the owner stays too, and the next check tries again', async () => {
+      mockToken = 'token-b';
+      SyncService.clearRemoteTreeCache.mockResolvedValueOnce(false);
+
+      await SyncService.claimOriginalNamesForSignIn();
+      expect(mockSyncState.get('originalNamesAccount')).toBe(shortKey(accountOf('token-a')));
+      expect(AssetDBService.hideOriginalNames).toHaveBeenLastCalledWith(true);
+
+      await SyncService.claimOriginalNamesForSignIn();
+      expect(mockSyncState.get('originalNamesAccount')).toBe(shortKey(accountOf('token-b')));
+      expect(AssetDBService.hideOriginalNames).toHaveBeenLastCalledWith(false);
     });
 
     test('an unknown account with nothing owned yet changes nothing', async () => {

@@ -378,9 +378,15 @@ class SyncService {
     // Deprecated: No-op. Persisting is now done incrementally via AssetDBService.updateAssetHash
   }
 
+  // Returns whether the file is gone too. The tree in memory is emptied either way.
   async clearRemoteTreeCache() {
+    this.remoteTree = new AssetMerkleRoot();
+    // We just explicitly emptied it -- nothing to hydrate from disk anymore
+    // this session, so don't let the next fetchRemoteOverview try to load
+    // the file we just deleted.
+    this._remoteTreeLoadedFromDisk = true;
     const cacheDir = this.getCacheDir();
-    if (!cacheDir) return;
+    if (!cacheDir) return true;
     try {
       const path = `${cacheDir}remote_tree_v2.json`;
       const info = await FileSystem.getInfoAsync(path);
@@ -388,13 +394,10 @@ class SyncService {
         await FileSystem.deleteAsync(path);
         console.log('[SyncService] Remote tree cache cleared');
       }
-      this.remoteTree = new AssetMerkleRoot();
-      // We just explicitly emptied it -- nothing to hydrate from disk anymore
-      // this session, so don't let the next fetchRemoteOverview try to load
-      // the file we just deleted.
-      this._remoteTreeLoadedFromDisk = true;
+      return true;
     } catch (e) {
       console.error('[SyncService] Failed to clear remote tree cache', e);
+      return false;
     }
   }
 
@@ -1150,12 +1153,22 @@ class SyncService {
     // Otherwise the cache changes hands: from another account, to unknown, or to this account for
     // the first time. The cached tree goes too, even when it holds no names: its month hashes
     // would otherwise skip the listing that brings the names given at upload.
-    await AssetDBService.clearRemoteOriginalNames();
-    await this.clearRemoteTreeCache();
+    // Until that has worked, the names on the phone are hidden from every screen, and the owner
+    // isn't updated, so the next check (next listing, next start) tries again.
+    AssetDBService.hideOriginalNames(true);
+    let cleared = false;
+    try {
+      await AssetDBService.clearRemoteOriginalNames();
+      cleared = await this.clearRemoteTreeCache();
+    } catch (e) {
+      console.warn('[SyncService] Failed to drop the previous original names:', e?.message);
+    }
+    if (!cleared) return;
     if (key) await AssetDBService.setSyncState(`originalNamesRev:${key}`, '0');
     this._namesState = undefined;
     console.log('[SyncService] Original names belong to another account now; they will be read again.');
     await AssetDBService.setSyncState('originalNamesAccount', key);
+    AssetDBService.hideOriginalNames(false);
   }
 
   // Whether the original names in the cache are this account's: its id is known and recorded as

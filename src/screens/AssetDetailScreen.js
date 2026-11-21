@@ -26,9 +26,8 @@ import ZoomableMedia from '../components/ZoomableMedia';
 import { useServerEpoch } from '../hooks/useServerEpoch';
 import { withRetryBuster } from '../hooks/useImageRetry';
 import { isNotFoundImageError } from '../utils/imageErrors';
-import { cachedShareFileName, displayFileName, downloadFileName, fileUriIn, shareCacheDir } from '../utils/fileName';
-import { shortKey } from '../utils/shortKey';
-import * as FileSystem from 'expo-file-system/legacy';
+import { displayFileName } from '../utils/fileName';
+import { prepareRemoteShareFile } from '../services/shareFile';
 import * as ImageManipulator from 'expo-image-manipulator';
 
 
@@ -702,36 +701,8 @@ export default function AssetDetailScreen({ route, navigation }) {
             let uriToShare = currentAsset.uri;
 
             if (currentAsset.status === 'remote' && currentAsset.hash) {
-                const remoteUrl = `${AuthService.getServerUrl()}/asset/${currentAsset.hash}?token=${AuthService.getToken()}`;
-                // Shared under the photo's own name (IMG_1234.HEIC) when known: the receiving app
-                // shows and saves it under the file name. One folder per photo keeps the names apart.
-                const accountId = AuthService.getAccountId();
-                const dir = shareCacheDir(FileSystem.cacheDirectory, accountId ? shortKey(accountId) : null, currentAsset.hash);
-                const downloadPath = `${dir}.download`;
-                const cached = (await FileSystem.readDirectoryAsync(dir).catch(() => []))
-                    .find(name => name !== '.download');
-                if (cached) {
-                    // Saved before the app learned the photo's original name: same file, so
-                    // rename it rather than download it again.
-                    const wanted = cachedShareFileName(cached, currentAsset);
-                    uriToShare = fileUriIn(dir, cached);
-                    if (wanted !== cached) {
-                        const renamed = fileUriIn(dir, wanted);
-                        await FileSystem.moveAsync({ from: uriToShare, to: renamed })
-                            .then(() => { uriToShare = renamed; })
-                            .catch(() => {});
-                    }
-                } else {
-                    await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
-                    const result = await FileSystem.downloadAsync(remoteUrl, downloadPath);
-                    if (result.status >= 400) {
-                        await FileSystem.deleteAsync(downloadPath, { idempotent: true }).catch(() => {});
-                        throw new Error(`The server could not send this photo (HTTP ${result.status}).`);
-                    }
-                    const fileUri = fileUriIn(dir, downloadFileName(currentAsset, result.headers));
-                    await FileSystem.moveAsync({ from: downloadPath, to: fileUri });
-                    uriToShare = fileUri;
-                }
+                uriToShare = await prepareRemoteShareFile(currentAsset);
+                if (!uriToShare) return; // signed out or into another account meanwhile
             }
 
             await Sharing.shareAsync(uriToShare);

@@ -1217,7 +1217,13 @@ class AssetDBService {
   }
 
   _originalNameColumn() {
-    return this.hasOriginalName ? 'originalName' : 'NULL AS originalName';
+    return this.hasOriginalName && !this._originalNamesHidden ? 'originalName' : 'NULL AS originalName';
+  }
+
+  // While the names on the phone may be another account's (dropping them failed), reads leave
+  // them out. For this run of the app only: the drop is tried again on the next check.
+  hideOriginalNames(hidden) {
+    this._originalNamesHidden = !!hidden;
   }
 
   // Up to `limit` server photos whose original name the server hasn't confirmed but this phone

@@ -295,6 +295,18 @@ describeWithSqlite('original file names (real SQLite)', () => {
       await expect(AssetDBService.getSyncState('originalNamesRev:b')).resolves.toBe('1');
     });
 
+    test("while the names may be another account's, reads leave them out", async () => {
+      remote('h1', { originalName: 'IMG_A.jpg', originalNameSynced: 1 });
+
+      AssetDBService.hideOriginalNames(true);
+      const [hidden] = await AssetDBService.getRemoteAssets();
+      AssetDBService.hideOriginalNames(false);
+      const [shown] = await AssetDBService.getRemoteAssets();
+
+      expect(hidden.originalName).toBeNull();
+      expect(shown.originalName).toBe('IMG_A.jpg');
+    });
+
     test('On This Day gets the original name too', async () => {
       const lastYear = new Date();
       lastYear.setFullYear(lastYear.getFullYear() - 1);

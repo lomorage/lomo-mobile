@@ -66,10 +66,15 @@ function splitExt(name) {
 // name is known. Unchanged otherwise.
 // Where a shared copy of photo `hash` is kept under `cacheDir`. Per account (accountKey, see
 // AuthService.getAccountId): the same photo can have another name in another account. Without a
-// known account the copy can't be reused safely, so it gets a folder of its own each time.
+// known account the copy can't be reused safely, so it gets a folder of its own each time, under
+// shareTempRoot, which the share flow empties before making a new one.
 export function shareCacheDir(cacheDir, accountKey, hash) {
   if (accountKey) return `${cacheDir}share/${accountKey}/${hash}/`;
-  return `${cacheDir}share/unknown/${Date.now()}-${Math.random().toString(36).slice(2)}/${hash}/`;
+  return `${shareTempRoot(cacheDir)}${Date.now()}-${Math.random().toString(36).slice(2)}/${hash}/`;
+}
+
+export function shareTempRoot(cacheDir) {
+  return `${cacheDir}share/unknown/`;
 }
 
 export function cachedShareFileName(cachedName, asset) {
