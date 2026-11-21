@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useLayoutEffect, memo } from 'react';
+import React, { useEffect, useState, useLayoutEffect, useRef, memo } from 'react';
 import { View, Text, StyleSheet, Dimensions, ActivityIndicator, TouchableOpacity, Alert, Modal, TextInput, KeyboardAvoidingView, Platform, DeviceEventEmitter } from 'react-native';
 import { Image } from 'expo-image';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -67,9 +67,38 @@ const AlbumGridTile = memo(function AlbumGridTile({ item, index, handleAssetPres
     );
 });
 
+// The album's items: every hash the server lists for it, with what the SQLite rows know (dbAssets,
+// from AssetDBService.getAssetsByHashes). A photo not in the DB still shows, with defaults.
+export function albumItems(hashes, dbAssets) {
+    const byHash = new Map();
+    for (const row of dbAssets) byHash.set(row.hash, row);
+    return hashes.map((hash) => {
+        const localAsset = byHash.get(hash);
+        return {
+            id: localAsset ? localAsset.id : hash, // Use hash as ID to prevent FlatList key collisions
+            hash: hash,
+            uri: MediaService.getPreviewUrl(hash, localAsset ? localAsset.mediaType : 'image'),
+            status: 'remote',
+            filename: localAsset ? localAsset.filename : '',
+            originalName: localAsset ? localAsset.originalName : null,
+            // 0 = unknown: the detail screen then shows no date, not today's.
+            creationTime: localAsset ? localAsset.creationTime : 0,
+            mediaType: localAsset ? localAsset.mediaType : 'image', // Fallback to image if not in DB
+            isFavorite: localAsset ? localAsset.isFavorite : false,
+            localCachePath: localAsset ? localAsset.localCachePath : null,
+            // Also partial when the row has no taken date (e.g. a video the phone gave none
+            // for): the detail screen then asks the server for name and date.
+            isMetadataPartial: !localAsset || !(localAsset.creationTime > 0)
+        };
+    });
+}
+
 export default function AlbumDetailScreen() {
     const serverEpoch = useServerEpoch();
     const [assets, setAssets] = useState([]);
+    // The latest items, for event listeners registered once per album.
+    const assetsRef = useRef(assets);
+    assetsRef.current = assets;
     const [loading, setLoading] = useState(true);
     const [selectMode, setSelectMode] = useState(false);
     const [selectedHashes, setSelectedHashes] = useState(new Set());
@@ -119,9 +148,25 @@ export default function AlbumDetailScreen() {
                 });
             }
         });
+        // The rows changed (e.g. original names learned or hidden): same photos, their details
+        // read again from SQLite. No server call: the album's contents didn't change.
+        const sub3 = DeviceEventEmitter.addListener('remoteAssetsUpdated', async () => {
+            const hashes = assetsRef.current.map(a => a.hash);
+            if (hashes.length === 0) return;
+            try {
+                const items = albumItems(hashes, await AssetDBService.getAssetsByHashes(hashes));
+                // Unless the album was reloaded or changed meanwhile.
+                if (assetsRef.current.map(a => a.hash).join() !== hashes.join()) return;
+                setAssets(items);
+                GalleryStore.setAssets(items, `album_${albumId}`);
+            } catch (error) {
+                console.warn('[AlbumDetailScreen] Failed to refresh album rows:', error?.message);
+            }
+        });
         return () => {
             sub1.remove();
             sub2.remove();
+            sub3.remove();
         };
     }, [albumId]);
 
@@ -132,36 +177,10 @@ export default function AlbumDetailScreen() {
             const hashes = await RemoteAlbumService.getAlbumAssets(albumId, { priority: 1, groupId: 'AlbumDetail' });
             
             if (hashes.length > 0) {
-                // 2. Fetch full metadata from local SQLite cache (for the ones we have)
-                const dbAssets = await AssetDBService.getAssetsByHashes(hashes);
-                
-                // 3. Format them for display. We MUST display all hashes, even if not in DB.
-                // Convert dbAssets to Map for O(1) lookup
-                const dbAssetsMap = new Map();
-                for (let i = 0; i < dbAssets.length; i++) {
-                    dbAssetsMap.set(dbAssets[i].hash, dbAssets[i]);
-                }
-                
-                const formattedAssets = hashes.map((hash, index) => {
-                    const localAsset = dbAssetsMap.get(hash);
-                    return {
-                        id: localAsset ? localAsset.id : hash, // Use hash as ID to prevent FlatList key collisions
-                        hash: hash,
-                        uri: MediaService.getPreviewUrl(hash, localAsset ? localAsset.mediaType : 'image'),
-                        status: 'remote',
-                        filename: localAsset ? localAsset.filename : '',
-                        originalName: localAsset ? localAsset.originalName : null,
-                        // 0 = unknown: the detail screen then shows no date, not today's.
-                        creationTime: localAsset ? localAsset.creationTime : 0,
-                        mediaType: localAsset ? localAsset.mediaType : 'image', // Fallback to image if not in DB
-                        isFavorite: localAsset ? localAsset.isFavorite : false,
-                        localCachePath: localAsset ? localAsset.localCachePath : null,
-                        // Also partial when the row has no taken date (e.g. a video the phone gave none
-                        // for): the detail screen then asks the server for name and date.
-                        isMetadataPartial: !localAsset || !(localAsset.creationTime > 0)
-                    };
-                });
-                
+                // 2. Fetch full metadata from local SQLite cache (for the ones we have), and
+                // 3. format them for display. We MUST display all hashes, even if not in DB.
+                const formattedAssets = albumItems(hashes, await AssetDBService.getAssetsByHashes(hashes));
+
                 setAssets(formattedAssets);
                 // Also update GalleryStore so swiping works in full screen view
                 GalleryStore.setAssets(formattedAssets, `album_${albumId}`);

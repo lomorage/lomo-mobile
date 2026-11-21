@@ -7,12 +7,13 @@ import { cachedShareFileName, downloadFileName, fileUriIn, shareCacheDir, shareT
 import { shortKey } from '../utils/shortKey';
 
 // One-off copies (no known account) handed over longer ago than this are removed when a new one
-// is made: by then the receiving app has long read them.
+// is made: by then the receiving app has long read them. A copy's age is the time stamp its
+// folder is named with (<stamp>-<random>), set again when it is handed over, so a long download
+// counts from its end, also after the app restarts.
 const TEMP_COPY_MAX_AGE_MS = 60 * 60 * 1000;
 // Folders of downloads still running, from any screen: never removed from under them.
 const tempDirsInUse = new Set();
-// When each copy of this run was handed over: its age counts from then, not from when its
-// (possibly long) download started. Copies from earlier runs fall back to their folder's stamp.
+// Handover times of copies whose folder couldn't be renamed (this run only).
 const tempDirsDone = new Map();
 
 async function removeOldTempCopies() {
@@ -29,6 +30,25 @@ async function removeOldTempCopies() {
   }
 }
 
+// Renames the copy's folder to the handover time; returns the file's URI in it.
+async function restampTempCopy(tempDir, uri) {
+  const root = shareTempRoot(FileSystem.cacheDirectory);
+  const suffix = tempDir.slice(root.length, -1).split('-').slice(1).join('-');
+  const restamped = `${root}${Date.now()}-${suffix}/`;
+  if (restamped === tempDir) return uri;
+  tempDirsInUse.add(restamped);
+  try {
+    await FileSystem.moveAsync({ from: tempDir.slice(0, -1), to: restamped.slice(0, -1) });
+    return restamped + uri.slice(tempDir.length);
+  } catch (e) {
+    console.warn('[shareFile] Could not restamp a share copy:', e?.message);
+    tempDirsDone.set(tempDir, Date.now());
+    return uri;
+  } finally {
+    tempDirsInUse.delete(restamped);
+  }
+}
+
 // Returns the file's URI, or null when the user signed out or into another account while it
 // downloaded: the old account's file (and name) must not reach the share sheet then.
 export async function prepareRemoteShareFile(asset) {
@@ -40,14 +60,13 @@ export async function prepareRemoteShareFile(asset) {
   const dir = shareCacheDir(FileSystem.cacheDirectory, accountId ? shortKey(accountId) : null, asset.hash);
   // The copy's own folder under the temp root (dir is <root>/<stamp>/<hash>/).
   const tempDir = accountId ? null : dir.slice(0, dir.length - `${asset.hash}/`.length);
-  if (tempDir) tempDirsInUse.add(tempDir);
+  if (!tempDir) return downloadForShare(asset, dir, remoteUrl, session);
+  tempDirsInUse.add(tempDir);
   try {
-    return await downloadForShare(asset, dir, remoteUrl, session);
+    const uri = await downloadForShare(asset, dir, remoteUrl, session);
+    return uri ? await restampTempCopy(tempDir, uri) : uri;
   } finally {
-    if (tempDir) {
-      tempDirsInUse.delete(tempDir);
-      tempDirsDone.set(tempDir, Date.now());
-    }
+    tempDirsInUse.delete(tempDir);
   }
 }
 

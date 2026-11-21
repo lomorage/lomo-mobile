@@ -72,54 +72,116 @@ describe('prepareRemoteShareFile', () => {
       expect(removed()).not.toContain(`${root}${recent}`);
     });
 
-    test('a copy whose download took over an hour is kept for the hour after it was handed over', async () => {
-      const start = Date.now();
-      const clock = jest.spyOn(Date, 'now').mockReturnValue(start);
-      let firstDir;
-      FileSystem.downloadAsync.mockImplementationOnce(async (url, path) => {
-        firstDir = path.slice(root.length).split('/')[0];
-        clock.mockReturnValue(start + 2 * 60 * 60 * 1000); // a slow download
+    // The temp root's folders, kept by the mocked file system: downloads add one, renames move it.
+    let folders;
+    const HOUR = 60 * 60 * 1000;
+    const useFakeFolders = () => {
+      folders = new Set();
+      FileSystem.downloadAsync.mockImplementation(async (url, path) => {
+        folders.add(path.slice(root.length).split('/')[0]);
         return downloaded;
       });
+      FileSystem.moveAsync.mockImplementation(async ({ from, to }) => {
+        if (!from.startsWith(root) || from.slice(root.length).includes('/')) return;
+        folders.delete(from.slice(root.length));
+        folders.add(to.slice(root.length));
+      });
+      FileSystem.deleteAsync.mockImplementation(async (p) => { folders.delete(p.slice(root.length)); });
       FileSystem.readDirectoryAsync.mockImplementation(async (p) => {
-        if (p === root && firstDir) return [firstDir];
+        if (p === root) return [...folders];
         throw new Error('no such folder');
       });
+    };
+    const folderOf = (uri) => uri.slice(root.length).split('/')[0];
 
-      await prepareRemoteShareFile(asset);
-      clock.mockReturnValue(start + 2 * 60 * 60 * 1000 + 60 * 1000); // shared again a minute later
-      await prepareRemoteShareFile(asset);
-      expect(removed()).not.toContain(`${root}${firstDir}`);
+    test('a copy whose download took over an hour is kept for the hour after it was handed over', async () => {
+      useFakeFolders();
+      const start = Date.now();
+      const clock = jest.spyOn(Date, 'now').mockReturnValue(start);
+      FileSystem.downloadAsync.mockImplementationOnce(async (url, path) => {
+        folders.add(path.slice(root.length).split('/')[0]);
+        clock.mockReturnValue(start + 2 * HOUR); // a slow download
+        return downloaded;
+      });
 
-      clock.mockReturnValue(start + 4 * 60 * 60 * 1000); // and again two hours later
+      const first = await prepareRemoteShareFile(asset);
+      expect(folderOf(first).startsWith(`${start + 2 * HOUR}-`)).toBe(true); // stamped at handover
+      expect(folders.has(folderOf(first))).toBe(true);
+
+      clock.mockReturnValue(start + 2 * HOUR + 60 * 1000); // shared again a minute later
       await prepareRemoteShareFile(asset);
-      expect(removed()).toContain(`${root}${firstDir}`);
+      expect(folders.has(folderOf(first))).toBe(true);
+
+      clock.mockReturnValue(start + 4 * HOUR); // and again two hours later
+      await prepareRemoteShareFile(asset);
+      expect(folders.has(folderOf(first))).toBe(false);
+      clock.mockRestore();
+    });
+
+    test('the handover time survives an app restart', async () => {
+      useFakeFolders();
+      const start = Date.now();
+      const clock = jest.spyOn(Date, 'now').mockReturnValue(start);
+      FileSystem.downloadAsync.mockImplementationOnce(async (url, path) => {
+        folders.add(path.slice(root.length).split('/')[0]);
+        clock.mockReturnValue(start + 2 * HOUR);
+        return downloaded;
+      });
+      const first = await prepareRemoteShareFile(asset);
+
+      let afterRestart;
+      jest.isolateModules(() => { afterRestart = require('../shareFile').prepareRemoteShareFile; });
+      clock.mockReturnValue(start + 2 * HOUR + 60 * 1000);
+      await afterRestart(asset);
+
+      expect(folders.has(folderOf(first))).toBe(true);
       clock.mockRestore();
     });
 
     test("a share started from another screen doesn't remove a copy still downloading", async () => {
+      useFakeFolders();
       let finishFirst;
-      let firstDir;
       FileSystem.downloadAsync.mockImplementationOnce((url, path) => {
-        firstDir = path.slice(root.length).split('/')[0];
+        folders.add(path.slice(root.length).split('/')[0]);
         return new Promise((resolve) => { finishFirst = () => resolve(downloaded); });
-      });
-      // By the second share the first copy's folder is over an hour old (Date.now moved below),
-      // so only being in use protects it.
-      FileSystem.readDirectoryAsync.mockImplementation(async (p) => {
-        if (p === root && firstDir) return [firstDir];
-        throw new Error('no such folder');
       });
       const first = prepareRemoteShareFile(asset);
       await new Promise((r) => setImmediate(r));
+      const [running] = [...folders];
 
-      jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 2 * 60 * 60 * 1000);
+      // By the second share the first copy's folder is over an hour old, so only being in use
+      // protects it.
+      const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 2 * HOUR);
       await prepareRemoteShareFile(asset);
-      Date.now.mockRestore();
+      expect(folders.has(running)).toBe(true);
       finishFirst();
 
-      await expect(first).resolves.toContain(firstDir);
-      expect(removed()).not.toContain(`${root}${firstDir}`);
+      const uri = await first;
+      clock.mockRestore();
+      expect(folders.has(folderOf(uri))).toBe(true);
+      expect(uri.endsWith('/h1/IMG_1.jpg')).toBe(true);
+    });
+
+    test('if the folder cannot be renamed, the copy still counts from its handover', async () => {
+      useFakeFolders();
+      const start = Date.now();
+      const clock = jest.spyOn(Date, 'now').mockReturnValue(start);
+      FileSystem.downloadAsync.mockImplementationOnce(async (url, path) => {
+        folders.add(path.slice(root.length).split('/')[0]);
+        clock.mockReturnValue(start + 2 * HOUR);
+        return downloaded;
+      });
+      const realMove = FileSystem.moveAsync.getMockImplementation();
+      FileSystem.moveAsync.mockImplementation(async (args) => {
+        if (args.from.startsWith(root) && !args.from.slice(root.length).includes('/')) throw new Error('busy');
+        return realMove(args);
+      });
+      const first = await prepareRemoteShareFile(asset);
+
+      clock.mockReturnValue(start + 2 * HOUR + 60 * 1000);
+      await prepareRemoteShareFile(asset);
+      expect(folders.has(folderOf(first))).toBe(true);
+      clock.mockRestore();
     });
   });
 
