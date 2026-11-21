@@ -16,6 +16,8 @@ const LOCAL_SERVER_KEY = 'lomo_local_server_url';
 const USERNAME_KEY = 'lomo_username';
 const SERVER_NAME_KEY = 'lomo_server_name';
 const WEBP_PREVIEW_KEY = 'lomo_webp_preview';
+const SERVER_UUID_KEY = 'lomo_server_uuid';
+const USER_ID_KEY = 'lomo_user_id';
 
 const SALT_POSTFIX = '@lomorage.lomoware';
 
@@ -93,6 +95,8 @@ const DISK_LOOKUP_TIMEOUT_MS = 8000;
 class AuthService {
   constructor() {
     this.token = null;
+    // Bumped on every sign-in and sign-out: answers to requests from an earlier one are dropped.
+    this._session = 0;
     this.serverUrl = null;
     this.remoteUrl = null;
     this.localUrl = null;
@@ -166,6 +170,9 @@ class AuthService {
       this.localUrl = await SecureStore.getItemAsync(LOCAL_SERVER_KEY);
       this.serverName = await SecureStore.getItemAsync(SERVER_NAME_KEY);
       this.webpPreview = (await SecureStore.getItemAsync(WEBP_PREVIEW_KEY)) === '1';
+      this.username = await SecureStore.getItemAsync(USERNAME_KEY);
+      this.serverUuid = await SecureStore.getItemAsync(SERVER_UUID_KEY);
+      this.userId = await SecureStore.getItemAsync(USER_ID_KEY);
       
       if (this.isAuthenticated()) {
           this.determineBestConnection();
@@ -220,6 +227,9 @@ class AuthService {
   }
 
   async determineBestConnection() {
+      // One sign-in for the whole probe: once the user signs in again (possibly to another
+      // server), nothing this probe finds may change where the app connects.
+      const session = this._session;
       // 1. Try Local URL first
       if (this.localUrl) {
           try {
@@ -227,28 +237,29 @@ class AuthService {
              const timeoutId = setTimeout(() => controller.abort(), 800); // Reduced to 800ms for faster fallback
              const response = await fetch(`${this.localUrl}/system`, { method: 'GET', signal: controller.signal });
              clearTimeout(timeoutId);
-             if (response.status === 200) {
+             if (response.status === 200 && session === this._session) {
                  await this.updateServerUrl(this.localUrl);
-                 await this.applySystemInfo(await response.json().catch(() => null));
+                 await this.applySystemInfo(await response.json().catch(() => null), session);
                  return true;
              }
           } catch(e) {}
       }
-      
+      if (session !== this._session) return false;
+
       // 2. If Local URL failed, fire off a background mDNS probe in case the IP changed
       // We don't await this so we don't block the Remote URL fallback below
       this.autoProbe().catch(console.error);
-      
+
       // 3. Fallback to Remote URL immediately
       if (this.remoteUrl) {
           try {
              const controller = new AbortController();
              const timeoutId = setTimeout(() => controller.abort(), 3000);
-             const response = await fetch(`${this.remoteUrl}/system`, { method: 'GET', signal: controller.signal });
+             const response= await fetch(`${this.remoteUrl}/system`, { method: 'GET', signal: controller.signal });
              clearTimeout(timeoutId);
-             if (response.status === 200) {
+             if (response.status === 200 && session === this._session) {
                  await this.updateServerUrl(this.remoteUrl);
-                 await this.applySystemInfo(await response.json().catch(() => null));
+                 await this.applySystemInfo(await response.json().catch(() => null), session);
                  return true;
              }
           } catch(e) {}
@@ -266,8 +277,20 @@ class AuthService {
    * codec only (WebP unless lomod runs with --use-jpg); requesting the other one makes it
    * transcode the original on demand, which is slow and memory-hungry on a Raspberry Pi.
    */
-  async applySystemInfo(info) {
+  // `session`: this._session when the /system request was made. An answer to a request from an
+  // earlier sign-in (possibly another server) is ignored, or it would tie this account to that
+  // server's id.
+  async applySystemInfo(info, session = this._session) {
     if (!info || typeof info !== 'object') return;
+    if (session !== this._session) return;
+    if (typeof info.UUID === 'string' && info.UUID && info.UUID !== this.serverUuid) {
+      this.serverUuid = info.UUID;
+      try {
+        await SecureStore.setItemAsync(SERVER_UUID_KEY, info.UUID);
+      } catch (e) {
+        console.warn('[AuthService] Failed to persist server id', e);
+      }
+    }
     const webp = info.WebpPreview === true;
     if (webp === this.webpPreview) return;
     this.webpPreview = webp;
@@ -278,12 +301,30 @@ class AuthService {
     }
   }
 
+  // Which account on which server this is: the server's own id (/system UUID, the same at its
+  // home and remote address) and the user's id from the login answer (Userid). Stays the same
+  // across sign-ins, unlike the token. A sign-in from before the app kept Userid falls back to
+  // the exact user name (unique on a server; "Alice" and "alice" are two accounts). Null until
+  // known. For data kept per account on the phone.
+  // Changes on every sign-in and sign-out; work started in one compares it before applying results.
+  getSession() {
+    return this._session;
+  }
+
+  getAccountId() {
+    if (!this.token || !this.serverUuid) return null;
+    if (this.userId) return `${this.serverUuid}|id:${this.userId}`;
+    if (this.username) return `${this.serverUuid}|name:${this.username}`;
+    return null;
+  }
+
   async refreshSystemInfo() {
     if (!this.serverUrl) return;
     try {
+      const session = this._session;
       const response = await axios.get(`${this.serverUrl}/system`, { timeout: 5000, skipQueue: true });
       if (response.status === 200) {
-        await this.applySystemInfo(response.data);
+        await this.applySystemInfo(response.data, session);
       }
     } catch (e) {
       console.log('[AuthService] Failed to fetch /system:', e.message);
@@ -325,10 +366,14 @@ class AuthService {
     if (this.isProbing) return false;
     this.isProbing = true;
     console.log('[AuthService] Starting auto-probe...');
+    // As in determineBestConnection: a probe from an earlier sign-in changes nothing.
+    const session = this._session;
+    const stale = () => session !== this._session;
 
     try {
       const DiscoveryService = require('./DiscoveryService').default;
       const discovered = await DiscoveryService.scan(5000);
+      if (stale()) return false;
 
       if (discovered.length === 0) {
         console.log('[AuthService] Auto-probe: no Lomorage servers found on network.');
@@ -342,6 +387,7 @@ class AuthService {
         const match = discovered.find(s => s.name === this.serverName);
         if (match) {
           await this.setLocalUrl(match.fullUrl);
+          if (stale()) return false; // signed in again while that was being saved
           if (match.fullUrl !== this.serverUrl) {
             console.log(`[AuthService] Auto-probe: matched by name, new address: ${match.fullUrl}`);
             await this.updateServerUrl(match.fullUrl);
@@ -365,9 +411,11 @@ class AuthService {
             signal: controller.signal,
           });
           clearTimeout(timeoutId);
+          if (stale()) return false;
           // Any response means the server is reachable
           console.log(`[AuthService] Auto-probe: ${server.fullUrl} is reachable (status ${response.status}). Updating.`);
           await this.setLocalUrl(server.fullUrl);
+          if (stale()) return false;
           await this.updateServerUrl(server.fullUrl, server.name);
           return true;
         } catch (e) {
@@ -416,6 +464,13 @@ class AuthService {
 
       this.serverUrl = url;
       this.serverName = serverName;
+      // A new sign-in, possibly to another server or account: its ids are read again below, and
+      // answers to requests made before this point are not applied to it.
+      this._session += 1;
+      this.serverUuid = null;
+      this.userId = null;
+      SecureStore.deleteItemAsync(SERVER_UUID_KEY).catch(() => {});
+      SecureStore.deleteItemAsync(USER_ID_KEY).catch(() => {});
 
       // Hash the password with Argon2id, matching the lomo-ios implementation
       console.log('Hashing password with Argon2id...');
@@ -441,6 +496,10 @@ class AuthService {
       // iOS parses: Token and Userid from response (capital T)
       if (response.status === 200 && response.data && response.data.Token) {
         this.token = response.data.Token;
+        if (response.data.Userid !== undefined && response.data.Userid !== null && response.data.Userid !== '') {
+          this.userId = String(response.data.Userid);
+          await SecureStore.setItemAsync(USER_ID_KEY, this.userId);
+        }
         
         await SecureStore.setItemAsync(TOKEN_KEY, this.token);
         
@@ -457,6 +516,7 @@ class AuthService {
         
         await SecureStore.setItemAsync(SERVER_KEY, this.serverUrl);
         await SecureStore.setItemAsync(USERNAME_KEY, trimmedUsername);
+        this.username = trimmedUsername;
         if (this.serverName) {
             await SecureStore.setItemAsync(SERVER_NAME_KEY, this.serverName);
         }
@@ -514,18 +574,19 @@ class AuthService {
     } catch (error) {
       if (axios.isCancel(error)) throw error;
       console.error('Failed to get disks:', error.message);
-      throw new Error('Could not connect to server to fetch storage info');
+      throw new Error('Could not connect to server to fetch storage info', { cause: error });
     }
   }
 
   async getServerVersion() {
     if (!this.serverUrl) return 'Unknown';
     try {
+      const session = this._session;
       const response = await axios.get(`${this.serverUrl}/system`, {
          headers: this.token ? { 'Authorization': `token=${this.token}` } : {}
       });
       if (response.status === 200) {
-         await this.applySystemInfo(response.data);
+         await this.applySystemInfo(response.data, session);
       }
       if (response.status === 200 && response.data && response.data.LomodVersion) {
          return response.data.LomodVersion;
@@ -601,6 +662,7 @@ class AuthService {
 
   async logout() {
     this.token = null;
+    this._session += 1;
     try {
       await SecureStore.deleteItemAsync(TOKEN_KEY);
       // We keep serverUrl and username for convenience on next login
@@ -761,11 +823,28 @@ axios.interceptors.response.use(
     }
 );
 
+// The token a request was sent with (Authorization "token=..." or ?token=), null if none.
+export function tokenOfRequest(config) {
+    if (!config) return null;
+    const headers = config.headers || {};
+    const auth = typeof headers.get === 'function' ? headers.get('Authorization') : (headers.Authorization || headers.authorization);
+    const fromHeader = /(?:^|[\s,;])token=([^\s,;&]+)/.exec(String(auth || ''));
+    if (fromHeader) return fromHeader[1];
+    const fromUrl = /[?&]token=([^&#]+)/.exec(String(config.url || ''));
+    if (fromUrl) return decodeURIComponent(fromUrl[1]);
+    const params = config.params || {};
+    return params.token ? String(params.token) : null;
+}
+
 // Axios Interceptor for Session Expiry (401)
 axios.interceptors.response.use(
     response => response,
     async (error) => {
-        if (error.response && error.response.status === 401 && !authService._isShowingSessionAlert) {
+        // A request made with an earlier sign-in's token (still in flight when the user signed out
+        // or switched account) says nothing about the current session.
+        const sentToken = tokenOfRequest(error.config);
+        const stale = sentToken !== null && sentToken !== authService.token;
+        if (error.response && error.response.status === 401 && !stale && !authService._isShowingSessionAlert) {
             authService._isShowingSessionAlert = true;
             
             // Instantly log the user out so the screen transitions in the background

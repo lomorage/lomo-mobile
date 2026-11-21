@@ -47,6 +47,11 @@ jest.mock('../../services/RemoteAlbumService', () => ({
     updateAlbumCover: jest.fn(),
   },
 }));
+jest.mock('../../services/AuthService', () => ({
+  __esModule: true,
+  default: { getSession: () => mockSession },
+}));
+let mockSession = 1;
 jest.mock('../../services/NetworkQueue', () => ({ __esModule: true, default: { cancelGroup: jest.fn() } }));
 jest.mock('../../services/AssetDBService', () => ({
   __esModule: true,

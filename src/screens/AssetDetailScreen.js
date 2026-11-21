@@ -26,7 +26,8 @@ import ZoomableMedia from '../components/ZoomableMedia';
 import { useServerEpoch } from '../hooks/useServerEpoch';
 import { withRetryBuster } from '../hooks/useImageRetry';
 import { isNotFoundImageError } from '../utils/imageErrors';
-import * as FileSystem from 'expo-file-system/legacy';
+import { displayFileName } from '../utils/fileName';
+import { prepareRemoteShareFile } from '../services/shareFile';
 import * as ImageManipulator from 'expo-image-manipulator';
 
 
@@ -700,15 +701,8 @@ export default function AssetDetailScreen({ route, navigation }) {
             let uriToShare = currentAsset.uri;
 
             if (currentAsset.status === 'remote' && currentAsset.hash) {
-                const remoteUrl = `${AuthService.getServerUrl()}/asset/${currentAsset.hash}?token=${AuthService.getToken()}`;
-                const extension = currentAsset.name ? currentAsset.name.split('.').pop() : (currentAsset.mediaType === 'video' ? 'mp4' : 'jpg');
-                const fileUri = FileSystem.cacheDirectory + `share_${currentAsset.hash}.${extension}`;
-                
-                const info = await FileSystem.getInfoAsync(fileUri);
-                if (!info.exists) {
-                    await FileSystem.downloadAsync(remoteUrl, fileUri);
-                }
-                uriToShare = fileUri;
+                uriToShare = await prepareRemoteShareFile(currentAsset);
+                if (!uriToShare) return; // signed out or into another account meanwhile
             }
 
             await Sharing.shareAsync(uriToShare);
@@ -1463,7 +1457,7 @@ export default function AssetDetailScreen({ route, navigation }) {
             </View>
 
             <View style={styles.footer}>
-                <Text style={styles.infoText}>{currentAsset.filename}</Text>
+                <Text style={styles.infoText}>{displayFileName(currentAsset)}</Text>
                 <Text style={styles.subInfoText}>
                     {formatTakenDate(currentAsset)}
                 </Text>

@@ -16,6 +16,11 @@ jest.mock('../../services/FirstBackupService', () => ({
   },
 }));
 
+jest.mock('../../services/SyncService', () => ({
+  __esModule: true,
+  default: { claimOriginalNamesForSignIn: jest.fn().mockResolvedValue() },
+}));
+
 jest.mock('../../utils/scaleMetrics', () => ({ markPaired: jest.fn() }));
 jest.mock('../../services/backupHistory', () => ({ clearLastBackupAt: jest.fn() }));
 
@@ -70,6 +75,49 @@ describe('initial auth check', () => {
     await renderAuthProvider();
     expect(latestAuth.isLoading).toBe(false);
     expect(latestAuth.isAuthenticated).toBe(false);
+  });
+});
+
+describe("another account's original names", () => {
+  const SyncService = require('../../services/SyncService').default;
+
+  test('are dropped after signing in, before the screens that show cached photos open', async () => {
+    let authenticatedAtClaim;
+    SyncService.claimOriginalNamesForSignIn.mockImplementation(async () => {
+      authenticatedAtClaim = latestAuth.isAuthenticated;
+    });
+    await renderAuthProvider();
+    await act(async () => {
+      await latestAuth.login('http://server', 'bob', 'pass');
+    });
+    expect(SyncService.claimOriginalNamesForSignIn).toHaveBeenCalledTimes(1);
+    expect(authenticatedAtClaim).toBe(false);
+    expect(latestAuth.isAuthenticated).toBe(true);
+  });
+
+  test('also when the app starts already signed in, before the home screen shows', async () => {
+    AuthService.init.mockResolvedValue(true);
+    let authenticatedAtClaim;
+    SyncService.claimOriginalNamesForSignIn.mockImplementation(async () => {
+      authenticatedAtClaim = latestAuth?.isAuthenticated;
+    });
+    await renderAuthProvider();
+    expect(SyncService.claimOriginalNamesForSignIn).toHaveBeenCalledTimes(1);
+    expect(authenticatedAtClaim).toBeFalsy();
+    expect(latestAuth.isAuthenticated).toBe(true);
+  });
+
+  test('not when the app starts signed out', async () => {
+    await renderAuthProvider();
+    expect(SyncService.claimOriginalNamesForSignIn).not.toHaveBeenCalled();
+  });
+
+  test('also after registering and signing in', async () => {
+    await renderAuthProvider();
+    await act(async () => {
+      await latestAuth.register('http://server', 'bob', 'pass', '/home');
+    });
+    expect(SyncService.claimOriginalNamesForSignIn).toHaveBeenCalledTimes(1);
   });
 });
 

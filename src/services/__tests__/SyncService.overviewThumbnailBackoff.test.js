@@ -20,6 +20,8 @@ jest.mock('expo-file-system', () => ({
 jest.mock('../AuthService', () => ({
   getServerUrl: () => 'http://localhost:8000',
   getToken: () => 'test-token',
+  getSession: () => 0,
+  getAccountId: () => null,
 }));
 
 jest.mock('expo-crypto', () => ({
