@@ -574,7 +574,7 @@ class AuthService {
     } catch (error) {
       if (axios.isCancel(error)) throw error;
       console.error('Failed to get disks:', error.message);
-      throw new Error('Could not connect to server to fetch storage info');
+      throw new Error('Could not connect to server to fetch storage info', { cause: error });
     }
   }
 

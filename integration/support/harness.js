@@ -30,10 +30,30 @@ function startTestServer(name) {
 // server's disks, create the account on the first one, then auto-login.
 async function registerUser(server, { username = 'alice', password = 'alice-pw-1' } = {}) {
   const AuthService = require('../../src/services/AuthService').default;
-  const disks = await AuthService.getAvailableDisks(server.address);
+  const disks = await listDisks(AuthService, server);
   if (disks.length === 0) throw new Error('lomod reported no usable disk to register on');
   await AuthService.register(server.address, username, password, disks[0].name, `${username}-nick`);
   return { username, password };
+}
+
+// The disk list right after lomod starts. Answering /system doesn't mean /mount answers within
+// the app's 8 s lookup timeout on a busy CI runner (seen once: every test of a file failed here),
+// so it gets a few tries; if they all fail, the error carries the cause and lomod's log.
+async function listDisks(AuthService, server, attempts = 3) {
+  let lastError;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await AuthService.getAvailableDisks(server.address);
+    } catch (e) {
+      lastError = e;
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+  let log = '(no log)';
+  try {
+    log = fs.readFileSync(server.logFile, 'utf8').split('\n').slice(-40).join('\n');
+  } catch (_e) { /* no log */ }
+  throw new Error(`lomod's disk list failed ${attempts} times: ${lastError?.cause?.message || lastError?.message}\n${log}`);
 }
 
 async function waitFor(check, { timeoutMs = 20000, intervalMs = 250, what = 'condition' } = {}) {
