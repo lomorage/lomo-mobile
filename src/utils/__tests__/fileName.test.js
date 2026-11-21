@@ -1,6 +1,22 @@
 import {
   cachedShareFileName, displayFileName, downloadFileName, fileUriIn, nameFromContentDisposition, safeFileName,
+  shareCacheDir,
 } from '../fileName';
+
+describe('shareCacheDir', () => {
+  test('one folder per account and photo, reused', () => {
+    expect(shareCacheDir('file:///c/', 'a1', 'h1')).toBe('file:///c/share/a1/h1/');
+    expect(shareCacheDir('file:///c/', 'a1', 'h1')).toBe(shareCacheDir('file:///c/', 'a1', 'h1'));
+    expect(shareCacheDir('file:///c/', 'b2', 'h1')).not.toBe(shareCacheDir('file:///c/', 'a1', 'h1'));
+  });
+
+  test('without a known account, never the same folder twice', () => {
+    const first = shareCacheDir('file:///c/', null, 'h1');
+    const second = shareCacheDir('file:///c/', null, 'h1');
+    expect(first).not.toBe(second);
+    expect(first).toMatch(/^file:\/\/\/c\/share\/unknown\/.+\/h1\/$/);
+  });
+});
 
 describe('displayFileName', () => {
   test('prefers the name from the phone over the server name', () => {

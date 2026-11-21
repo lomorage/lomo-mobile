@@ -95,6 +95,23 @@ describe("another account's original names", () => {
     expect(latestAuth.isAuthenticated).toBe(true);
   });
 
+  test('also when the app starts already signed in, before the home screen shows', async () => {
+    AuthService.init.mockResolvedValue(true);
+    let authenticatedAtClaim;
+    SyncService.claimOriginalNamesForSignIn.mockImplementation(async () => {
+      authenticatedAtClaim = latestAuth?.isAuthenticated;
+    });
+    await renderAuthProvider();
+    expect(SyncService.claimOriginalNamesForSignIn).toHaveBeenCalledTimes(1);
+    expect(authenticatedAtClaim).toBeFalsy();
+    expect(latestAuth.isAuthenticated).toBe(true);
+  });
+
+  test('not when the app starts signed out', async () => {
+    await renderAuthProvider();
+    expect(SyncService.claimOriginalNamesForSignIn).not.toHaveBeenCalled();
+  });
+
   test('also after registering and signing in', async () => {
     await renderAuthProvider();
     await act(async () => {

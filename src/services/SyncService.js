@@ -1143,15 +1143,18 @@ class SyncService {
     await AssetDBService.init();
     const previous = await AssetDBService.getSyncState('originalNamesAccount');
     if (previous === key && key) return;
-    // null: never recorded (first run with this feature), nothing to drop. '' (owner unknown, e.g.
-    // /system didn't answer at sign-in) counts as another account.
-    if (previous !== null && previous !== undefined) {
-      await AssetDBService.clearRemoteOriginalNames();
-      await this.clearRemoteTreeCache();
-      if (key) await AssetDBService.setSyncState(`originalNamesRev:${key}`, '0');
-      this._namesState = undefined;
-      console.log('[SyncService] Signed in to another account: original names will be read again.');
-    }
+    // Account unknown: no names are written meanwhile (see _originalNamesOwned), so a cache with
+    // no owner yet (null) or an unknown one ('') holds none to drop.
+    const unowned = previous === null || previous === undefined || previous === '';
+    if (!key && unowned) return;
+    // Otherwise the cache changes hands: from another account, to unknown, or to this account for
+    // the first time. The cached tree goes too, even when it holds no names: its month hashes
+    // would otherwise skip the listing that brings the names given at upload.
+    await AssetDBService.clearRemoteOriginalNames();
+    await this.clearRemoteTreeCache();
+    if (key) await AssetDBService.setSyncState(`originalNamesRev:${key}`, '0');
+    this._namesState = undefined;
+    console.log('[SyncService] Original names belong to another account now; they will be read again.');
     await AssetDBService.setSyncState('originalNamesAccount', key);
   }
 
@@ -1167,8 +1170,9 @@ class SyncService {
     }
   }
 
-  // After signing in: make sure the cached server rows don't carry another account's original
-  // names before the home screen shows them (the listing that would also check runs later).
+  // After signing in, and when the app starts already signed in (the token is saved before this
+  // check, so the app may have been closed in between): make sure the cached server rows don't
+  // carry another account's original names before the home screen shows them.
   async claimOriginalNamesForSignIn() {
     try {
       await this._forgetOriginalNamesOfOtherAccount({ atSignIn: true });

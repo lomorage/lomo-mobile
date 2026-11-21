@@ -281,14 +281,26 @@ describe('SyncService original names', () => {
       expect(SyncService.clearRemoteTreeCache).not.toHaveBeenCalled();
     });
 
-    test('the first time (after updating the app) only records the account', async () => {
-      mockSyncState.clear();
+    test("the first time an account owns the cache, the tree is read again so the upload's names come", async () => {
+      mockSyncState.clear(); // e.g. after updating the app, or names dropped while the account was unknown
 
       await SyncService._forgetOriginalNamesOfOtherAccount();
 
+      expect(SyncService.clearRemoteTreeCache).toHaveBeenCalledTimes(1);
+      expect(mockSyncState.get('originalNamesAccount')).toBe(shortKey(accountOf('token-a')));
+    });
+
+    test('an unknown account with nothing owned yet changes nothing', async () => {
+      mockToken = null;
+      for (const previous of [undefined, '']) {
+        mockSyncState.clear();
+        if (previous !== undefined) mockSyncState.set('originalNamesAccount', previous);
+
+        await SyncService.claimOriginalNamesForSignIn();
+      }
+
       expect(AssetDBService.clearRemoteOriginalNames).not.toHaveBeenCalled();
       expect(SyncService.clearRemoteTreeCache).not.toHaveBeenCalled();
-      expect(mockSyncState.get('originalNamesAccount')).toBe(shortKey(accountOf('token-a')));
     });
   });
 

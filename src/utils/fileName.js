@@ -64,6 +64,14 @@ function splitExt(name) {
 // The name a copy of `asset` saved earlier as `cachedName` should have now: the original name's
 // stem with the copy's own extension (what lomod would name that download), once the original
 // name is known. Unchanged otherwise.
+// Where a shared copy of photo `hash` is kept under `cacheDir`. Per account (accountKey, see
+// AuthService.getAccountId): the same photo can have another name in another account. Without a
+// known account the copy can't be reused safely, so it gets a folder of its own each time.
+export function shareCacheDir(cacheDir, accountKey, hash) {
+  if (accountKey) return `${cacheDir}share/${accountKey}/${hash}/`;
+  return `${cacheDir}share/unknown/${Date.now()}-${Math.random().toString(36).slice(2)}/${hash}/`;
+}
+
 export function cachedShareFileName(cachedName, asset) {
   const [stem] = splitExt(safeFileName(asset?.originalName || ''));
   if (!stem) return cachedName;

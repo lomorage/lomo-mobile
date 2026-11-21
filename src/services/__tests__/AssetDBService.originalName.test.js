@@ -228,6 +228,41 @@ describeWithSqlite('original file names (real SQLite)', () => {
       expect(byId('h1')).toMatchObject({ originalName: null, originalNameSynced: 0 });
     });
 
+    test('a sign-in ending while the write statement is being prepared gets none of its names', async () => {
+      remote('h1');
+      let current = true;
+      const realPrepare = AssetDBService.db.prepareAsync;
+      AssetDBService.db.prepareAsync = async (sql) => {
+        const statement = await realPrepare(sql);
+        current = false; // switched account and cleaned up while this was paused
+        return statement;
+      };
+
+      const result = await AssetDBService.setRemoteOriginalNames([{ hash: 'h1', name: 'IMG_OLD.jpg' }],
+        { isCurrent: () => current });
+      const listed = await AssetDBService.syncRemoteAssets(
+        [{ hash: 'h2', tag: 'h2-server.jpg', date: new Date(5000), origName: 'IMG_OLD2.jpg' }],
+        { isCurrent: () => current });
+
+      expect(result).toBe(false);
+      expect(listed).toBe(false);
+      expect(byId('h1')).toMatchObject({ originalName: null, originalNameSynced: 0 });
+      expect(byId('h2')).toBeUndefined();
+    });
+
+    test('writes go through the connection the transaction hands over', async () => {
+      remote('h1');
+      const txnPrepare = jest.fn((sql) => AssetDBService.db.prepareAsync(sql));
+      const realTxn = AssetDBService.db.withExclusiveTransactionAsync;
+      AssetDBService.db.withExclusiveTransactionAsync = (fn) => fn({ prepareAsync: txnPrepare });
+
+      await AssetDBService.setRemoteOriginalNames([{ hash: 'h1', name: 'IMG_1.jpg' }]);
+
+      AssetDBService.db.withExclusiveTransactionAsync = realTxn;
+      expect(txnPrepare).toHaveBeenCalledTimes(1);
+      expect(byId('h1').originalName).toBe('IMG_1.jpg');
+    });
+
     test('names for a sign-in that ended are not written', async () => {
       remote('h1');
 

@@ -1079,13 +1079,15 @@ class AssetDBService {
           for (let i = 0; i < idsToDelete.length; i += chunkSize) {
             const chunk = idsToDelete.slice(i, i + chunkSize);
             if (stopped) break;
-            await this.db.withExclusiveTransactionAsync(async () => {
-              if (!isCurrent()) {
-                stopped = true;
-                return;
-              }
-              const statement = await this.db.prepareAsync('DELETE FROM MediaAsset WHERE id = ? AND isLocal = 0');
+            await this.db.withExclusiveTransactionAsync(async (txn) => {
+              const conn = txn || this.db;
+              const statement = await conn.prepareAsync('DELETE FROM MediaAsset WHERE id = ? AND isLocal = 0');
               try {
+                // Checked right before the synchronous writes: nothing can run in between.
+                if (!isCurrent()) {
+                  stopped = true;
+                  return;
+                }
                 for (const id of chunk) {
                   statement.executeSync(id);
                 }
@@ -1117,13 +1119,10 @@ class AssetDBService {
           for (let i = 0; i < newAssets.length; i += chunkSize) {
             const chunk = newAssets.slice(i, i + chunkSize);
             if (stopped) break;
-            await this.db.withExclusiveTransactionAsync(async () => {
-              if (!isCurrent()) {
-                stopped = true;
-                return;
-              }
+            await this.db.withExclusiveTransactionAsync(async (txn) => {
+              const conn = txn || this.db;
               const withName = this.hasOriginalName;
-              const statement = await this.db.prepareAsync(withName ? `
+              const statement = await conn.prepareAsync(withName ? `
                 INSERT OR IGNORE INTO MediaAsset
                 (id, hash, isLocal, hasGeo, latitude, longitude, createTime, mediaType, filename,
                  originalName, originalNameSynced)
@@ -1134,6 +1133,11 @@ class AssetDBService {
                 VALUES (?, ?, 0, 0, 0.0, 0.0, ?, ?, ?)
               `);
               try {
+                // Checked right before the synchronous writes: nothing can run in between.
+                if (!isCurrent()) {
+                  stopped = true;
+                  return;
+                }
                 for (const asset of chunk) {
                   // MerkleNode objects use `tag` for filename and `date` (a Date object) for creation time.
                   // Fall back to plain `filename`/`creationTime` fields for plain objects.
@@ -1269,25 +1273,27 @@ class AssetDBService {
     await this.db.runAsync('INSERT OR REPLACE INTO SyncState (key, value) VALUES (?, ?)', [key, String(value)]);
   }
 
-  // `isCurrent`: false once the sign-in these names came for is over. Checked inside each write
-  // transaction (writes run one at a time, so a new sign-in's cleanup is either fully before or
-  // fully after it). Returns false when it stopped for that reason.
+  // `isCurrent`: false once the sign-in these names came for is over. Checked right before each
+  // batch of synchronous writes, after every await, so a new sign-in's cleanup is either fully
+  // before them (and they are skipped) or after them (and clears them). Returns false when it
+  // stopped for that reason.
   async setRemoteOriginalNames(entries, { isCurrent = () => true } = {}) {
     if (!this.db || !this.hasOriginalName || !entries || entries.length === 0) return;
     const chunkSize = 100;
     let stopped = false;
     for (let i = 0; i < entries.length && !stopped; i += chunkSize) {
       const chunk = entries.slice(i, i + chunkSize);
-      await this.db.withExclusiveTransactionAsync(async () => {
-        if (!isCurrent()) {
-          stopped = true;
-          return;
-        }
-        const statement = await this.db.prepareAsync(
+      await this.db.withExclusiveTransactionAsync(async (txn) => {
+        const conn = txn || this.db;
+        const statement = await conn.prepareAsync(
           `UPDATE MediaAsset SET originalName = COALESCE(NULLIF(?, ''), originalName), originalNameSynced = 1
            WHERE id = ? AND isLocal = 0`
         );
         try {
+          if (!isCurrent()) {
+            stopped = true;
+            return;
+          }
           for (const { hash, name } of chunk) statement.executeSync(name || '', String(hash).toLowerCase());
         } finally {
           await statement.finalizeAsync();

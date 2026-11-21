@@ -16,6 +16,7 @@ export const AuthProvider = ({ children }) => {
     const checkAuth = async () => {
       try {
         const isAuth = await AuthService.init();
+        if (isAuth) await SyncService.claimOriginalNamesForSignIn();
         setIsAuthenticated(isAuth);
       } catch (error) {
         console.error('Auth check failed:', error);
