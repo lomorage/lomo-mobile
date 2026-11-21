@@ -11,6 +11,7 @@ import TaskSchedulerService from './TaskSchedulerService';
 import ThumbnailLoadTracker from './ThumbnailLoadTracker';
 import { isVideoExtension } from '../utils/mediaType';
 import { parseBackendDate } from '../utils/backendDate';
+import { shortKey } from '../utils/shortKey';
 
 
 
@@ -19,6 +20,8 @@ class MerkleNode {
     this.id = id;
     this.hash = hash;
     this.tag = null;
+    // Asset level only: the file's name on the phone that backed it up, when lomod knows it.
+    this.origName = null;
     this.date = null;
     this.children = []; // nodeListOrdered in Swift
     this.parentNode = null;
@@ -97,6 +100,7 @@ class MerkleNode {
       id: this.id,
       hash: this.hash,
       tag: this.tag,
+      ...(this.origName ? { origName: this.origName } : {}),
       date: this.date,
       children: this.children.map(c => c.toJSON())
     };
@@ -149,6 +153,7 @@ class MerkleNode {
   static fromJSON(data) {
     const node = new MerkleNode(data.id, data.hash);
     node.tag = data.tag;
+    node.origName = data.origName || null;
     node.date = parseBackendDate(data.date);
     if (data.children) {
       node.children = data.children.map(c => {
@@ -173,6 +178,7 @@ class MerkleNode {
 
     const node = new MerkleNode(data.id, data.hash);
     node.tag = data.tag;
+    node.origName = data.origName || null;
     node.date = parseBackendDate(data.date);
     if (data.children) {
       const children = [];
@@ -194,7 +200,7 @@ class AssetMerkleRoot extends MerkleNode {
   }
 
   // Hierarchical addition: Year -> Month -> Day -> Asset
-  addAsset(year, month, day, assetHash, assetId, date) {
+  addAsset(year, month, day, assetHash, assetId, date, origName = null) {
     const normalizedHash = assetHash.toLowerCase();
 
     // Fast O(1) duplicate check across the entire tree
@@ -208,6 +214,7 @@ class AssetMerkleRoot extends MerkleNode {
     assetNode = new MerkleNode(day, normalizedHash);
     assetNode.setTag(assetId);
     assetNode.setDate(date);
+    assetNode.origName = origName || null;
 
     // Keep children ordered by hash (Asset level)
     const index = dayNode.children.findIndex(c => c.hash > normalizedHash);
@@ -371,9 +378,15 @@ class SyncService {
     // Deprecated: No-op. Persisting is now done incrementally via AssetDBService.updateAssetHash
   }
 
+  // Returns whether the file is gone too. The tree in memory is emptied either way.
   async clearRemoteTreeCache() {
+    this.remoteTree = new AssetMerkleRoot();
+    // We just explicitly emptied it -- nothing to hydrate from disk anymore
+    // this session, so don't let the next fetchRemoteOverview try to load
+    // the file we just deleted.
+    this._remoteTreeLoadedFromDisk = true;
     const cacheDir = this.getCacheDir();
-    if (!cacheDir) return;
+    if (!cacheDir) return true;
     try {
       const path = `${cacheDir}remote_tree_v2.json`;
       const info = await FileSystem.getInfoAsync(path);
@@ -381,13 +394,10 @@ class SyncService {
         await FileSystem.deleteAsync(path);
         console.log('[SyncService] Remote tree cache cleared');
       }
-      this.remoteTree = new AssetMerkleRoot();
-      // We just explicitly emptied it -- nothing to hydrate from disk anymore
-      // this session, so don't let the next fetchRemoteOverview try to load
-      // the file we just deleted.
-      this._remoteTreeLoadedFromDisk = true;
+      return true;
     } catch (e) {
       console.error('[SyncService] Failed to clear remote tree cache', e);
+      return false;
     }
   }
 
@@ -667,7 +677,14 @@ class SyncService {
     // Case 1: JSON to SQLite migration
     if (sqlCount === 0 && treeAssets.length > 0) {
       console.log('[SyncService] Migrating remote assets from JSON cache to SQLite...');
-      await AssetDBService.syncRemoteAssets(treeAssets);
+      // Same rules as a listing: names only for the account the cache is known to belong to,
+      // and nothing once this sign-in is over.
+      const session = AuthService.getSession();
+      const applied = await AssetDBService.syncRemoteAssets(treeAssets, {
+        withNames: await this._originalNamesOwned(),
+        isCurrent: () => AuthService.getSession() === session,
+      });
+      if (applied === false) return;
       console.log('[SyncService] JSON to SQLite migration completed.');
 
       const { DeviceEventEmitter } = require('react-native');
@@ -845,6 +862,18 @@ class SyncService {
       const url = AuthService.getServerUrl();
       const token = AuthService.getToken();
       if (!url || !token) return null;
+      // The whole listing belongs to this sign-in: one finishing after signing out or switching
+      // account must not put the old account's photos and names back into the shared cache.
+      const session = AuthService.getSession();
+      const isCurrent = () => AuthService.getSession() === session;
+      // Before this account's listing is applied: drop original names learned for another one.
+      try {
+        await this._forgetOriginalNamesOfOtherAccount();
+      } catch (e) {
+        console.warn('[SyncService] Failed to check the original names account:', e?.message);
+      }
+      // Names are written only once the cache is known to be this account's.
+      const namesOwned = await this._originalNamesOwned();
 
       try {
         // Step 1: Fetch month-level tree (small payload)
@@ -949,6 +978,7 @@ class SyncService {
                   if (!newRoot.getNodeByHash(lowerHash)) {
                     const assetNode = new MerkleNode(d.Day, lowerHash);
                     assetNode.setTag(a.Name);
+                    assetNode.origName = a.OrigName || null;
                     if (a.Date) assetNode.setDate(parseBackendDate(a.Date));
                     dayNode.children.push(assetNode);
                     assetNode.parentNode = dayNode;
@@ -972,14 +1002,29 @@ class SyncService {
         }
 
         // Step 4: Rebuild assets map and save
+        if (!isCurrent()) {
+          console.log('[SyncService] Signed out or switched account during the listing; dropping it.');
+          return null;
+        }
         newRoot.updateAssetsMap();
+        // The cached tree keeps names only under the same rule as the rows: while the account is
+        // unknown they would outlive it (the tree is reused and rows are rebuilt from it).
+        if (!namesOwned) {
+          for (const node of newRoot.assetsMap.values()) node.origName = null;
+        }
         this.remoteTree = newRoot;
         await this.saveRemoteTree();
+        if (!isCurrent()) {
+          // The new sign-in may have cleared the cache while this was being written.
+          await this.clearRemoteTreeCache();
+          return null;
+        }
 
         // Insert into local SQLite cache for Photo Map and Gallery Grid
         await AssetDBService.init();
         const remoteAssets = Array.from(newRoot.assetsMap.values());
-        await AssetDBService.syncRemoteAssets(remoteAssets);
+        const applied = await AssetDBService.syncRemoteAssets(remoteAssets, { withNames: namesOwned, isCurrent });
+        if (applied === false) return null;
         // Sync the DB uploaded status
         await AssetDBService.syncUploadedStatus();
         await this.loadLocalHashCache();
@@ -990,6 +1035,7 @@ class SyncService {
 
         // Trigger background GPS sync
         this.syncRemoteGPS().catch(e => console.error('[SyncService] background remote GPS sync error:', e));
+        this.reportOriginalNames().catch(e => console.warn('[SyncService] reporting original names failed:', e?.message));
         this.syncLocalGPS().catch(e => console.error('[SyncService] background local GPS sync error:', e));
 
         return newRoot;
@@ -1015,6 +1061,7 @@ class SyncService {
   _cloneSubtree(node) {
     const clone = new MerkleNode(node.id, node.hash);
     clone.tag = node.tag;
+    clone.origName = node.origName;
     clone.date = node.date;
     for (const child of node.children) {
       const childClone = this._cloneSubtree(child);
@@ -1041,6 +1088,255 @@ class SyncService {
       console.warn(`Failed to fetch remote month ${year}/${month}`, e);
       return null;
     }
+  }
+
+  // Original file names (IMG_1234.HEIC) for photos on the server, both ways:
+  //  - tells lomod the names this phone knows for photos backed up before uploads carried them.
+  //    lomod keeps the first name it is told and answers with the name each photo ends up with,
+  //    which is recorded as confirmed;
+  //  - fetches names other devices reported since this one last asked (GET /assets/names?since=).
+  //    Those don't change the server's tree hashes, so the tree sync alone never brings them.
+  // A lomod without the endpoints (404/405) isn't asked again for that account until the app
+  // restarts.
+  //
+  // A call while a pass is running gets one more round after it (what it asked about may have
+  // been saved after the running pass looked) and resolves when that is done.
+  reportOriginalNames() {
+    if (this._namesPass) {
+      this._namesAgain = true;
+      return this._namesPass;
+    }
+    this._namesPass = (async () => {
+      try {
+        do {
+          this._namesAgain = false;
+          await this._syncOriginalNamesOnce();
+        } while (this._namesAgain);
+      } finally {
+        this._namesPass = null;
+      }
+    })();
+    return this._namesPass;
+  }
+
+  // State for one server account (AuthService.getAccountId: the server's id and the user, the
+  // same at the server's home and remote address and across sign-ins). `sent` holds the hashes
+  // reported this session, so one the server doesn't answer for isn't resent forever.
+  _originalNamesState(accountId) {
+    const key = shortKey(accountId);
+    if (!this._namesState || this._namesState.key !== key) {
+      this._namesState = { key, sent: new Set(), unsupported: false };
+    }
+    return this._namesState;
+  }
+
+  // Server photo rows (and the cached tree) are shared by whichever account is signed in, keyed
+  // by content hash, so one account's photo can be another's. Original names are per account:
+  // when the account differs from the one they were learned for, the confirmed ones are dropped
+  // and the cached tree is cleared, so this account's full listing (names that came with the
+  // upload) and its name feed, read from the start (names reported later), bring its own.
+  //
+  // `atSignIn`: called right after signing in, before any screen reads the cached rows. If the
+  // account can't be told there (the server's /system didn't answer), names are dropped anyway:
+  // better read again than show another account's.
+  async _forgetOriginalNamesOfOtherAccount({ atSignIn = false } = {}) {
+    const accountId = AuthService.getAccountId();
+    if (!accountId && !atSignIn) return;
+    const key = accountId ? shortKey(accountId) : '';
+    await AssetDBService.init();
+    let previous;
+    try {
+      previous = await AssetDBService.getSyncState('originalNamesAccount');
+    } catch (e) {
+      // Whose names these are can't be told: keep them out of sight, change nothing, try later.
+      console.warn('[SyncService] Failed to read whose original names these are:', e?.message);
+      this._setOriginalNamesHidden(true);
+      return;
+    }
+    if (previous === key && key) {
+      // This account's (e.g. back to it after a failed switch hid them): show them again.
+      this._setOriginalNamesHidden(false);
+      return;
+    }
+    // Account unknown: no names are written meanwhile (see _originalNamesOwned), so a cache with
+    // no owner yet (null) or an unknown one ('') holds none to drop.
+    const unowned = previous === null || previous === undefined || previous === '';
+    if (!key && unowned) return;
+    // Otherwise the cache changes hands: from another account, to unknown, or to this account for
+    // the first time. The cached tree goes too, even when it holds no names: its month hashes
+    // would otherwise skip the listing that brings the names given at upload.
+    // Until that has worked, the names on the phone are hidden from every screen, and the owner
+    // isn't updated, so the next check (next listing, next start) tries again.
+    this._setOriginalNamesHidden(true);
+    let cleared = false;
+    try {
+      await AssetDBService.clearRemoteOriginalNames();
+      cleared = await this.clearRemoteTreeCache();
+    } catch (e) {
+      console.warn('[SyncService] Failed to drop the previous original names:', e?.message);
+    }
+    if (!cleared) return;
+    if (key) await AssetDBService.setSyncState(`originalNamesRev:${key}`, '0');
+    this._namesState = undefined;
+    console.log('[SyncService] Original names belong to another account now; they will be read again.');
+    await AssetDBService.setSyncState('originalNamesAccount', key);
+    this._setOriginalNamesHidden(false);
+  }
+
+  // Hides or shows the names on the phone (see AssetDBService.hideOriginalNames). Open galleries
+  // keep their own copy of the rows and the listing may not run again (unchanged tree), so they
+  // are told to read them again whenever that changes.
+  _setOriginalNamesHidden(hidden) {
+    if (AssetDBService.hideOriginalNames(hidden)) {
+      const { DeviceEventEmitter } = require('react-native');
+      DeviceEventEmitter.emit('remoteAssetsUpdated');
+    }
+  }
+
+  // Whether the original names in the cache are this account's: its id is known and recorded as
+  // their owner. Until then nothing writes names (an unknown owner can't be cleared for later).
+  async _originalNamesOwned() {
+    const accountId = AuthService.getAccountId();
+    if (!accountId) return false;
+    try {
+      return (await AssetDBService.getSyncState('originalNamesAccount')) === shortKey(accountId);
+    } catch (_e) {
+      return false;
+    }
+  }
+
+  // After signing in, and when the app starts already signed in (the token is saved before this
+  // check, so the app may have been closed in between): make sure the cached server rows don't
+  // carry another account's original names before the home screen shows them.
+  async claimOriginalNamesForSignIn() {
+    try {
+      await this._forgetOriginalNamesOfOtherAccount({ atSignIn: true });
+    } catch (e) {
+      console.warn('[SyncService] Failed to check the original names account at sign-in:', e?.message);
+    }
+  }
+
+  async _syncOriginalNamesOnce() {
+    const url = AuthService.getServerUrl();
+    const token = AuthService.getToken();
+    const accountId = AuthService.getAccountId();
+    if (!url || !token || !accountId) return;
+    // Names learned so far may be another account's (e.g. a pass started before the listing).
+    if (!(await this._originalNamesOwned())) return;
+    const state = this._originalNamesState(accountId);
+    if (state.unsupported) return;
+    // Answers can arrive after the user signed out or switched account; one meant for the old
+    // account must not land on the new one's photos (same hash, other account).
+    const signedIn = () => AuthService.getToken() === token;
+    let applied = await this._sendOriginalNames(url, token, state, signedIn);
+    if (!state.unsupported && signedIn()) applied += await this._fetchOriginalNames(url, token, state, signedIn);
+    if (applied > 0 && signedIn()) {
+      // The gallery holds its own copy of the rows; let it pick up the names.
+      const { DeviceEventEmitter } = require('react-native');
+      DeviceEventEmitter.emit('remoteAssetsUpdated');
+    }
+  }
+
+  _namesRequestFailed(e, state, what) {
+    const status = e?.response?.status;
+    if (status === 404 || status === 405) {
+      state.unsupported = true;
+      console.log('[SyncService] This server does not keep original file names yet.');
+    } else {
+      console.warn(`[SyncService] Could not ${what} original names:`, e?.message);
+    }
+  }
+
+  // Returns how many names were recorded.
+  async _sendOriginalNames(url, token, state, signedIn) {
+    let applied = 0;
+    let after = '';
+    for (let round = 0; round < 1000; round++) {
+      const page = await AssetDBService.getOriginalNamesToReport(200, after);
+      if (page.length === 0) break;
+      after = page[page.length - 1].hash;
+      // Read from this phone's rows while the account may have changed: never send them to the
+      // old account, where the server would keep them as those photos' first names.
+      if (!signedIn()) break;
+      const batch = page.filter(e => !state.sent.has(e.hash));
+      if (batch.length === 0) continue;
+      batch.forEach(e => state.sent.add(e.hash));
+      let response;
+      try {
+        response = await axios.post(`${url}/assets/names`,
+          batch.map(e => ({ Hash: e.hash, Name: e.name })), {
+            headers: { Authorization: `token=${token}` },
+            timeout: 30000,
+            skipAutoProbe: true,
+            priority: 4,
+            groupId: 'SyncService'
+          });
+      } catch (e) {
+        // A 404 only means this server can't take them; another one may, so nothing is kept.
+        batch.forEach(entry => state.sent.delete(entry.hash));
+        this._namesRequestFailed(e, state, 'report');
+        break;
+      }
+      if (!signedIn()) break;
+      const stored = (Array.isArray(response.data) ? response.data : [])
+        .filter(r => r && r.Hash)
+        .map(r => ({ hash: r.Hash, name: r.Name || '' }));
+      if ((await AssetDBService.setRemoteOriginalNames(stored, { isCurrent: signedIn })) === false) break;
+      applied += stored.length;
+      console.log(`[SyncService] Reported ${batch.length} original names; server confirmed ${stored.length}.`);
+    }
+    return applied;
+  }
+
+  // Returns how many names were recorded.
+  async _fetchOriginalNames(url, token, state, signedIn) {
+    const cursorKey = `originalNamesRev:${state.key}`;
+    let since;
+    try {
+      since = Number(await AssetDBService.getSyncState(cursorKey)) || 0;
+    } catch (e) {
+      console.warn('[SyncService] Failed to read where the name feed got to:', e?.message);
+      return 0;
+    }
+    let applied = 0;
+    let treeChanged = false;
+    for (let page = 0; page < 500; page++) {
+      if (!signedIn()) return applied;
+      let data;
+      try {
+        ({ data } = await axios.get(`${url}/assets/names?since=${since}`, {
+          headers: { Authorization: `token=${token}` },
+          timeout: 30000,
+          skipAutoProbe: true,
+          priority: 4,
+          groupId: 'SyncService'
+        }));
+      } catch (e) {
+        this._namesRequestFailed(e, state, 'fetch');
+        break;
+      }
+      if (!signedIn()) return applied;
+      const names = (Array.isArray(data?.Names) ? data.Names : [])
+        .filter(n => n && n.Hash)
+        .map(n => ({ hash: String(n.Hash).toLowerCase(), name: n.Name || '' }));
+      // Also into the cached tree, which rows are rebuilt from.
+      for (const { hash, name } of names) {
+        const node = this.remoteTree?.getNodeByHash(hash);
+        if (node && name && node.origName !== name) {
+          node.origName = name;
+          treeChanged = true;
+        }
+      }
+      if ((await AssetDBService.setRemoteOriginalNames(names, { isCurrent: signedIn })) === false) return applied;
+      applied += names.length;
+      if (Number.isFinite(data?.Rev) && data.Rev > since) {
+        since = data.Rev;
+        await AssetDBService.setSyncState(cursorKey, since);
+      }
+      if (!data?.More || names.length === 0) break;
+    }
+    if (treeChanged && signedIn()) await this.saveRemoteTree();
+    return applied;
   }
 
   async syncRemoteGPS() {
@@ -1343,6 +1639,8 @@ class SyncService {
       await this.findDiffWithDrillDown(this.localTree, this.remoteTree, uploadAssets, downloadAssets, 'year');
 
       if (onProgress) onProgress({ current: localAssets.length, total: localAssets.length });
+      // Again now that the drill-down may have added server rows this phone has names for.
+      this.reportOriginalNames().catch(e => console.warn('[SyncService] reporting original names failed:', e?.message));
       return { uploadAssets, downloadAssets };
     } finally {
       this.isSyncing = false;
@@ -1407,7 +1705,7 @@ class SyncService {
         }
         if (detail && detail.Assets) {
           for (const a of detail.Assets) {
-            const assetNode = this.remoteTree.addAsset(year, month, day, a.Hash, a.Name, parseBackendDate(a.Date));
+            const assetNode = this.remoteTree.addAsset(year, month, day, a.Hash, a.Name, parseBackendDate(a.Date), a.OrigName);
             // Global check for downloads
             if (!this.localTree.getNodeByHash(assetNode.hash)) {
               download.push(assetNode);
@@ -1452,7 +1750,7 @@ class SyncService {
           }
           if (detail && detail.Assets) {
             for (const a of detail.Assets) {
-              this.remoteTree.addAsset(year, month, day, a.Hash, a.Name, parseBackendDate(a.Date));
+              this.remoteTree.addAsset(year, month, day, a.Hash, a.Name, parseBackendDate(a.Date), a.OrigName);
             }
           }
         }

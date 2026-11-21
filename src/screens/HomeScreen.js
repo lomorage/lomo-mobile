@@ -303,6 +303,24 @@ const OnThisDayTile = memo(function OnThisDayTile({ asset, index, navigation, se
     );
 });
 
+// On This Day items from AssetDBService.getOnThisDayAssets rows. Only already-synced memories: a
+// local (isLocal=1) row may not have its hash computed yet, which used to build a broken
+// "/preview/null" URL and render as a blank tile.
+function onThisDayItems(rows) {
+    return rows
+        .filter(asset => asset.isLocal === 0 && asset.hash)
+        .map(asset => ({
+            id: asset.id,
+            hash: asset.hash,
+            uri: MediaService.getPreviewUrl(asset.hash, asset.mediaType),
+            status: 'remote',
+            creationTime: asset.createTime || 0,
+            mediaType: asset.mediaType || (isVideoExtension(asset.filename) ? 'video' : 'photo'),
+            filename: asset.filename || '',
+            originalName: asset.originalName || null
+        }));
+}
+
 export default function HomeScreen({ navigation, route }) {
     const [assets, setAssets] = useState([]);
     const [onThisDayAssets, setOnThisDayAssets] = useState([]);
@@ -878,6 +896,7 @@ export default function HomeScreen({ navigation, route }) {
                     creationTime: asset.creationTime || 0,
                     mediaType: asset.mediaType || (isVideoExtension(filename) ? 'video' : 'photo'),
                     filename: filename,
+                    originalName: asset.originalName || null,
                     isFavorite: asset.isFavorite,
                     localCachePath: asset.localCachePath
                 };
@@ -1233,9 +1252,18 @@ export default function HomeScreen({ navigation, route }) {
             if (isMounted.current) {
                 console.log('[HomeScreen] remoteAssetsUpdated event received. Reloading remote assets from SQLite...');
                 try {
-                    const sqliteRemoteAssets = await AssetDBService.getRemoteAssets();
+                    const [sqliteRemoteAssets, sqliteOnThisDay] = await Promise.all([
+                        AssetDBService.getRemoteAssets(),
+                        AssetDBService.getOnThisDayAssets(),
+                    ]);
                     remoteAssetsListRef.current = sqliteRemoteAssets;
                     mergeAndSetAssets(localAssetsRef.current, false);
+                    // On This Day keeps its own copy too (e.g. names learned since it loaded).
+                    if (isMounted.current) {
+                        const items = onThisDayItems(sqliteOnThisDay);
+                        setOnThisDayAssets(items);
+                        GalleryStore.setAssets(items, 'onThisDay');
+                    }
                 } catch (err) {
                     console.error('[HomeScreen] Failed to reload remote assets on event:', err);
                 }
@@ -1357,20 +1385,7 @@ export default function HomeScreen({ navigation, route }) {
             localAssetsRef.current = cumulativeLocalAssets;
             remoteAssetsListRef.current = sqliteRemoteAssets;
 
-            // Only surface already-synced memories here: a local (isLocal=1) row may not
-            // have its hash computed yet, which used to build a broken "/preview/null" URL
-            // and render as a blank tile.
-            const mappedOnThisDay = sqliteOnThisDayAssets
-                .filter(asset => asset.isLocal === 0 && asset.hash)
-                .map(asset => ({
-                    id: asset.id,
-                    hash: asset.hash,
-                    uri: MediaService.getPreviewUrl(asset.hash, asset.mediaType),
-                    status: 'remote',
-                    creationTime: asset.createTime || 0,
-                    mediaType: asset.mediaType || (isVideoExtension(asset.filename) ? 'video' : 'photo'),
-                    filename: asset.filename || ''
-                }));
+            const mappedOnThisDay = onThisDayItems(sqliteOnThisDayAssets);
             setOnThisDayAssets(mappedOnThisDay);
             GalleryStore.setAssets(mappedOnThisDay, 'onThisDay');
 

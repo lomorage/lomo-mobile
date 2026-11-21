@@ -10,7 +10,7 @@ jest.mock('@react-native-community/netinfo', () => ({
 
 import * as SecureStore from 'expo-secure-store';
 import axios from 'axios';
-import AuthService, { formatServerUrl } from '../AuthService';
+import AuthService, { formatServerUrl, tokenOfRequest } from '../AuthService';
 
 describe('formatServerUrl', () => {
   test('formats localhost correctly to http', () => {
@@ -173,5 +173,168 @@ describe('getOriginalsLocation', () => {
     await expect(AuthService.getOriginalsLocation()).resolves.toBeNull();
     jest.spyOn(axios, 'get').mockRejectedValue(new Error('Network Error'));
     await expect(AuthService.getOriginalsLocation()).resolves.toBeNull();
+  });
+});
+
+describe('session expiry (401)', () => {
+  // The interceptor AuthService registers last on the shared axios instance.
+  const onError = () => axios.interceptors.response.handlers.filter(Boolean).at(-1).rejected;
+  const unauthorized = (config) => ({ response: { status: 401 }, config });
+  let expired;
+
+  beforeEach(() => {
+    AuthService.token = 'token-b';
+    AuthService._isShowingSessionAlert = false;
+    expired = jest.fn();
+    AuthService._onSessionExpired = expired;
+  });
+
+  test('a 401 for the current sign-in signs out', async () => {
+    await expect(onError()(unauthorized({ url: 'http://pc/assets/names', headers: { Authorization: 'token=token-b' } })))
+      .rejects.toBeTruthy();
+    expect(expired).toHaveBeenCalledTimes(1);
+  });
+
+  test("a late 401 for an earlier sign-in's request leaves the current one alone", async () => {
+    await expect(onError()(unauthorized({ url: 'http://pc/assets/names', headers: { Authorization: 'token=token-a' } })))
+      .rejects.toBeTruthy();
+    await expect(onError()(unauthorized({ url: 'http://pc/preview/h?token=token-a' }))).rejects.toBeTruthy();
+    expect(expired).not.toHaveBeenCalled();
+  });
+
+  test('a 401 for a request without a token still signs out', async () => {
+    await expect(onError()(unauthorized({ url: 'http://pc/user' }))).rejects.toBeTruthy();
+    expect(expired).toHaveBeenCalledTimes(1);
+  });
+
+  test('reads the token from the header, the URL or the params', () => {
+    expect(tokenOfRequest({ headers: { Authorization: 'token=abc' } })).toBe('abc');
+    expect(tokenOfRequest({ url: 'http://pc/a?x=1&token=a%2Bb' })).toBe('a+b');
+    expect(tokenOfRequest({ params: { token: 'p' } })).toBe('p');
+    expect(tokenOfRequest({ headers: { Authorization: 'Basic xyz' } })).toBeNull();
+    expect(tokenOfRequest(undefined)).toBeNull();
+  });
+});
+
+describe('account id', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    AuthService.token = 't';
+    AuthService.username = 'Alice';
+    AuthService.userId = '7';
+    AuthService.serverUuid = null;
+  });
+
+  test('is the server id from /system and the user id, the same for any token', async () => {
+    expect(AuthService.getAccountId()).toBeNull();
+    await AuthService.applySystemInfo({ UUID: 'srv-1' });
+    expect(SecureStore.setItemAsync).toHaveBeenCalledWith('lomo_server_uuid', 'srv-1');
+    expect(AuthService.getAccountId()).toBe('srv-1|id:7');
+    AuthService.token = 'another-sign-in';
+    expect(AuthService.getAccountId()).toBe('srv-1|id:7');
+    AuthService.userId = '8';
+    expect(AuthService.getAccountId()).toBe('srv-1|id:8');
+  });
+
+  test('"Alice" and "alice" are two accounts, also without a user id from an older sign-in', async () => {
+    await AuthService.applySystemInfo({ UUID: 'srv-1' });
+    AuthService.userId = null;
+    const alice = AuthService.getAccountId();
+    AuthService.username = 'alice';
+    expect(AuthService.getAccountId()).not.toBe(alice);
+  });
+
+  test('signing in keeps the user id from the answer', async () => {
+    const get = jest.spyOn(axios, 'get').mockImplementation(async (url) => (url.endsWith('/login')
+      ? { status: 200, data: { Token: 'tok', Userid: 12 } }
+      : { status: 200, data: { UUID: 'srv-2' } }));
+    require('react-native-argon2').mockResolvedValue({ rawHash: 'h', encodedHash: 'h' });
+    SecureStore.deleteItemAsync.mockResolvedValue();
+    SecureStore.setItemAsync.mockResolvedValue();
+    await AuthService.login('192.168.1.5:8000', 'alice', 'pw');
+    expect(AuthService.getAccountId()).toBe('srv-2|id:12');
+    expect(SecureStore.setItemAsync).toHaveBeenCalledWith('lomo_user_id', '12');
+    get.mockRestore();
+  });
+
+  test('a late /system answer from before signing in again is not taken as this server', async () => {
+    await AuthService.applySystemInfo({ UUID: 'srv-B' });
+    const before = AuthService._session;
+    AuthService._session += 1; // signed in again (e.g. to another server) meanwhile
+    await AuthService.applySystemInfo({ UUID: 'srv-A' }, before);
+    expect(AuthService.serverUuid).toBe('srv-B');
+  });
+
+  test('is null when signed out', async () => {
+    await AuthService.applySystemInfo({ UUID: 'srv-1' });
+    AuthService.token = null;
+    expect(AuthService.getAccountId()).toBeNull();
+  });
+});
+
+describe('connection probe across sign-ins', () => {
+  const realFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = realFetch;
+  });
+
+  test('a probe from before signing in again does not point the app back at the old server', async () => {
+    AuthService.localUrl = 'http://192.168.1.5:8000';
+    AuthService.remoteUrl = 'https://old.example';
+    AuthService.serverUrl = 'http://new-server:8000';
+    jest.spyOn(AuthService, 'autoProbe').mockResolvedValue(false);
+    const update = jest.spyOn(AuthService, 'updateServerUrl').mockResolvedValue();
+    global.fetch = jest.fn(async () => {
+      AuthService._session += 1; // signed in to another server while the old home address timed out
+      throw new Error('aborted');
+    });
+
+    await expect(AuthService.determineBestConnection()).resolves.toBe(false);
+
+    expect(global.fetch).toHaveBeenCalledTimes(1); // the old remote address isn't tried
+    expect(update).not.toHaveBeenCalled();
+    expect(AuthService.autoProbe).not.toHaveBeenCalled();
+    update.mockRestore();
+    AuthService.autoProbe.mockRestore();
+  });
+
+  test('a probe in the same sign-in still falls back to the remote address', async () => {
+    AuthService.localUrl = 'http://192.168.1.5:8000';
+    AuthService.remoteUrl = 'https://home.example';
+    jest.spyOn(AuthService, 'autoProbe').mockResolvedValue(false);
+    const update = jest.spyOn(AuthService, 'updateServerUrl').mockResolvedValue();
+    global.fetch = jest.fn(async (url) => {
+      if (url.startsWith('http://192.168.1.5')) throw new Error('aborted');
+      return { status: 200, json: async () => ({}) };
+    });
+
+    await expect(AuthService.determineBestConnection()).resolves.toBe(true);
+
+    expect(update).toHaveBeenCalledWith('https://home.example');
+    update.mockRestore();
+    AuthService.autoProbe.mockRestore();
+  });
+});
+
+describe('mDNS probe across sign-ins', () => {
+  test('signing in again while the found address is being saved keeps the new server', async () => {
+    jest.doMock('../DiscoveryService', () => ({
+      __esModule: true,
+      default: { scan: jest.fn().mockResolvedValue([{ name: 'old-pc', fullUrl: 'http://192.168.1.9:8000' }]) },
+    }));
+    AuthService.isProbing = false;
+    AuthService.serverName = 'old-pc';
+    AuthService.serverUrl = 'http://new-server:8000';
+    const setLocal = jest.spyOn(AuthService, 'setLocalUrl').mockImplementation(async () => {
+      AuthService._session += 1; // signed in to another server meanwhile
+    });
+    const update = jest.spyOn(AuthService, 'updateServerUrl').mockResolvedValue();
+
+    await expect(AuthService.autoProbe()).resolves.toBe(false);
+
+    expect(update).not.toHaveBeenCalled();
+    setLocal.mockRestore();
+    update.mockRestore();
+    jest.dontMock('../DiscoveryService');
   });
 });

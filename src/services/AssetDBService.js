@@ -99,6 +99,10 @@ class AssetDBService {
       try { await db.execAsync('CREATE INDEX IF NOT EXISTS idx_phash ON MediaAsset(phash);'); } catch (e) {}
       try { await db.execAsync('CREATE INDEX IF NOT EXISTS idx_clipEmbedding ON MediaAsset(clipEmbedding);'); } catch (e) {}
       try { await db.execAsync('CREATE INDEX IF NOT EXISTS idx_createTime ON MediaAsset(createTime);'); } catch (e) {}
+      // Original names to report: server rows in id order after a cursor, and the phone's own row
+      // for each by hash (getOriginalNamesToReport). Without them each page scans and sorts.
+      try { await db.execAsync('CREATE INDEX IF NOT EXISTS idx_isLocal_id ON MediaAsset(isLocal, id);'); } catch (_e) {}
+      try { await db.execAsync('CREATE INDEX IF NOT EXISTS idx_isLocal_hash ON MediaAsset(isLocal, hash);'); } catch (_e) {}
 
       // Handle versioned migrations
       const { user_version } = await db.getFirstAsync('PRAGMA user_version');
@@ -345,11 +349,45 @@ class AssetDBService {
         }
       }
 
+      if (currentVersion < 18) {
+        // Version 18: the name a file had on the phone that backed it up (IMG_1234.HEIC), for
+        // photos only on the server. lomod files them under a date+id name, which is what
+        // `filename` holds for remote rows and must keep holding: the app reads the media type
+        // and whether it is a Live Photo (.zip) from it.
+        // originalNameSynced = 1 once the server has confirmed the name (it came in the listing,
+        // or the server answered a report of it); until then SyncService reports names it knows.
+        // Bumped only once both columns exist, as for version 17.
+        for (const column of ['originalName TEXT', 'originalNameSynced INTEGER DEFAULT 0']) {
+          try {
+            await db.execAsync(`ALTER TABLE MediaAsset ADD COLUMN ${column};`);
+          } catch (e) {
+            console.warn(`[AssetDBService] Could not add ${column.split(' ')[0]}:`, e.message);
+          }
+        }
+        if (await this.hasColumns(db, ['originalName', 'originalNameSynced'])) {
+          await db.execAsync('PRAGMA user_version = 18');
+          currentVersion = 18;
+          console.log('[AssetDBService] Database migrated to version 18 (Added originalName).');
+        } else {
+          console.warn('[AssetDBService] Version 18 columns missing; staying on version ' +
+            `${currentVersion} and retrying on the next launch.`);
+        }
+      }
+
       // Whether the refused-upload columns can be named in a query. Checked rather than assumed
       // from user_version so a database that did not take the migration degrades to the old
       // behaviour (refusals not remembered, so uploads are retried as before) instead of failing
       // every status read.
       this.hasUploadRejected = await this.hasColumns(db, ['uploadRejected', 'uploadRejectedReason']);
+      // Same for the original-name columns (version 18).
+      this.hasOriginalName = await this.hasColumns(db, ['originalName', 'originalNameSynced']);
+      // Small values sync keeps per server account (e.g. where it got to in a server feed). Lives
+      // in this database so it goes when the rows it describes go.
+      try {
+        await db.execAsync('CREATE TABLE IF NOT EXISTS SyncState (key TEXT PRIMARY KEY, value TEXT);');
+      } catch (e) {
+        console.warn('[AssetDBService] Could not create SyncState:', e.message);
+      }
 
       // Smooth migration: if local_hash_cache_v2.json exists, migrate it to SQLite
       await this.migrateLocalHashCache(db);
@@ -707,14 +745,18 @@ class AssetDBService {
       const fromLocal = (column) => `(SELECT l.${column} FROM MediaAsset l
           WHERE l.isLocal = 1 AND l.id IN (${marks}) AND l.hash = MediaAsset.id
             AND l.${column} IS NOT NULL AND l.${column} NOT IN ('', 'failed') LIMIT 1)`;
+      // The phone's file name, which nothing else would remember once the local row is gone.
+      const keepName = this.hasOriginalName
+        ? `, originalName = CASE WHEN ${missing('originalName')} THEN COALESCE(${fromLocal('filename')}, originalName) ELSE originalName END`
+        : '';
       await this.db.runAsync(
         `UPDATE MediaAsset SET
            phash = CASE WHEN ${missing('phash')} THEN COALESCE(${fromLocal('phash')}, phash) ELSE phash END,
            clipEmbedding = CASE WHEN ${missing('clipEmbedding')} THEN COALESCE(${fromLocal('clipEmbedding')}, clipEmbedding) ELSE clipEmbedding END,
-           ocrText = CASE WHEN ${missing('ocrText')} THEN COALESCE(${fromLocal('ocrText')}, ocrText) ELSE ocrText END
+           ocrText = CASE WHEN ${missing('ocrText')} THEN COALESCE(${fromLocal('ocrText')}, ocrText) ELSE ocrText END${keepName}
          WHERE isLocal = 0
            AND id IN (SELECT hash FROM MediaAsset WHERE isLocal = 1 AND id IN (${marks}) AND hash IS NOT NULL)`,
-        [...chunk, ...chunk, ...chunk, ...chunk]
+        [...chunk, ...chunk, ...chunk, ...(this.hasOriginalName ? chunk : []), ...chunk]
       );
       await this.db.runAsync(
         `DELETE FROM MediaAsset
@@ -724,9 +766,12 @@ class AssetDBService {
       );
       // A face detection failure (faceRecVersion below 0) was about the phone's file. The remote
       // scan reads the server's preview instead, which deserves its own try.
+      const rekeyName = this.hasOriginalName
+        ? ", originalName = COALESCE(NULLIF(originalName, ''), filename)"
+        : '';
       await this.db.runAsync(
         `UPDATE OR IGNORE MediaAsset SET id = hash, isLocal = 0,
-           faceRecVersion = CASE WHEN faceRecVersion < 0 THEN 0 ELSE faceRecVersion END
+           faceRecVersion = CASE WHEN faceRecVersion < 0 THEN 0 ELSE faceRecVersion END${rekeyName}
          WHERE isLocal = 1 AND id IN (${marks}) AND hash IS NOT NULL`,
         chunk
       );
@@ -1008,8 +1053,13 @@ class AssetDBService {
   }
 
   // Sync remote assets discovered via SyncService
-  async syncRemoteAssets(assets) {
+  // `withNames`: write the original names the listing carries (only when the cache is known to be
+  // the signed-in account's). `isCurrent`: false once that sign-in is over; checked inside each
+  // write transaction, so nothing lands after a new sign-in cleared the cache. Returns false when
+  // it stopped for that reason.
+  async syncRemoteAssets(assets, { withNames: namesAllowed = true, isCurrent = () => true } = {}) {
     if (!this.db || !assets) return;
+    let stopped = false;
 
     return await MetricsTracker.measure('AssetDBService_syncRemoteAssets', async () => {
       try {
@@ -1028,9 +1078,16 @@ class AssetDBService {
           const chunkSize = 50;
           for (let i = 0; i < idsToDelete.length; i += chunkSize) {
             const chunk = idsToDelete.slice(i, i + chunkSize);
-            await this.db.withExclusiveTransactionAsync(async () => {
-              const statement = await this.db.prepareAsync('DELETE FROM MediaAsset WHERE id = ? AND isLocal = 0');
+            if (stopped) break;
+            await this.db.withExclusiveTransactionAsync(async (txn) => {
+              const conn = txn || this.db;
+              const statement = await conn.prepareAsync('DELETE FROM MediaAsset WHERE id = ? AND isLocal = 0');
               try {
+                // Checked right before the synchronous writes: nothing can run in between.
+                if (!isCurrent()) {
+                  stopped = true;
+                  return;
+                }
                 for (const id of chunk) {
                   statement.executeSync(id);
                 }
@@ -1061,26 +1118,36 @@ class AssetDBService {
           const chunkSize = 50;
           for (let i = 0; i < newAssets.length; i += chunkSize) {
             const chunk = newAssets.slice(i, i + chunkSize);
-            await this.db.withExclusiveTransactionAsync(async () => {
-              const statement = await this.db.prepareAsync(`
-                INSERT OR IGNORE INTO MediaAsset 
-                (id, hash, isLocal, hasGeo, latitude, longitude, createTime, mediaType, filename) 
+            if (stopped) break;
+            await this.db.withExclusiveTransactionAsync(async (txn) => {
+              const conn = txn || this.db;
+              const withName = this.hasOriginalName;
+              const statement = await conn.prepareAsync(withName ? `
+                INSERT OR IGNORE INTO MediaAsset
+                (id, hash, isLocal, hasGeo, latitude, longitude, createTime, mediaType, filename,
+                 originalName, originalNameSynced)
+                VALUES (?, ?, 0, 0, 0.0, 0.0, ?, ?, ?, ?, ?)
+              ` : `
+                INSERT OR IGNORE INTO MediaAsset
+                (id, hash, isLocal, hasGeo, latitude, longitude, createTime, mediaType, filename)
                 VALUES (?, ?, 0, 0, 0.0, 0.0, ?, ?, ?)
               `);
               try {
+                // Checked right before the synchronous writes: nothing can run in between.
+                if (!isCurrent()) {
+                  stopped = true;
+                  return;
+                }
                 for (const asset of chunk) {
                   // MerkleNode objects use `tag` for filename and `date` (a Date object) for creation time.
                   // Fall back to plain `filename`/`creationTime` fields for plain objects.
                   const filename = asset.tag || asset.filename || '';
                   const creationTime = asset.date ? asset.date.getTime() : (asset.creationTime || 0);
                   const mediaTypeStr = asset.mediaType || (isVideoExtension(filename) ? 'video' : 'photo');
-                  statement.executeSync(
-                    asset.hash,
-                    asset.hash,
-                    creationTime,
-                    mediaTypeStr,
-                    filename
-                  );
+                  const args = [asset.hash, asset.hash, creationTime, mediaTypeStr, filename];
+                  const origName = namesAllowed ? asset.origName : null;
+                  if (withName) args.push(origName || null, origName ? 1 : 0);
+                  statement.executeSync(...args);
                 }
               } finally {
                 await statement.finalizeAsync();
@@ -1129,11 +1196,118 @@ class AssetDBService {
           }
           console.log(`[AssetDBService] Repaired ${repairAssets.length} remote asset timestamps.`);
         }
+
+        if (stopped || !isCurrent()) return false;
+        // Original names the server lists for rows already here without a confirmed one.
+        if (this.hasOriginalName && namesAllowed) {
+          const unnamedRows = await this.db.getAllAsync(
+            'SELECT id FROM MediaAsset WHERE isLocal = 0 AND COALESCE(originalNameSynced, 0) = 0'
+          );
+          const unnamed = new Set(unnamedRows.map(r => r.id));
+          const named = assets
+            .filter(asset => asset.origName && existingIds.has(asset.hash) && unnamed.has(asset.hash))
+            .map(asset => ({ hash: asset.hash, name: asset.origName }));
+          if (named.length > 0 && (await this.setRemoteOriginalNames(named, { isCurrent })) === false) return false;
+        }
       } catch (error) {
         console.error('[AssetDBService] Failed to sync remote assets:', error);
         throw error;
       }
     }, `(Assets: ${assets.length})`);
+  }
+
+  _originalNameColumn() {
+    return this.hasOriginalName && !this._originalNamesHidden ? 'originalName' : 'NULL AS originalName';
+  }
+
+  // While the names on the phone may be another account's (dropping them failed), reads leave
+  // them out. For this run of the app only: the drop is tried again on the next check.
+  // Returns whether that changed what reads return.
+  hideOriginalNames(hidden) {
+    const changed = !!this._originalNamesHidden !== !!hidden;
+    this._originalNamesHidden = !!hidden;
+    return changed;
+  }
+
+  // Up to `limit` server photos whose original name the server hasn't confirmed but this phone
+  // knows: from the photo still on the phone, or kept when Free Up Space removed it. Each is
+  // { hash, name }, in hash order after `after` (the last hash of the previous page), so a pass
+  // over a large library reads each row once instead of re-reading the whole backlog per page.
+  async getOriginalNamesToReport(limit = 200, after = '') {
+    if (!this.db || !this.hasOriginalName) return [];
+    try {
+      return await this.db.getAllAsync(
+        `SELECT hash, name FROM (
+           SELECT r.id AS hash,
+                  COALESCE(NULLIF(r.originalName, ''),
+                    (SELECT l.filename FROM MediaAsset l
+                      WHERE l.isLocal = 1 AND l.hash = r.id AND l.filename IS NOT NULL AND l.filename <> ''
+                      LIMIT 1)) AS name
+           FROM MediaAsset r
+           WHERE r.isLocal = 0 AND COALESCE(r.originalNameSynced, 0) = 0 AND r.id > ?
+           ORDER BY r.id
+         ) WHERE name IS NOT NULL
+         LIMIT ?`,
+        [after || '', limit]
+      );
+    } catch (error) {
+      console.error('[AssetDBService] Failed to read original names to report:', error);
+      return [];
+    }
+  }
+
+  // Records original names the server has confirmed ({ hash, name } each).
+  // Drops the original names servers confirmed (another account's, after switching). Names this
+  // phone kept from its own files (Free Up Space, not yet confirmed) stay: they hold for any
+  // account and are reported to the new one.
+  async clearRemoteOriginalNames() {
+    if (!this.db || !this.hasOriginalName) return;
+    await this.db.runAsync(
+      'UPDATE MediaAsset SET originalName = NULL, originalNameSynced = 0 WHERE isLocal = 0 AND originalNameSynced = 1'
+    );
+  }
+
+  // null when there is no such value. A failed read throws: callers deciding whose data the
+  // phone holds must not take "couldn't read" for "nothing recorded".
+  async getSyncState(key) {
+    if (!this.db) return null;
+    const row = await this.db.getFirstAsync('SELECT value FROM SyncState WHERE key = ?', [key]);
+    return row ? row.value : null;
+  }
+
+  async setSyncState(key, value) {
+    if (!this.db) return;
+    await this.db.runAsync('INSERT OR REPLACE INTO SyncState (key, value) VALUES (?, ?)', [key, String(value)]);
+  }
+
+  // `isCurrent`: false once the sign-in these names came for is over. Checked right before each
+  // batch of synchronous writes, after every await, so a new sign-in's cleanup is either fully
+  // before them (and they are skipped) or after them (and clears them). Returns false when it
+  // stopped for that reason.
+  async setRemoteOriginalNames(entries, { isCurrent = () => true } = {}) {
+    if (!this.db || !this.hasOriginalName || !entries || entries.length === 0) return;
+    const chunkSize = 100;
+    let stopped = false;
+    for (let i = 0; i < entries.length && !stopped; i += chunkSize) {
+      const chunk = entries.slice(i, i + chunkSize);
+      await this.db.withExclusiveTransactionAsync(async (txn) => {
+        const conn = txn || this.db;
+        const statement = await conn.prepareAsync(
+          `UPDATE MediaAsset SET originalName = COALESCE(NULLIF(?, ''), originalName), originalNameSynced = 1
+           WHERE id = ? AND isLocal = 0`
+        );
+        try {
+          if (!isCurrent()) {
+            stopped = true;
+            return;
+          }
+          for (const { hash, name } of chunk) statement.executeSync(name || '', String(hash).toLowerCase());
+        } finally {
+          await statement.finalizeAsync();
+        }
+      });
+    }
+    return stopped ? false : undefined;
   }
 
   // Get remote assets that need their GPS data fetched
@@ -1264,7 +1438,7 @@ class AssetDBService {
       const currentYear = now.getFullYear();
 
       const query = `
-        SELECT id, isLocal, hash, mediaType, createTime, filename 
+        SELECT id, isLocal, hash, mediaType, createTime, filename, ${this._originalNameColumn()}
         FROM MediaAsset 
         WHERE createTime > 0 
           AND strftime('%m-%d', createTime / 1000, 'unixepoch', 'localtime') = ?
@@ -1286,12 +1460,13 @@ class AssetDBService {
     if (!this.db) return [];
     try {
       const rows = await this.db.getAllAsync(
-        `SELECT hash, filename, createTime, mediaType, isFavorite, localCachePath FROM MediaAsset WHERE isLocal = 0 ORDER BY createTime DESC`
+        `SELECT hash, filename, ${this._originalNameColumn()}, createTime, mediaType, isFavorite, localCachePath FROM MediaAsset WHERE isLocal = 0 ORDER BY createTime DESC`
       );
       return rows.map(r => ({
         id: `remote-${r.hash}`,
         hash: r.hash,
         filename: r.filename,
+        originalName: r.originalName || null,
         creationTime: r.createTime || 0,
         mediaType: r.mediaType || 'photo',
         isFavorite: r.isFavorite === 1,
@@ -1314,8 +1489,8 @@ class AssetDBService {
         const bindArgs = chunk.map(h => h.toLowerCase());
         
         const rows = await this.db.getAllAsync(
-          `SELECT hash, filename, createTime, mediaType, isFavorite, localCachePath 
-           FROM MediaAsset 
+          `SELECT hash, filename, ${this._originalNameColumn()}, createTime, mediaType, isFavorite, localCachePath
+           FROM MediaAsset
            WHERE hash IN (${placeholders}) OR id IN (${placeholders})
            ORDER BY createTime DESC`,
           bindArgs.concat(bindArgs)
@@ -1326,6 +1501,7 @@ class AssetDBService {
             id: r.hash,
             hash: r.hash,
             filename: r.filename,
+            originalName: r.originalName || null,
             creationTime: r.createTime,
             mediaType: r.mediaType,
             isFavorite: Boolean(r.isFavorite),

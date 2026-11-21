@@ -15,9 +15,12 @@ jest.mock('expo-file-system/legacy', () => ({
   readAsStringAsync: jest.fn().mockResolvedValue('{}'),
 }));
 
+let mockSession = 0;
 jest.mock('../AuthService', () => ({
   getServerUrl: () => 'http://localhost:8000',
   getToken: () => 'test-token',
+  getSession: () => mockSession,
+  getAccountId: () => null,
 }));
 
 jest.mock('expo-crypto', () => ({
@@ -54,7 +57,59 @@ describe('SyncService Incremental Remote Sync', () => {
     SyncService._remoteTreeLoadedFromDisk = false;
     SyncService._overviewRunning = null;
     SyncService._overviewQueued = null;
+    mockSession = 0;
     jest.clearAllMocks();
+  });
+
+  describe('signing out or switching account during a listing', () => {
+    const monthLevel = { Hash: 'root', Years: [{ Year: 2024, Hash: 'y', Months: [{ Month: 2, Hash: 'm' }] }] };
+    const month = { Days: [{ Day: 1, Hash: 'd', Assets: [{ Hash: 'hA', Name: 'a.jpg', OrigName: 'IMG_A.jpg', Date: '2024-02-01 12:00:00' }] }] };
+
+    test("drops the old account's listing instead of writing it to the cache", async () => {
+      const before = SyncService.remoteTree;
+      axios.get.mockImplementation(async (url) => {
+        if (url.endsWith('/assets/merkletree')) return { data: monthLevel };
+        mockSession = 1; // signed in again while this month was on its way
+        return { data: month };
+      });
+
+      const result = await SyncService.fetchRemoteOverview();
+
+      expect(result).toBeNull();
+      expect(SyncService.remoteTree).toBe(before);
+      expect(AssetDBService.syncRemoteAssets).not.toHaveBeenCalled();
+    });
+
+    test('keeps no names in the cached tree while the account is not known', async () => {
+      axios.get.mockImplementation(async (url) => ({ data: url.endsWith('/assets/merkletree') ? monthLevel : month }));
+
+      const result = await SyncService.fetchRemoteOverview();
+
+      expect(result.getNodeByHash('ha').origName).toBeNull();
+    });
+
+    test('rows rebuilt from the cached tree follow the same rule', async () => {
+      SyncService.remoteTree.addAsset(2024, 2, 1, 'hb', 'b.jpg', new Date('2024-02-01T12:00:00Z'), 'IMG_B.jpg');
+      AssetDBService.getRemoteAssetsCount.mockResolvedValue(0);
+
+      await SyncService._migrateAndHealRemoteAssets();
+
+      expect(AssetDBService.syncRemoteAssets).toHaveBeenCalledWith(expect.any(Array),
+        expect.objectContaining({ withNames: false }));
+    });
+
+    test('writes the listing, without names while the account is not known', async () => {
+      axios.get.mockImplementation(async (url) => ({ data: url.endsWith('/assets/merkletree') ? monthLevel : month }));
+
+      await SyncService.fetchRemoteOverview();
+
+      expect(AssetDBService.syncRemoteAssets).toHaveBeenCalledWith(expect.any(Array),
+        expect.objectContaining({ withNames: false }));
+      const { isCurrent } = AssetDBService.syncRemoteAssets.mock.calls[0][1];
+      expect(isCurrent()).toBe(true);
+      mockSession = 1;
+      expect(isCurrent()).toBe(false);
+    });
   });
 
   test('fetchRemoteMonthLevel performs GET call with auth header', async () => {

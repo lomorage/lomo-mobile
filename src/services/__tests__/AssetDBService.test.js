@@ -157,13 +157,14 @@ describe('AssetDBService', () => {
     const result = await AssetDBService.getRemoteAssets();
 
     expect(mockSpies.getAllAsync).toHaveBeenCalledWith(
-      expect.stringContaining('SELECT hash, filename, createTime, mediaType, isFavorite, localCachePath FROM MediaAsset WHERE isLocal = 0 ORDER BY createTime DESC')
+      expect.stringMatching(/SELECT hash, filename, (originalName|NULL AS originalName), createTime, mediaType, isFavorite, localCachePath FROM MediaAsset WHERE isLocal = 0 ORDER BY createTime DESC/)
     );
     expect(result).toEqual([
       {
         id: 'remote-h1',
         hash: 'h1',
         filename: 'pic.jpg',
+        originalName: null,
         creationTime: 123456,
         mediaType: 'photo',
         isFavorite: false,

@@ -85,7 +85,16 @@ export function buildUploadUrl(serverUrl, hash, ext, info, storedExifTime = null
     if (info.modificationTime > 0) {
         params.push(`modifiedtime=${encodeURIComponent(new Date(info.modificationTime).toISOString())}`);
     }
+    // The name on the phone (IMG_1234.HEIC): lomod files the photo under a date+id name and
+    // keeps this one to show and to name downloads. Older lomod ignores the parameter.
+    if (info.filename) params.push(`origname=${encodeURIComponent(info.filename)}`);
     return `${serverUrl}/asset/${hash.toLowerCase()}?${params.join('&')}`;
+}
+
+// An upload URL as logged: without the file's own name (origname), which can carry a person's
+// name or a document title and would otherwise end up in exported diagnostics.
+export function loggableUploadUrl(url) {
+    return String(url || '').replace(/([?&])origname=[^&#]*&?/, '$1').replace(/[?&]$/, '');
 }
 
 class UploadService {
@@ -670,11 +679,11 @@ class UploadService {
             }
 
             if (knownChunkSize > 0 && fileSizeBytes > knownChunkSize) {
-                console.log(`[UploadService] Uploading ${fileSizeBytes} bytes in pieces of ${knownChunkSize} to ${uploadUrl}`);
+                console.log(`[UploadService] Uploading ${fileSizeBytes} bytes in pieces of ${knownChunkSize} to ${loggableUploadUrl(uploadUrl)}`);
                 return finish(await uploadInPieces(knownChunkSize));
             }
 
-            console.log(`[UploadService] Full upload to: ${uploadUrl} (${fileSizeBytes} bytes)`);
+            console.log(`[UploadService] Full upload to: ${loggableUploadUrl(uploadUrl)} (${fileSizeBytes} bytes)`);
 
             // 7. Full binary Upload using native session
             this.cancelledTasks.delete(asset.id);
@@ -705,7 +714,7 @@ class UploadService {
 
             if (response.status === 413) {
                 // A proxy (e.g. Cloudflare's 100 MiB limit) refused the whole file; lomod never saw it.
-                console.log(`[UploadService] ${uploadUrl} answered 413 for ${fileSizeBytes} bytes, retrying in pieces.`);
+                console.log(`[UploadService] ${loggableUploadUrl(uploadUrl)} answered 413 for ${fileSizeBytes} bytes, retrying in pieces.`);
                 // Remembered only once the first piece shows this lomod keeps partial uploads.
                 return finish(await uploadInPieces(chunkSizeAfter413, 0, null, chunkSizeAfter413));
             }
