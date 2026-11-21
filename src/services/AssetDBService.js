@@ -1264,14 +1264,12 @@ class AssetDBService {
     );
   }
 
+  // null when there is no such value. A failed read throws: callers deciding whose data the
+  // phone holds must not take "couldn't read" for "nothing recorded".
   async getSyncState(key) {
     if (!this.db) return null;
-    try {
-      const row = await this.db.getFirstAsync('SELECT value FROM SyncState WHERE key = ?', [key]);
-      return row ? row.value : null;
-    } catch (e) {
-      return null;
-    }
+    const row = await this.db.getFirstAsync('SELECT value FROM SyncState WHERE key = ?', [key]);
+    return row ? row.value : null;
   }
 
   async setSyncState(key, value) {

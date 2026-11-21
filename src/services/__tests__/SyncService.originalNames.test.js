@@ -314,6 +314,30 @@ describe('SyncService original names', () => {
       expect(AssetDBService.hideOriginalNames).toHaveBeenLastCalledWith(false);
     });
 
+    test("if whose names these are can't be read, they are hidden and nothing is dropped", async () => {
+      mockToken = null; // and the account isn't known either
+      AssetDBService.getSyncState.mockRejectedValueOnce(new Error('database is locked'));
+
+      await SyncService.claimOriginalNamesForSignIn();
+
+      expect(AssetDBService.hideOriginalNames).toHaveBeenLastCalledWith(true);
+      expect(AssetDBService.clearRemoteOriginalNames).not.toHaveBeenCalled();
+      expect(SyncService.clearRemoteTreeCache).not.toHaveBeenCalled();
+    });
+
+    test('back to the account that owns them after a failed switch, the names show again', async () => {
+      mockToken = 'token-b';
+      AssetDBService.clearRemoteOriginalNames.mockRejectedValueOnce(new Error('disk I/O error'));
+      await SyncService.claimOriginalNamesForSignIn();
+      expect(AssetDBService.hideOriginalNames).toHaveBeenLastCalledWith(true);
+
+      mockToken = 'token-a';
+      await SyncService.claimOriginalNamesForSignIn();
+
+      expect(AssetDBService.hideOriginalNames).toHaveBeenLastCalledWith(false);
+      expect(mockSyncState.get('originalNamesAccount')).toBe(shortKey(accountOf('token-a')));
+    });
+
     test('an unknown account with nothing owned yet changes nothing', async () => {
       mockToken = null;
       for (const previous of [undefined, '']) {

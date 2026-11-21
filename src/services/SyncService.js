@@ -1144,8 +1144,20 @@ class SyncService {
     if (!accountId && !atSignIn) return;
     const key = accountId ? shortKey(accountId) : '';
     await AssetDBService.init();
-    const previous = await AssetDBService.getSyncState('originalNamesAccount');
-    if (previous === key && key) return;
+    let previous;
+    try {
+      previous = await AssetDBService.getSyncState('originalNamesAccount');
+    } catch (e) {
+      // Whose names these are can't be told: keep them out of sight, change nothing, try later.
+      console.warn('[SyncService] Failed to read whose original names these are:', e?.message);
+      AssetDBService.hideOriginalNames(true);
+      return;
+    }
+    if (previous === key && key) {
+      // This account's (e.g. back to it after a failed switch hid them): show them again.
+      AssetDBService.hideOriginalNames(false);
+      return;
+    }
     // Account unknown: no names are written meanwhile (see _originalNamesOwned), so a cache with
     // no owner yet (null) or an unknown one ('') holds none to drop.
     const unowned = previous === null || previous === undefined || previous === '';
@@ -1269,7 +1281,13 @@ class SyncService {
   // Returns how many names were recorded.
   async _fetchOriginalNames(url, token, state, signedIn) {
     const cursorKey = `originalNamesRev:${state.key}`;
-    let since = Number(await AssetDBService.getSyncState(cursorKey)) || 0;
+    let since;
+    try {
+      since = Number(await AssetDBService.getSyncState(cursorKey)) || 0;
+    } catch (e) {
+      console.warn('[SyncService] Failed to read where the name feed got to:', e?.message);
+      return 0;
+    }
     let applied = 0;
     let treeChanged = false;
     for (let page = 0; page < 500; page++) {

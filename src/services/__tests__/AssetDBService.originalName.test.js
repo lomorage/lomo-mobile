@@ -155,6 +155,15 @@ describeWithSqlite('original file names (real SQLite)', () => {
       expect(plan).not.toMatch(/SCAN|TEMP B-TREE/);
     });
 
+    test('sync state: nothing recorded is null, a failed read throws', async () => {
+      sqlite.exec('CREATE TABLE IF NOT EXISTS SyncState (key TEXT PRIMARY KEY, value TEXT)');
+      await expect(AssetDBService.getSyncState('nothing-here')).resolves.toBeNull();
+      const realGetFirst = AssetDBService.db.getFirstAsync;
+      AssetDBService.db.getFirstAsync = async () => { throw new Error('database is locked'); };
+      await expect(AssetDBService.getSyncState('originalNamesAccount')).rejects.toThrow('locked');
+      AssetDBService.db.getFirstAsync = realGetFirst;
+    });
+
     test('switching account drops only the names servers confirmed', async () => {
       remote('h1', { originalName: 'A-name.jpg', originalNameSynced: 1 });
       remote('h2', { originalName: 'kept.jpg' }); // this phone's own, from Free Up Space

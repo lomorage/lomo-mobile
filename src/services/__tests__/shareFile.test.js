@@ -47,19 +47,55 @@ describe('prepareRemoteShareFile', () => {
     await expect(prepareRemoteShareFile(asset)).resolves.toBeNull();
   });
 
-  test('without a known account, earlier one-off copies are removed before a new one', async () => {
-    mockAccountId = null;
+  describe('without a known account', () => {
+    const root = 'file:///cache/share/unknown/';
+    const removed = () => FileSystem.deleteAsync.mock.calls.map(([p]) => p).filter((p) => p.startsWith(root));
 
-    const first = await prepareRemoteShareFile(asset);
-    const second = await prepareRemoteShareFile(asset);
+    beforeEach(() => {
+      mockAccountId = null;
+    });
 
-    expect(first).not.toBe(second);
-    expect(first.startsWith('file:///cache/share/unknown/')).toBe(true);
-    const cleared = FileSystem.deleteAsync.mock.calls.filter(([p]) => p === 'file:///cache/share/unknown/');
-    expect(cleared).toHaveLength(2);
-    // The clearing comes before each download, so at most one copy is kept.
-    const order = FileSystem.deleteAsync.mock.invocationCallOrder[0];
-    expect(order).toBeLessThan(FileSystem.downloadAsync.mock.invocationCallOrder[0]);
+    test('each share gets its own copy, and copies over an hour old are removed', async () => {
+      const old = `${Date.now() - 2 * 60 * 60 * 1000}-a`;
+      const recent = `${Date.now() - 60 * 1000}-b`;
+      FileSystem.readDirectoryAsync.mockImplementation(async (p) => {
+        if (p === root) return [old, recent];
+        throw new Error('no such folder');
+      });
+
+      const first = await prepareRemoteShareFile(asset);
+      const second = await prepareRemoteShareFile(asset);
+
+      expect(first).not.toBe(second);
+      expect(first.startsWith(root)).toBe(true);
+      expect(removed()).toContain(`${root}${old}`);
+      expect(removed()).not.toContain(`${root}${recent}`);
+    });
+
+    test("a share started from another screen doesn't remove a copy still downloading", async () => {
+      let finishFirst;
+      let firstDir;
+      FileSystem.downloadAsync.mockImplementationOnce((url, path) => {
+        firstDir = path.slice(root.length).split('/')[0];
+        return new Promise((resolve) => { finishFirst = () => resolve(downloaded); });
+      });
+      // By the second share the first copy's folder is over an hour old (Date.now moved below),
+      // so only being in use protects it.
+      FileSystem.readDirectoryAsync.mockImplementation(async (p) => {
+        if (p === root && firstDir) return [firstDir];
+        throw new Error('no such folder');
+      });
+      const first = prepareRemoteShareFile(asset);
+      await new Promise((r) => setImmediate(r));
+
+      jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 2 * 60 * 60 * 1000);
+      await prepareRemoteShareFile(asset);
+      Date.now.mockRestore();
+      finishFirst();
+
+      await expect(first).resolves.toContain(firstDir);
+      expect(removed()).not.toContain(`${root}${firstDir}`);
+    });
   });
 
   test('a copy kept for this account is reused, renamed to the original name', async () => {

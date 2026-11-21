@@ -6,17 +6,44 @@ import AuthService from './AuthService';
 import { cachedShareFileName, downloadFileName, fileUriIn, shareCacheDir, shareTempRoot } from '../utils/fileName';
 import { shortKey } from '../utils/shortKey';
 
+// One-off copies (no known account) older than this are removed when a new one is made: by then
+// the receiving app has long read them.
+const TEMP_COPY_MAX_AGE_MS = 60 * 60 * 1000;
+// Folders of downloads still running, from any screen: never removed from under them.
+const tempDirsInUse = new Set();
+
+async function removeOldTempCopies() {
+  const root = shareTempRoot(FileSystem.cacheDirectory);
+  const names = await FileSystem.readDirectoryAsync(root).catch(() => []);
+  const now = Date.now();
+  for (const name of names) {
+    const made = Number(String(name).split('-')[0]);
+    if (tempDirsInUse.has(`${root}${name}/`)) continue;
+    if (Number.isFinite(made) && now - made < TEMP_COPY_MAX_AGE_MS) continue;
+    await FileSystem.deleteAsync(`${root}${name}`, { idempotent: true }).catch(() => {});
+  }
+}
+
 // Returns the file's URI, or null when the user signed out or into another account while it
 // downloaded: the old account's file (and name) must not reach the share sheet then.
 export async function prepareRemoteShareFile(asset) {
   const session = AuthService.getSession();
   const remoteUrl = `${AuthService.getServerUrl()}/asset/${asset.hash}?token=${AuthService.getToken()}`;
   const accountId = AuthService.getAccountId();
-  if (!accountId) {
-    // Without a known account each share gets a one-off copy; earlier ones are done with.
-    await FileSystem.deleteAsync(shareTempRoot(FileSystem.cacheDirectory), { idempotent: true }).catch(() => {});
-  }
+  // Without a known account each share gets a one-off copy; old, unused ones are removed.
+  if (!accountId) await removeOldTempCopies();
   const dir = shareCacheDir(FileSystem.cacheDirectory, accountId ? shortKey(accountId) : null, asset.hash);
+  // The copy's own folder under the temp root (dir is <root>/<stamp>/<hash>/).
+  const tempDir = accountId ? null : dir.slice(0, dir.length - `${asset.hash}/`.length);
+  if (tempDir) tempDirsInUse.add(tempDir);
+  try {
+    return await downloadForShare(asset, dir, remoteUrl, session);
+  } finally {
+    if (tempDir) tempDirsInUse.delete(tempDir);
+  }
+}
+
+async function downloadForShare(asset, dir, remoteUrl, session) {
   const downloadPath = `${dir}.download`;
 
   let uri;
