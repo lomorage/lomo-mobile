@@ -338,6 +338,30 @@ describe('SyncService original names', () => {
       expect(mockSyncState.get('originalNamesAccount')).toBe(shortKey(accountOf('token-a')));
     });
 
+    test('open galleries are told to read the rows again when the names are hidden or shown', async () => {
+      let hidden = false;
+      AssetDBService.hideOriginalNames.mockImplementation((h) => {
+        const changed = hidden !== h;
+        hidden = h;
+        return changed;
+      });
+      const emit = jest.spyOn(DeviceEventEmitter, 'emit');
+      mockToken = 'token-b';
+      AssetDBService.clearRemoteOriginalNames.mockRejectedValueOnce(new Error('disk I/O error'));
+
+      await SyncService.claimOriginalNamesForSignIn(); // hidden
+      expect(emit).toHaveBeenCalledTimes(1);
+
+      mockToken = 'token-a';
+      await SyncService.claimOriginalNamesForSignIn(); // shown again; no listing needed
+      expect(emit).toHaveBeenCalledTimes(2);
+      expect(emit).toHaveBeenLastCalledWith('remoteAssetsUpdated');
+
+      await SyncService.claimOriginalNamesForSignIn(); // nothing changed
+      expect(emit).toHaveBeenCalledTimes(2);
+      emit.mockRestore();
+    });
+
     test('an unknown account with nothing owned yet changes nothing', async () => {
       mockToken = null;
       for (const previous of [undefined, '']) {

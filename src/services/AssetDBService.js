@@ -1222,8 +1222,11 @@ class AssetDBService {
 
   // While the names on the phone may be another account's (dropping them failed), reads leave
   // them out. For this run of the app only: the drop is tried again on the next check.
+  // Returns whether that changed what reads return.
   hideOriginalNames(hidden) {
+    const changed = !!this._originalNamesHidden !== !!hidden;
     this._originalNamesHidden = !!hidden;
+    return changed;
   }
 
   // Up to `limit` server photos whose original name the server hasn't confirmed but this phone

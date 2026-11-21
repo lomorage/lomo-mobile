@@ -72,6 +72,31 @@ describe('prepareRemoteShareFile', () => {
       expect(removed()).not.toContain(`${root}${recent}`);
     });
 
+    test('a copy whose download took over an hour is kept for the hour after it was handed over', async () => {
+      const start = Date.now();
+      const clock = jest.spyOn(Date, 'now').mockReturnValue(start);
+      let firstDir;
+      FileSystem.downloadAsync.mockImplementationOnce(async (url, path) => {
+        firstDir = path.slice(root.length).split('/')[0];
+        clock.mockReturnValue(start + 2 * 60 * 60 * 1000); // a slow download
+        return downloaded;
+      });
+      FileSystem.readDirectoryAsync.mockImplementation(async (p) => {
+        if (p === root && firstDir) return [firstDir];
+        throw new Error('no such folder');
+      });
+
+      await prepareRemoteShareFile(asset);
+      clock.mockReturnValue(start + 2 * 60 * 60 * 1000 + 60 * 1000); // shared again a minute later
+      await prepareRemoteShareFile(asset);
+      expect(removed()).not.toContain(`${root}${firstDir}`);
+
+      clock.mockReturnValue(start + 4 * 60 * 60 * 1000); // and again two hours later
+      await prepareRemoteShareFile(asset);
+      expect(removed()).toContain(`${root}${firstDir}`);
+      clock.mockRestore();
+    });
+
     test("a share started from another screen doesn't remove a copy still downloading", async () => {
       let finishFirst;
       let firstDir;

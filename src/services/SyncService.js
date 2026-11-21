@@ -1150,12 +1150,12 @@ class SyncService {
     } catch (e) {
       // Whose names these are can't be told: keep them out of sight, change nothing, try later.
       console.warn('[SyncService] Failed to read whose original names these are:', e?.message);
-      AssetDBService.hideOriginalNames(true);
+      this._setOriginalNamesHidden(true);
       return;
     }
     if (previous === key && key) {
       // This account's (e.g. back to it after a failed switch hid them): show them again.
-      AssetDBService.hideOriginalNames(false);
+      this._setOriginalNamesHidden(false);
       return;
     }
     // Account unknown: no names are written meanwhile (see _originalNamesOwned), so a cache with
@@ -1167,7 +1167,7 @@ class SyncService {
     // would otherwise skip the listing that brings the names given at upload.
     // Until that has worked, the names on the phone are hidden from every screen, and the owner
     // isn't updated, so the next check (next listing, next start) tries again.
-    AssetDBService.hideOriginalNames(true);
+    this._setOriginalNamesHidden(true);
     let cleared = false;
     try {
       await AssetDBService.clearRemoteOriginalNames();
@@ -1180,7 +1180,17 @@ class SyncService {
     this._namesState = undefined;
     console.log('[SyncService] Original names belong to another account now; they will be read again.');
     await AssetDBService.setSyncState('originalNamesAccount', key);
-    AssetDBService.hideOriginalNames(false);
+    this._setOriginalNamesHidden(false);
+  }
+
+  // Hides or shows the names on the phone (see AssetDBService.hideOriginalNames). Open galleries
+  // keep their own copy of the rows and the listing may not run again (unchanged tree), so they
+  // are told to read them again whenever that changes.
+  _setOriginalNamesHidden(hidden) {
+    if (AssetDBService.hideOriginalNames(hidden)) {
+      const { DeviceEventEmitter } = require('react-native');
+      DeviceEventEmitter.emit('remoteAssetsUpdated');
+    }
   }
 
   // Whether the original names in the cache are this account's: its id is known and recorded as

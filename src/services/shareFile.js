@@ -6,21 +6,26 @@ import AuthService from './AuthService';
 import { cachedShareFileName, downloadFileName, fileUriIn, shareCacheDir, shareTempRoot } from '../utils/fileName';
 import { shortKey } from '../utils/shortKey';
 
-// One-off copies (no known account) older than this are removed when a new one is made: by then
-// the receiving app has long read them.
+// One-off copies (no known account) handed over longer ago than this are removed when a new one
+// is made: by then the receiving app has long read them.
 const TEMP_COPY_MAX_AGE_MS = 60 * 60 * 1000;
 // Folders of downloads still running, from any screen: never removed from under them.
 const tempDirsInUse = new Set();
+// When each copy of this run was handed over: its age counts from then, not from when its
+// (possibly long) download started. Copies from earlier runs fall back to their folder's stamp.
+const tempDirsDone = new Map();
 
 async function removeOldTempCopies() {
   const root = shareTempRoot(FileSystem.cacheDirectory);
   const names = await FileSystem.readDirectoryAsync(root).catch(() => []);
   const now = Date.now();
   for (const name of names) {
-    const made = Number(String(name).split('-')[0]);
-    if (tempDirsInUse.has(`${root}${name}/`)) continue;
-    if (Number.isFinite(made) && now - made < TEMP_COPY_MAX_AGE_MS) continue;
+    const dir = `${root}${name}/`;
+    if (tempDirsInUse.has(dir)) continue;
+    const since = tempDirsDone.get(dir) ?? Number(String(name).split('-')[0]);
+    if (Number.isFinite(since) && now - since < TEMP_COPY_MAX_AGE_MS) continue;
     await FileSystem.deleteAsync(`${root}${name}`, { idempotent: true }).catch(() => {});
+    tempDirsDone.delete(dir);
   }
 }
 
@@ -39,7 +44,10 @@ export async function prepareRemoteShareFile(asset) {
   try {
     return await downloadForShare(asset, dir, remoteUrl, session);
   } finally {
-    if (tempDir) tempDirsInUse.delete(tempDir);
+    if (tempDir) {
+      tempDirsInUse.delete(tempDir);
+      tempDirsDone.set(tempDir, Date.now());
+    }
   }
 }
 
