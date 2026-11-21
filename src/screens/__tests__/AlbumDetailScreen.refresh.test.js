@@ -47,6 +47,11 @@ jest.mock('../../services/RemoteAlbumService', () => ({
     updateAlbumCover: jest.fn(),
   },
 }));
+jest.mock('../../services/AuthService', () => ({
+  __esModule: true,
+  default: { getSession: () => mockSession },
+}));
+let mockSession = 1;
 jest.mock('../../services/NetworkQueue', () => ({ __esModule: true, default: { cancelGroup: jest.fn() } }));
 jest.mock('../../services/AssetDBService', () => ({
   __esModule: true,
@@ -112,6 +117,96 @@ describe('AlbumDetailScreen - rows updated elsewhere', () => {
     await flush();
 
     expect(GalleryStore.setAssets).toHaveBeenLastCalledWith([expect.objectContaining({ originalName: 'IMG_1.HEIC' })], 'album_1');
+    act(() => tree.unmount());
+  });
+
+  const named = (originalName) => [{ hash: 'hash1', id: '1', mediaType: 'photo', originalName }];
+  const blockedRead = () => {
+    let finish;
+    AssetDBService.getAssetsByHashes.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    return (rows) => act(async () => { finish(rows); });
+  };
+
+  test("a refresh still reading when the album is left doesn't write the shared cache", async () => {
+    let tree;
+    await act(async () => { tree = renderer.create(<AlbumDetailScreen />); });
+    await flush();
+    const finish = blockedRead();
+    await act(async () => { DeviceEventEmitter.emit('remoteAssetsUpdated'); });
+    act(() => tree.unmount());
+    GalleryStore.setAssets.mockClear();
+
+    await finish(named('OLD_ACCOUNT.HEIC'));
+    await flush();
+
+    expect(GalleryStore.setAssets).not.toHaveBeenCalled();
+  });
+
+  test("a load still running when the album is left doesn't write the shared cache", async () => {
+    let tree;
+    const finish = blockedRead();
+    await act(async () => { tree = renderer.create(<AlbumDetailScreen />); });
+    await flush();
+    act(() => tree.unmount());
+
+    await finish(named('OLD_ACCOUNT.HEIC'));
+    await flush();
+
+    expect(GalleryStore.setAssets).not.toHaveBeenCalled();
+  });
+
+  test('a read started before a sign-in change writes nothing', async () => {
+    let tree;
+    await act(async () => { tree = renderer.create(<AlbumDetailScreen />); });
+    await flush();
+    GalleryStore.setAssets.mockClear();
+    const finish = blockedRead();
+    await act(async () => { DeviceEventEmitter.emit('remoteAssetsUpdated'); });
+    mockSession = 2;
+
+    await finish(named('OLD_ACCOUNT.HEIC'));
+    await flush();
+
+    expect(GalleryStore.setAssets).not.toHaveBeenCalled();
+    mockSession = 1;
+    act(() => tree.unmount());
+  });
+
+  test('a refresh during a full load runs after it, so the load cannot put old rows back', async () => {
+    let tree;
+    await act(async () => { tree = renderer.create(<AlbumDetailScreen />); });
+    await flush();
+    const finishLoad = blockedRead(); // the reload's read: rows from before the name was learned
+    await act(async () => { DeviceEventEmitter.emit('albumAssetsUpdated', '1'); });
+    await flush();
+    AssetDBService.getAssetsByHashes.mockResolvedValueOnce(named('IMG_1.HEIC'));
+    await act(async () => { DeviceEventEmitter.emit('remoteAssetsUpdated'); });
+
+    await finishLoad(named(null));
+    await flush();
+
+    expect(GalleryStore.setAssets).toHaveBeenLastCalledWith([expect.objectContaining({ originalName: 'IMG_1.HEIC' })], 'album_1');
+    act(() => tree.unmount());
+  });
+
+  test("a refresh during a full load doesn't drop the photos the load found", async () => {
+    let tree;
+    await act(async () => { tree = renderer.create(<AlbumDetailScreen />); });
+    await flush();
+    RemoteAlbumService.getAlbumAssets.mockResolvedValueOnce(['hash1', 'hash2']); // a photo added
+    const finishLoad = blockedRead();
+    await act(async () => { DeviceEventEmitter.emit('albumAssetsUpdated', '1'); });
+    await flush();
+    AssetDBService.getAssetsByHashes.mockResolvedValue(named('IMG_1.HEIC'));
+    await act(async () => { DeviceEventEmitter.emit('remoteAssetsUpdated'); });
+
+    await finishLoad(named(null));
+    await flush();
+
+    const [items] = GalleryStore.setAssets.mock.calls[GalleryStore.setAssets.mock.calls.length - 1];
+    expect(items.map((a) => a.hash)).toEqual(['hash1', 'hash2']);
+    expect(items[0].originalName).toBe('IMG_1.HEIC');
+    AssetDBService.getAssetsByHashes.mockResolvedValue([{ hash: 'hash1', id: '1', mediaType: 'photo' }]);
     act(() => tree.unmount());
   });
 
