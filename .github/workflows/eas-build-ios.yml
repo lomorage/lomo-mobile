@@ -1,0 +1,34 @@
+name: EAS Build iOS
+
+# Manual trigger only: EAS free tier is 15 iOS builds/month,
+# so this must NOT run on every push.
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "EAS build profile (production = App Store, preview = internal test build)"
+        type: choice
+        options:
+          - production
+          - preview
+        default: production
+
+jobs:
+  build-ios:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - run: npm ci
+
+      - run: eas build --platform ios --profile ${{ inputs.profile }} --non-interactive
