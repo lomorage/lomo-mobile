@@ -31,6 +31,7 @@ import { translateToEnglish } from './ai/translateQuery';
 import { rankFaceAlbumMatches, groupDuplicateFaceAlbums, titleForFaceAlbumMerge, DEFAULT_FACE_MATCH_THRESHOLD } from './ai/faceAlbumMatching';
 import { clusterDuplicateAssets } from './ai/duplicateDetection';
 import { reportNonFatal } from './crashReporting';
+import { previewDiagnostics } from './ai/previewDiagnostics';
 
 // What kind of file ML Kit was handed, without the path itself.
 function describeFaceImage(uri) {
@@ -1029,7 +1030,7 @@ class AIService {
   // Rejects when ML Kit fails, so callers can mark the photo failed instead of
   // "no faces". context: { source, width, height, scale } of the image handed
   // to ML Kit, sent with the non-fatal report. Sizes only, no paths.
-  async _detectFaces(detector, uri, { restoreDetector, context } = {}) {
+  async _detectFaces(detector, uri, { restoreDetector, context, preview } = {}) {
     return this._enqueueFaceDetection(async () => {
       let stage = 'initialize';
       let result;
@@ -1043,8 +1044,12 @@ class AIService {
           e.faceDetectionKind = kind;
           e.faceDetectionStage = stage;
         }
+        const diagnostics = preview && kind === 'load_failed' && stage === 'detect'
+          ? await previewDiagnostics(uri, preview.url, preview.headers).catch(() => ({}))
+          : {};
         reportNonFatal('FaceDetectionError', kind, {
           ...context,
+          ...diagnostics,
           stage,
           code: e?.code,
           image: describeFaceImage(uri),
@@ -2520,6 +2525,7 @@ class AIService {
                   try {
                     const faceResponse = await this._detectFaces(this.faceDetector, downloadRes.uri, {
                       context: { source: 'remote' },
+                      preview: { url: previewUrl, headers: downloadRes.headers },
                     });
                     const faces = faceResponse?.faces || [];
 

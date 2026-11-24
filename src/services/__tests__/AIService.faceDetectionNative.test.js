@@ -698,6 +698,30 @@ describe('remote photos, native face detection rejects', () => {
     expect(FileSystem.downloadAsync).toHaveBeenCalledTimes(3);
   });
 
+  test('reports bounded, filename-free diagnostics for a rejected remote preview', async () => {
+    const { Image } = require('react-native');
+    jest.spyOn(Image, 'getSize').mockResolvedValueOnce({ width: 640, height: 480 });
+    const db = remoteDb([{ id: 'r1', hash: 'private-name', clipEmbedding: 'E', faceRecVersion: null }]);
+    AssetDBService.db = db;
+    require('../MediaService').getPreviewUrl.mockReturnValueOnce('/private-name?icodec=webp&token=secret');
+    FileSystem.downloadAsync.mockImplementationOnce(async (_url, uri) => ({
+      status: 200, uri, headers: { 'Content-Type': 'image/jpeg; name=private-name' },
+    }));
+    FileSystem.getInfoAsync.mockResolvedValueOnce({ exists: true, size: 123 });
+    FileSystem.readAsStringAsync.mockResolvedValueOnce(btoa('RIFF1234WEBPprivate-name'));
+    mockNativeFace.detectFaces.mockRejectedValueOnce(new Error('RNMLKitImage: Could not load image from private-name'));
+    await AIService.syncEmbeddings(true);
+    const log = crashlytics.log.mock.calls[0][1];
+    expect(JSON.parse(log.slice(log.indexOf('{')))).toMatchObject({
+      contentType: 'jpeg', requestedWebp: true, fileFormat: 'webp', fileExists: true,
+      fileBytes: 123, systemDecode: 'ok', width: 640, height: 480,
+    });
+    expect(log).not.toMatch(/private-name|secret/);
+    expect(FileSystem.readAsStringAsync).toHaveBeenCalledWith(expect.any(String),
+      { encoding: 'base64', position: 0, length: 64 });
+    expect(faceVersionOf(db, 'r1')).toBe(-3);
+  });
+
   test('a preview that reads on a later sync is detected normally', async () => {
     const db = remoteDb([{ id: 'r1', hash: 'h1', clipEmbedding: 'E', faceRecVersion: null }]);
     AssetDBService.db = db;
@@ -710,6 +734,24 @@ describe('remote photos, native face detection rejects', () => {
     await AIService.syncEmbeddings(true);
 
     expect(faceVersionOf(db, 'r1')).toBe(1);
+  });
+
+  test('a diagnostic read or decode failure still produces the original report', async () => {
+    const { Image } = require('react-native');
+    jest.spyOn(Image, 'getSize').mockRejectedValueOnce(new Error('private-name'));
+    const db = remoteDb([{ id: 'r1', hash: 'h1', clipEmbedding: 'E', faceRecVersion: null }]);
+    AssetDBService.db = db;
+    FileSystem.getInfoAsync.mockRejectedValueOnce(new Error('private-name'));
+    FileSystem.readAsStringAsync.mockRejectedValueOnce(new Error('private-name'));
+    mockNativeFace.detectFaces.mockRejectedValueOnce(new Error('RNMLKitImage: Could not load image from private-name'));
+    await AIService.syncEmbeddings(true);
+    const log = crashlytics.log.mock.calls[0][1];
+    expect(JSON.parse(log.slice(log.indexOf('{')))).toMatchObject({
+      contentType: 'missing', fileFormat: 'unreadable', systemDecode: 'failed',
+    });
+    expect(log).not.toContain('private-name');
+    expect(crashlytics.recordError.mock.calls[0][1].message).toBe('FaceDetectionError: load_failed');
+    expect(faceVersionOf(db, 'r1')).toBe(-3);
   });
 
   test('a preview the detector always fails on is downloaded three times, not on every sync', async () => {
