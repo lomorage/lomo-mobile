@@ -1521,60 +1521,60 @@ export default function SettingsScreen({ navigation, route }) {
                             }
                         />
                     )}
-                </View>
-            </Modal>
 
-            {/* Full Screen Asset Viewer Modal */}
-            <Modal
-                visible={selectedAssetIndexToView !== null}
-                transparent={true}
-                animationType="fade"
-                onRequestClose={() => setSelectedAssetIndexToView(null)}
-            >
-                {selectedAssetIndexToView !== null && (
-                    <View style={{ flex: 1, backgroundColor: '#000' }}>
-                        <TouchableOpacity 
-                            style={{ position: 'absolute', top: Platform.OS === 'ios' ? 65 : 45, right: 20, zIndex: 10, padding: 15, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 30 }}
-                            onPress={() => setSelectedAssetIndexToView(null)}
-                            hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
-                        >
-                            <X color="#fff" size={28} />
-                        </TouchableOpacity>
-                        
-                        <FlatList
-                            data={previewAssets}
-                            horizontal
-                            pagingEnabled
-                            keyExtractor={(item) => item.id}
-                            initialScrollIndex={selectedAssetIndexToView}
-                            getItemLayout={(data, index) => ({
-                                length: Dimensions.get('window').width,
-                                offset: Dimensions.get('window').width * index,
-                                index,
-                            })}
-                            onViewableItemsChanged={onViewableItemsChanged}
-                            viewabilityConfig={viewabilityConfig}
-                            renderItem={({ item, index }) => (
-                                <View style={{ width: Dimensions.get('window').width, flex: 1 }}>
-                                    {/* Always mount the image so there is no flash when switching to/from video player */}
-                                    <Image 
-                                        source={{ uri: item.uri }} 
-                                        style={{ flex: 1 }} 
-                                        contentFit="contain"
-                                    />
-                                    {/* Conditionally overlay the video player when active */}
-                                    {item.mediaType === 'video' && selectedAssetIndexToView === index && (
-                                        <View style={StyleSheet.absoluteFillObject}>
-                                            <SimpleVideoPlayer uri={item.uri} isActive={true} />
+                    {/* Full Screen Asset Viewer Modal: nested in the preview so iOS presents it over the sheet instead of failing to present it from the root. */}
+                    <Modal
+                        visible={selectedAssetIndexToView !== null}
+                        transparent={true}
+                        animationType="fade"
+                        onRequestClose={() => setSelectedAssetIndexToView(null)}
+                    >
+                        {selectedAssetIndexToView !== null && (
+                            <View style={{ flex: 1, backgroundColor: '#000' }}>
+                                <TouchableOpacity 
+                                    style={{ position: 'absolute', top: Platform.OS === 'ios' ? 65 : 45, right: 20, zIndex: 10, padding: 15, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 30 }}
+                                    onPress={() => setSelectedAssetIndexToView(null)}
+                                    hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
+                                >
+                                    <X color="#fff" size={28} />
+                                </TouchableOpacity>
+                                
+                                <FlatList
+                                    data={previewAssets}
+                                    horizontal
+                                    pagingEnabled
+                                    keyExtractor={(item) => item.id}
+                                    initialScrollIndex={selectedAssetIndexToView}
+                                    getItemLayout={(data, index) => ({
+                                        length: Dimensions.get('window').width,
+                                        offset: Dimensions.get('window').width * index,
+                                        index,
+                                    })}
+                                    onViewableItemsChanged={onViewableItemsChanged}
+                                    viewabilityConfig={viewabilityConfig}
+                                    renderItem={({ item, index }) => (
+                                        <View style={{ width: Dimensions.get('window').width, flex: 1 }}>
+                                            {/* Always mount the image so there is no flash when switching to/from video player */}
+                                            <Image 
+                                                source={{ uri: item.uri }} 
+                                                style={{ flex: 1 }} 
+                                                contentFit="contain"
+                                            />
+                                            {/* Conditionally overlay the video player when active */}
+                                            {item.mediaType === 'video' && selectedAssetIndexToView === index && (
+                                                <View style={StyleSheet.absoluteFillObject}>
+                                                    <SimpleVideoPlayer uri={item.uri} isActive={true} />
+                                                </View>
+                                            )}
                                         </View>
                                     )}
-                                </View>
-                            )}
-                            onEndReached={loadMorePreviewAssets}
-                            onEndReachedThreshold={0.5}
-                        />
-                    </View>
-                )}
+                                    onEndReached={loadMorePreviewAssets}
+                                    onEndReachedThreshold={0.5}
+                                />
+                            </View>
+                        )}
+                    </Modal>
+                </View>
             </Modal>
         </View>
     );
