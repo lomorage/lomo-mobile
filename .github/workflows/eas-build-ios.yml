@@ -26,10 +26,14 @@ jobs:
 
       - uses: expo/expo-github-action@v8
         with:
-          # Reuse the stored signing credentials until an authorized interactive build revalidates them.
-          eas-version: 20.1.0
+          eas-version: latest
           token: ${{ secrets.EXPO_TOKEN }}
 
       - run: npm ci
 
-      - run: eas build --platform ios --profile ${{ inputs.profile }} --non-interactive
+      # EAS must ask whether to log in to Apple. Declining lets it reuse the
+      # existing remote distribution credentials while running from CI.
+      - name: Build iOS with existing signing credentials
+        shell: bash
+        run: |
+          printf 'n\n' | script -q -e -c 'env -u CI -u GITHUB_ACTIONS eas build --platform ios --profile "${{ inputs.profile }}"' /dev/null
