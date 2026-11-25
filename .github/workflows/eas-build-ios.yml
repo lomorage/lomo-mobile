@@ -26,7 +26,8 @@ jobs:
 
       - uses: expo/expo-github-action@v8
         with:
-          eas-version: latest
+          # Reuse the stored signing credentials until an authorized interactive build revalidates them.
+          eas-version: 20.1.0
           token: ${{ secrets.EXPO_TOKEN }}
 
       - run: npm ci
