@@ -25,7 +25,9 @@
   "submit": {
     "production": {
       "ios": {
-        "companyName": "WTAO LLC"
+        "companyName": "WTAO LLC",
+        "appleId": "lovejennifer14@gmail.com",
+        "ascAppId": "6771038226"
       }
     }
   }
