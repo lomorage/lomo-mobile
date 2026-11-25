@@ -69,7 +69,7 @@ const AiLiveCard = ({ status, styles }) => {
                 <View style={[styles.statBarFill, { width: `${aiPct(current, total)}%` }]} />
             </View>
             <View style={styles.liveMetaRow}>
-                <Text style={styles.liveMetaText}>{current.toLocaleString()} / {total.toLocaleString()}</Text>
+                <Text style={styles.liveMetaText}>{(current || 0).toLocaleString()} / {(total || 0).toLocaleString()}</Text>
                 <Text style={styles.liveMetaText}>{rate > 0 ? `${rate} photos/sec${etaText ? ` · ${etaText}` : ''}` : 'Starting…'}</Text>
             </View>
             {recentFinds && recentFinds.length > 0 && (
@@ -298,8 +298,8 @@ export default function SettingsScreen({ navigation, route }) {
         // which doesn't event out per-count-change — so poll it instead of trying to
         // catch every transition. Cheap COUNT queries, and only while this screen is open.
         const refreshAiDetail = () => {
-            AIService.getDetailedIndexStatus().then(setAiDetailedStatus);
-            AIService.getIdleBlockReason().then(setAiBlockReason);
+            AIService.getDetailedIndexStatus().then(setAiDetailedStatus).catch(() => {});
+            AIService.getIdleBlockReason().then(setAiBlockReason).catch(() => {});
         };
         refreshAiDetail();
         const aiDetailInterval = setInterval(refreshAiDetail, 6000);
@@ -1183,9 +1183,9 @@ export default function SettingsScreen({ navigation, route }) {
                             )}
                         </View>
                         <Text style={styles.settingDescription}>{serverUrl || 'Not configured'}</Text>
-                        {serverName && <Text style={styles.serverBadge}>Identity: {serverName}</Text>}
-                        {localUrl && <Text style={{fontSize: 12, color: '#666', marginTop: 8}}>• Local: {localUrl}</Text>}
-                        {remoteUrl && <Text style={{fontSize: 12, color: '#666', marginTop: 2}}>• Remote: {remoteUrl}</Text>}
+                        {!!serverName && <Text style={styles.serverBadge}>Identity: {serverName}</Text>}
+                        {!!localUrl && <Text style={{fontSize: 12, color: '#666', marginTop: 8}}>• Local: {localUrl}</Text>}
+                        {!!remoteUrl && <Text style={{fontSize: 12, color: '#666', marginTop: 2}}>• Remote: {remoteUrl}</Text>}
                     </View>
                     <Server color="#4A5568" size={24} />
                 </View>

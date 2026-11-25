@@ -82,7 +82,9 @@ export function SettingsProvider({ children }) {
             const savedExcludedAlbums = await SecureStore.getItemAsync('lomorage_excluded_albums');
             if (savedExcludedAlbums !== null) {
                 try {
-                    setExcludedAlbums(JSON.parse(savedExcludedAlbums));
+                    const parsed = JSON.parse(savedExcludedAlbums);
+                    // Settings calls .includes() on this every render; a non-array would crash it.
+                    if (Array.isArray(parsed)) setExcludedAlbums(parsed);
                 } catch (e) {
                     console.error('Failed to parse excluded albums:', e);
                 }

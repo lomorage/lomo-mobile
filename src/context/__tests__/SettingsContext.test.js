@@ -123,6 +123,14 @@ describe('loadSettings (mount)', () => {
     expect(latestSettings.isLoading).toBe(false);
   });
 
+  test('valid JSON that is not a list (e.g. "null") falls back to the empty list', async () => {
+    SecureStore.getItemAsync.mockImplementation((key) =>
+      Promise.resolve(key === 'lomorage_excluded_albums' ? 'null' : null)
+    );
+    await renderSettingsProvider();
+    expect(latestSettings.excludedAlbums).toEqual([]);
+  });
+
   test('isLoading still clears (does not hang) when SecureStore itself throws', async () => {
     SecureStore.getItemAsync.mockRejectedValue(new Error('keychain unavailable'));
     await renderSettingsProvider();
