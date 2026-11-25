@@ -118,6 +118,63 @@ class RemoteAlbumService {
   }
 
   /**
+   * Every asset hash in an album, all pages. Unlike getAlbumAssets it throws when the server
+   * can't be read, so a caller deciding what to add never mistakes a failure for an empty album.
+   * @param {string|number} albumId
+   * @returns {Promise<Set<string>>}
+   */
+  async getAllAlbumAssetHashes(albumId) {
+    const serverUrl = AuthService.getServerUrl();
+    const token = AuthService.getToken();
+    if (!serverUrl || !token) throw new Error('Not signed in to a Lomorage server.');
+    const hashes = new Set();
+    // lomod pages by a fixed size and answers an empty page past the end. The cap only guards
+    // against a server that never does.
+    for (let page = 0; page < 1000; page++) {
+      const response = await axios.get(`${serverUrl}/album/${albumId}/assets`, {
+        params: { hash: 1, page },
+        headers: { Authorization: `token=${token}` },
+        skipAutoProbe: true,
+        timeout: 15000,
+        priority: 1,
+        groupId: 'PhoneAlbums'
+      });
+      const data = Array.isArray(response.data) ? response.data : [];
+      if (data.length === 0) break;
+      const before = hashes.size;
+      for (const item of data) {
+        const hash = typeof item === 'string' ? item : (item.Hash || item.hash);
+        if (hash) hashes.add(hash);
+      }
+      if (hashes.size === before) break; // the same page again: stop rather than loop
+    }
+    return hashes;
+  }
+
+  /**
+   * Adds several assets to an album in one request. Throws when the server refuses: lomod
+   * inserts them in one statement, so a hash already in the album fails the whole request and
+   * callers must leave those out.
+   * @param {string|number} albumId
+   * @param {string[]} hashes
+   */
+  async addAssetsToAlbum(albumId, hashes) {
+    const serverUrl = AuthService.getServerUrl();
+    const token = AuthService.getToken();
+    if (!serverUrl || !token) throw new Error('Not signed in to a Lomorage server.');
+    if (!albumId || !hashes || hashes.length === 0) return;
+    await axios.post(
+      `${serverUrl}/album/${albumId}/assets`,
+      JSON.stringify(hashes),
+      {
+        headers: { Authorization: `token=${token}`, 'Content-Type': 'application/json' },
+        timeout: 30000,
+        skipAutoProbe: true
+      }
+    );
+  }
+
+  /**
    * Adds an asset to a specific album.
    * @param {string} albumId - The ID of the album.
    * @param {string} assetHash - The hash (ID) of the asset to add.

@@ -52,7 +52,13 @@ jest.mock('../../services/BackupSafetyService', () => ({
   default: { checkAll: jest.fn() },
 }));
 
+jest.mock('../../services/PhoneAlbumService', () => ({
+  __esModule: true,
+  default: { copyAlbumsToServer: jest.fn(() => Promise.resolve({ albums: 0, added: 0 })) },
+}));
+
 const AssetDBService = require('../../services/AssetDBService').default;
+const PhoneAlbumService = require('../../services/PhoneAlbumService').default;
 const MediaService = require('../../services/MediaService').default;
 const BackupSafetyService = require('../../services/BackupSafetyService').default;
 import FreeUpSpaceScreen from '../FreeUpSpaceScreen';
@@ -126,6 +132,9 @@ test('deletes only what the computer confirmed, after the user confirms', async 
   expect(MediaService.deleteLocalAssets).not.toHaveBeenCalled();
 
   await act(async () => { await buttons.find(b => b.text === 'Delete').onPress(); });
+  expect(PhoneAlbumService.copyAlbumsToServer).toHaveBeenCalledWith(['v1']);
+  expect(PhoneAlbumService.copyAlbumsToServer.mock.invocationCallOrder[0])
+    .toBeLessThan(MediaService.deleteLocalAssets.mock.invocationCallOrder[0]);
   expect(MediaService.deleteLocalAssets).toHaveBeenCalledWith(['v1']);
   expect(AssetDBService.markAssetsRemovedLocally).toHaveBeenCalledWith(['v1']);
   expect(allText(tree)).toContain('Videos (1)');
@@ -154,4 +163,60 @@ test('nothing is deleted when nothing could be confirmed', async () => {
 
   expect(Alert.alert.mock.calls[0][0]).toBe('Not Safe to Delete Yet');
   expect(MediaService.deleteLocalAssets).not.toHaveBeenCalled();
+});
+
+test('when the albums cannot be saved, nothing is deleted unless the user says so', async () => {
+  BackupSafetyService.checkAll.mockResolvedValue({ safe: ['v1'], unsafe: [], weakEvidence: false });
+  PhoneAlbumService.copyAlbumsToServer.mockRejectedValueOnce(new Error('offline'));
+  const tree = await render();
+  await pressText(tree, 'Select All');
+  await pressText(tree, 'Delete');
+  const confirm = Alert.alert.mock.calls[0][2];
+  await act(async () => { await confirm.find(b => b.text === 'Delete').onPress(); });
+
+  expect(MediaService.deleteLocalAssets).not.toHaveBeenCalled();
+  const [title, , buttons] = Alert.alert.mock.calls[1];
+  expect(title).toBe("Couldn't Save Albums");
+  await act(async () => { await buttons.find(b => b.text === 'Delete Anyway').onPress(); });
+  expect(MediaService.deleteLocalAssets).toHaveBeenCalledWith(['v1']);
+});
+
+test('a backup check that went stale while albums were saved is redone (not the copy) before deleting', async () => {
+  BackupSafetyService.checkAll.mockResolvedValue({ safe: ['v1'], unsafe: [], weakEvidence: false });
+  let now = 1_000_000;
+  const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+  PhoneAlbumService.copyAlbumsToServer.mockImplementationOnce(async () => { now += 60 * 60 * 1000; return { albums: 0, added: 0 }; });
+  const tree = await render();
+  await pressText(tree, 'Select All');
+  await pressText(tree, 'Delete');
+  const confirm = Alert.alert.mock.calls[0][2];
+  await act(async () => { await confirm.find(b => b.text === 'Delete').onPress(); });
+
+  expect(BackupSafetyService.checkAll).toHaveBeenCalledTimes(2);
+  expect(BackupSafetyService.checkAll).toHaveBeenLastCalledWith(['v1'], expect.any(Function));
+  expect(PhoneAlbumService.copyAlbumsToServer).toHaveBeenCalledTimes(1);
+  expect(MediaService.deleteLocalAssets).toHaveBeenCalledWith(['v1']);
+  clock.mockRestore();
+});
+
+test('when the redone check differs from what the user confirmed, the user is asked again', async () => {
+  BackupSafetyService.checkAll
+    .mockResolvedValueOnce({ safe: ['v1', 'v2'], unsafe: [], weakEvidence: false })
+    .mockResolvedValueOnce({ safe: ['v1'], unsafe: [{ id: 'v2', reason: 'file_missing' }], weakEvidence: false });
+  let now = 1_000_000;
+  const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+  PhoneAlbumService.copyAlbumsToServer.mockImplementationOnce(async () => { now += 60 * 60 * 1000; return { albums: 0, added: 0 }; });
+  const tree = await render();
+  await pressText(tree, 'Select All');
+  await pressText(tree, 'Delete');
+  await act(async () => { await Alert.alert.mock.calls[0][2].find(b => b.text === 'Delete').onPress(); });
+
+  expect(MediaService.deleteLocalAssets).not.toHaveBeenCalled();
+  const [title, message, buttons] = Alert.alert.mock.calls[1];
+  expect(title).toBe('Delete from Device');
+  expect(message).toContain('1 will stay on this phone');
+  await act(async () => { await buttons.find(b => b.text === 'Delete').onPress(); });
+  expect(MediaService.deleteLocalAssets).toHaveBeenCalledWith(['v1']);
+  expect(PhoneAlbumService.copyAlbumsToServer).toHaveBeenCalledTimes(1);
+  clock.mockRestore();
 });

@@ -24,6 +24,33 @@ export const formatTakenDate = (item) => {
     return ms > 0 ? new Date(ms).toLocaleString() : '';
 };
 
+// Usable coordinates, or null: 0,0 is what lomod and the phone report for "no location".
+export const validCoords = (latitude, longitude) => {
+    const lat = Number(latitude);
+    const lng = Number(longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+    if (lat === 0 && lng === 0) return null;
+    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+    return { latitude: lat, longitude: lng };
+};
+
+// The location line under a photo: the place name when it is known ("Cluj-Napoca, Cluj,
+// Romania"), else the coordinates, else '' (no location).
+export const formatLocation = (location) => {
+    if (!location) return '';
+    const parts = [];
+    for (const part of [location.city, location.region, location.country]) {
+        const text = typeof part === 'string' ? part.trim() : '';
+        if (text && !parts.includes(text)) parts.push(text);
+    }
+    if (parts.length > 0) return parts.join(', ');
+    const coords = validCoords(location.latitude, location.longitude);
+    return coords ? `${coords.latitude.toFixed(5)}, ${coords.longitude.toFixed(5)}` : '';
+};
+
+export const hasPlaceName = (location) => !!location
+    && [location.city, location.region, location.country].some(part => typeof part === 'string' && part.trim());
+
 // Width / height of the picture as drawn, for limiting zoom panning. Photos: the size the image
 // view reported once loaded (after EXIF rotation), else the library's. Videos: unknown (the player
 // letterboxes by itself and a rotated video's reported size can be swapped), so no limit beyond
