@@ -141,6 +141,17 @@ export function classifyFaceDetectionError(error) {
 }
 
 export const BACKGROUND_AI_SYNC_TASK = 'LOMO_AI_SYNC_TASK';
+// After a remote-feature download pass that settled none of its rows, how long later passes
+// skip it while the same rows are still pending. New remote rows (a different count) end the
+// wait at once, and so does an app restart (the stall is kept in memory only).
+export const REMOTE_DOWNLOAD_STALL_MS = 30 * 60 * 1000;
+
+export function shouldSkipStalledDownloadPass(stall, pendingCount, now) {
+  if (!stall || pendingCount === 0) return false;
+  if (stall.pending !== pendingCount) return false;
+  return now - stall.at < REMOTE_DOWNLOAD_STALL_MS;
+}
+
 class AIService {
   constructor() {
     this.isProcessing = false;
@@ -2250,21 +2261,37 @@ class AIService {
       // Part B: Download remote embeddings and phash from server
       const savedRemoteAI = await SecureStore.getItemAsync('lomorage_remote_ai_processing');
       const remoteAIEnabled = savedRemoteAI !== 'false';
+      const totalDownloadRow = (remoteAIEnabled || force) && isIdle ? await db.getFirstAsync(`
+          SELECT COUNT(*) as count
+          FROM MediaAsset
+          WHERE isLocal = 0
+            AND ((clipEmbedding IS NULL OR clipEmbedding = "") OR (phash IS NULL OR phash = ""))
+        `) : null;
+      const pendingDownloadCount = totalDownloadRow?.count || 0;
       if (!remoteAIEnabled && !force) {
         console.log('[AIService] Skip remote embedding download: remote AI indexing disabled.');
       } else if (!isIdle) {
         console.log('[AIService] Skip remote embedding download: device is not on Wi-Fi/charging per settings.');
       } else {
-        const totalDownloadRow = await db.getFirstAsync(`
-          SELECT COUNT(*) as count 
-          FROM MediaAsset 
-          WHERE isLocal = 0 
-            AND ((clipEmbedding IS NULL OR clipEmbedding = "") OR (phash IS NULL OR phash = ""))
-        `);
-        const totalDownloads = totalDownloadRow?.count || 0;
+        // Only the download loop below is skipped in these two cases; Part C still runs.
+        let skipDownloads = false;
+        if (this._metadataByIdUnsupportedServer === url) {
+          console.log('[AIService] Skip remote embedding download: this server has no /assets/metadata/byid.');
+          skipDownloads = true;
+        } else if (shouldSkipStalledDownloadPass(this._remoteDownloadStall, pendingDownloadCount, Date.now())) {
+          // The last pass resolved none of these rows (server IDs not known yet, every request
+          // failed). Running it again right away re-shows "Syncing remote photo features (N/N)"
+          // after every sync without changing anything -- the stuck pill users reported.
+          console.log(`[AIService] Skip remote embedding download: last pass made no progress on ${pendingDownloadCount} rows.`);
+          skipDownloads = true;
+        }
+        const totalDownloads = pendingDownloadCount;
         let processedDownloads = 0;
+        // Rows this pass actually settled (a value or 'none' written back). Zero at the end
+        // means the pass changed nothing; see _remoteDownloadStall.
+        let resolvedDownloads = 0;
 
-        let hasMoreDownloads = true;
+        let hasMoreDownloads = !skipDownloads;
         // By id, like Part A, so a failed request or unresolved rows don't re-select the same
         // batch; they're retried on the next syncEmbeddings() pass.
         let lastDownloadId = '';
@@ -2407,8 +2434,18 @@ class AIService {
             // embedding/phash) and are naturally retried on the next syncEmbeddings() pass.
             downloadBatchElapsedMs = Date.now() - downloadBatchStart;
             console.warn(`[AIService] Failed to fetch metadata batch of ${ids.length} ids:`, e.message);
+            const status = e?.response?.status;
+            if (status === 404 || status === 405) {
+              // An older lomod without the batch endpoint answers every batch this way. Asking
+              // 1,000+ more times this pass (and every pass after) can't succeed.
+              console.warn('[AIService] Server has no /assets/metadata/byid; skipping remote feature download until restart.');
+              this._metadataByIdUnsupportedServer = url;
+              hasMoreDownloads = false;
+              break;
+            }
             this._tryReconnectOnNetworkError(e);
           }
+          resolvedDownloads += pHashUpdates.length;
 
           // Execute batch database writes
           if (pHashUpdates.length > 0) {
@@ -2423,6 +2460,11 @@ class AIService {
           }
         await this._pacedDelay(downloadBatchElapsedMs);
       }
+        if (!skipDownloads) {
+          this._remoteDownloadStall = (totalDownloads > 0 && resolvedDownloads === 0)
+            ? { pending: totalDownloads, at: Date.now() }
+            : null;
+        }
 
         // Part C: Scheme B - Local extraction for remote photos (idle Wi-Fi/Charging only)
         const savedRemoteAI = await SecureStore.getItemAsync('lomorage_remote_ai_processing');

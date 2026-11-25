@@ -315,6 +315,8 @@ describe('AIService.syncEmbeddings (smoke)', () => {
     jest.clearAllMocks();
     AIService.isSyncing = false;
     AIService._metadataWithoutIdServer = null;
+    AIService._metadataByIdUnsupportedServer = null;
+    AIService._remoteDownloadStall = null;
     AssetDBService.db = null;
     SecureStore.getItemAsync.mockResolvedValue(null);
     AuthService.getServerUrl.mockReturnValue('http://localhost:8000');
@@ -498,6 +500,8 @@ describe('AIService.syncEmbeddings with rows that stay pending', () => {
     jest.clearAllMocks();
     AIService.isSyncing = false;
     AIService._metadataWithoutIdServer = null;
+    AIService._metadataByIdUnsupportedServer = null;
+    AIService._remoteDownloadStall = null;
     SecureStore.getItemAsync.mockResolvedValue(null);
     AuthService.getServerUrl.mockReturnValue('http://localhost:8000');
     AuthService.getToken.mockReturnValue('test-token');
@@ -593,5 +597,76 @@ describe('AIService.syncEmbeddings with rows that stay pending', () => {
     await expect(AIService.syncEmbeddings(true)).resolves.toBeUndefined();
 
     expect(FileSystem.downloadAsync).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('AIService.syncEmbeddings remote download that makes no progress', () => {
+  const downloadRows = [{ id: 'r1', hash: 'h1' }, { id: 'r2', hash: 'h2' }];
+  const filenames = { h1: '101.jpg', h2: '102.jpg' };
+  const byIdCalls = () => axios.post.mock.calls.filter(([u]) => u.includes('/assets/metadata/byid'));
+  const remotePills = () => DeviceEventEmitter.emit.mock.calls
+    .filter(([evt, s]) => evt === 'ai_processing_status' && s.message?.startsWith('Syncing remote photo features'));
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    AIService.isSyncing = false;
+    AIService._metadataWithoutIdServer = null;
+    AIService._metadataByIdUnsupportedServer = null;
+    AIService._remoteDownloadStall = null;
+    SecureStore.getItemAsync.mockResolvedValue(null);
+    AuthService.getServerUrl.mockReturnValue('http://localhost:8000');
+    AuthService.getToken.mockReturnValue('test-token');
+  });
+
+  test('is not run again (and shows no pill) right after a pass that settled nothing', async () => {
+    // Every request failing left the same rows pending, and each sync re-ran the whole pass,
+    // re-showing "Syncing remote photo features (N/N)" without changing anything.
+    axios.post.mockRejectedValue(new Error('timeout'));
+    AssetDBService.db = makeSyncMockDb({ downloadRows, filenames });
+    await AIService.syncEmbeddings(true);
+    expect(byIdCalls()).toHaveLength(1);
+
+    jest.clearAllMocks();
+    AssetDBService.db = makeSyncMockDb({ downloadRows, filenames });
+    await AIService.syncEmbeddings(true);
+    expect(byIdCalls()).toHaveLength(0);
+    expect(remotePills()).toHaveLength(0);
+  });
+
+  test('runs again as soon as the pending rows change', async () => {
+    axios.post.mockRejectedValue(new Error('timeout'));
+    AssetDBService.db = makeSyncMockDb({ downloadRows, filenames });
+    await AIService.syncEmbeddings(true);
+
+    jest.clearAllMocks();
+    axios.post.mockRejectedValue(new Error('timeout'));
+    AssetDBService.db = makeSyncMockDb({
+      downloadRows: [...downloadRows, { id: 'r3', hash: 'h3' }],
+      filenames: { ...filenames, h3: '103.jpg' },
+    });
+    await AIService.syncEmbeddings(true);
+    expect(byIdCalls()).toHaveLength(1);
+  });
+
+  test('a pass that settled rows does not hold the next one back', async () => {
+    axios.post.mockResolvedValue({ data: [] }); // every hash missing -> written back as 'none'
+    AssetDBService.db = makeSyncMockDb({ downloadRows, filenames });
+    await AIService.syncEmbeddings(true);
+    expect(AIService._remoteDownloadStall).toBeNull();
+  });
+
+  test('a server without /assets/metadata/byid is not asked again', async () => {
+    const notFound = Object.assign(new Error('Request failed with status code 404'), { response: { status: 404 } });
+    axios.post.mockRejectedValue(notFound);
+    AssetDBService.db = makeSyncMockDb({ downloadRows, filenames });
+    await AIService.syncEmbeddings(true);
+    expect(byIdCalls()).toHaveLength(1);
+    expect(AIService._metadataByIdUnsupportedServer).toBe('http://localhost:8000');
+
+    jest.clearAllMocks();
+    AIService._remoteDownloadStall = null;
+    AssetDBService.db = makeSyncMockDb({ downloadRows, filenames });
+    await AIService.syncEmbeddings(true);
+    expect(byIdCalls()).toHaveLength(0);
   });
 });

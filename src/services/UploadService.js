@@ -495,10 +495,16 @@ class UploadService {
         }
 
         let tempFileToClean = null;
+        // 'read' until the bytes and hash are in hand, then 'server'. A failure while reading
+        // says nothing about the network or the server: typically an original that lives only in
+        // iCloud and can't be downloaded right now. AutoBackupManager sets those aside instead of
+        // counting them towards the circuit breaker (see localReadFailed below).
+        let stage = 'read';
 
         try {
             // 1. Get full asset info
             const info = await MediaService.getAssetInfo(asset.id, { shouldDownloadFromNetwork: true });
+            if (!info) throw new Error('Could not read this item from the photo library (it may be stored only in iCloud).');
             // ALWAYS prioritize info.uri (content:// on Android) over localUri.
             // localUri is often an ephemeral cached transcode with a different hash.
             // Using content:// guarantees consistent hashes across app restarts!
@@ -604,6 +610,8 @@ class UploadService {
                     if (fullBlob.size) fileSizeBytes = fullBlob.size;
                 } catch(e) {}
             }
+
+            stage = 'server';
 
             // 4. Check if already uploaded or partially uploaded (Server-side de-duplication)
             const status = await this.checkUploadStatus(hash);
@@ -745,6 +753,12 @@ class UploadService {
             }
         } catch (error) {
             console.error('[UploadService] Upload failed:', error);
+            if (stage === 'read' && error && typeof error === 'object') error.localReadFailed = true;
+            // A failed upload used to leave its full-size copy (the .raw exact-bytes file or the
+            // Live Photo zip) in the cache until the item eventually succeeded. Items that keep
+            // failing -- iCloud-only originals -- left one copy each, on phones that are short of
+            // space to begin with. The copy is recreated from the library on the next attempt.
+            if (tempFileToClean) await FileSystem.deleteAsync(tempFileToClean, { idempotent: true }).catch(()=>{});
             throw error;
         }
     }
