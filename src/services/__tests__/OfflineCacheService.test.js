@@ -26,12 +26,20 @@ jest.mock('../AuthService', () => ({
   getServerUrl: jest.fn(() => 'http://localhost:8000'),
   getToken: jest.fn(() => 'test-token'),
 }));
+jest.mock('../MediaService', () => ({
+  getPreviewUrl: jest.fn((hash, type, large) => `http://localhost:8000/preview/${hash}?width=${large ? 640 : 320}&height=-1&token=test-token`),
+}));
+jest.mock('expo-secure-store', () => ({
+  getItemAsync: jest.fn().mockResolvedValue('2'),
+  setItemAsync: jest.fn().mockResolvedValue(),
+}));
 
 const FileSystem = require('expo-file-system/legacy');
 const { DeviceEventEmitter } = require('react-native');
 const AssetDBService = require('../AssetDBService');
 const RemoteAlbumService = require('../RemoteAlbumService');
 const AuthService = require('../AuthService');
+const SecureStore = require('expo-secure-store');
 
 import OfflineCacheService from '../OfflineCacheService';
 
@@ -43,6 +51,7 @@ beforeEach(() => {
   AssetDBService.getFavoriteAssetsToCache.mockResolvedValue([]);
   AuthService.getServerUrl.mockReturnValue('http://localhost:8000');
   AuthService.getToken.mockReturnValue('test-token');
+  SecureStore.getItemAsync.mockResolvedValue('2');
 });
 
 describe('syncFavoritesFromServer', () => {
@@ -153,13 +162,14 @@ describe('downloadPendingFavorites', () => {
     expect(FileSystem.downloadAsync).not.toHaveBeenCalled();
   });
 
-  test('downloads each pending favorite and records its local cache path', async () => {
+  test('downloads the 640 px preview of each pending favorite, not the original', async () => {
     AssetDBService.getFavoriteAssetsToCache.mockResolvedValue([{ hash: 'h1', mediaType: 'photo' }]);
     await OfflineCacheService.downloadPendingFavorites();
     expect(FileSystem.downloadAsync).toHaveBeenCalledWith(
-      expect.stringContaining('/asset/h1?token=test-token'),
+      expect.stringContaining('/preview/h1?width=640'),
       expect.stringContaining('h1.jpg')
     );
+    expect(FileSystem.downloadAsync.mock.calls[0][0]).not.toContain('/asset/');
     expect(AssetDBService.updateAssetCachePath).toHaveBeenCalledWith('h1', 'file:///mock-doc/lomo_favorites/cached.jpg');
   });
 
@@ -207,5 +217,27 @@ describe('toggleFavorite', () => {
     RemoteAlbumService.getAlbums.mockRejectedValue(new Error('network down'));
     await expect(OfflineCacheService.toggleFavorite('hash1', true)).resolves.toBeUndefined();
     expect(AssetDBService.setAssetFavoriteStatus).toHaveBeenCalledWith('hash1', true);
+  });
+});
+
+describe('migrateCacheFormat', () => {
+  test('deletes copies in the old format (originals, videos) once and clears their paths', async () => {
+    SecureStore.getItemAsync.mockResolvedValue(null);
+    AssetDBService.db = { getAllAsync: jest.fn().mockResolvedValue([]), runAsync: jest.fn().mockResolvedValue() };
+
+    await OfflineCacheService.migrateCacheFormat();
+
+    expect(FileSystem.deleteAsync).toHaveBeenCalledWith('file:///mock-doc/lomo_favorites/', { idempotent: true });
+    expect(AssetDBService.db.runAsync).toHaveBeenCalledWith(expect.stringContaining('SET localCachePath = NULL'));
+    expect(SecureStore.setItemAsync).toHaveBeenCalledWith('lomo_favorites_cache_format', '2');
+  });
+
+  test('leaves current copies alone', async () => {
+    AssetDBService.db = { getAllAsync: jest.fn().mockResolvedValue([]), runAsync: jest.fn().mockResolvedValue() };
+
+    await OfflineCacheService.migrateCacheFormat();
+
+    expect(FileSystem.deleteAsync).not.toHaveBeenCalled();
+    expect(AssetDBService.db.runAsync).not.toHaveBeenCalled();
   });
 });

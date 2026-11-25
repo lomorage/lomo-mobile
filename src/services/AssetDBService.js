@@ -1662,7 +1662,9 @@ class AssetDBService {
     if (!this.db) return [];
     try {
       const rows = await this.db.getAllAsync(
-        `SELECT hash, filename, mediaType FROM MediaAsset WHERE isLocal = 0 AND isFavorite = 1 AND localCachePath IS NULL`
+        // Photos only: nothing shows a video's offline copy (every reader skips localCachePath
+        // for videos), and the copy used to be the whole video.
+        `SELECT hash, filename, mediaType FROM MediaAsset WHERE isLocal = 0 AND isFavorite = 1 AND localCachePath IS NULL AND COALESCE(mediaType, '') != 'video'`
       );
       return rows;
     } catch (error) {

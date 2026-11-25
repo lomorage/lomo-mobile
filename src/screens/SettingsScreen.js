@@ -9,6 +9,7 @@ import AuthService from '../services/AuthService';
 import Logger from '../utils/logger';
 import AIService from '../services/AIService';
 import AiModelsRow from '../components/AiModelsRow';
+import StorageSettings from '../components/StorageSettings';
 import { formatBytesLog } from '../utils/formatters';
 import { Send, Folder, X, PlayCircle } from 'lucide-react-native';
 import * as MediaLibrary from 'expo-media-library';
@@ -676,6 +677,8 @@ export default function SettingsScreen({ navigation, route }) {
                 </View>
 
             </View>
+
+            <StorageSettings styles={styles} />
 
             {!liteMode && (
             <Animated.View

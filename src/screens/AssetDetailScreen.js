@@ -1127,8 +1127,10 @@ export default function AssetDetailScreen({ route, navigation }) {
         // Offline Cache overriding logic:
         const usingLocalCache = item.status === 'remote' && item.localCachePath && item.mediaType !== 'video';
         if (usingLocalCache) {
+            // The offline copy is a 640 px preview: shown at once, and kept on screen (also
+            // when offline) if the original that replaces it after a while can't be loaded.
             thumbUri = item.localCachePath;
-            staticImageUri = item.localCachePath;
+            staticImageUri = originalUri || item.localCachePath;
         } else {
             // Recover from a stale/slow server URL or a transient load failure -- see
             // serverEpoch/retryEpoch above. Bare URLs alone won't re-trigger the loader.
