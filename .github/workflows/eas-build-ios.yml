@@ -37,3 +37,9 @@ jobs:
         shell: bash
         run: |
           printf 'n\n' | script -q -e -c 'env -u CI -u GITHUB_ACTIONS eas build --platform ios --profile "${{ inputs.profile }}"' /dev/null
+
+      - name: Submit production build to App Store Connect
+        if: ${{ inputs.profile == 'production' }}
+        env:
+          EXPO_APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.EXPO_APPLE_APP_SPECIFIC_PASSWORD }}
+        run: eas submit --platform ios --profile production --latest --non-interactive
