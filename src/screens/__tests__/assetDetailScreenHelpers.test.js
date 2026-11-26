@@ -106,3 +106,24 @@ describe('wantsOriginal', () => {
     expect(wantsOriginal(undefined)).toBe(false);
   });
 });
+
+describe('formatLocation', () => {
+  const { formatLocation, validCoords, hasPlaceName } = require('../assetDetailScreenHelpers');
+
+  test('shows the place name, without repeating a part', () => {
+    expect(formatLocation({ city: 'Cluj-Napoca', region: 'Cluj', country: 'Romania', latitude: 46.77, longitude: 23.6 }))
+      .toBe('Cluj-Napoca, Cluj, Romania');
+    expect(formatLocation({ city: 'Singapore', region: 'Singapore', country: 'Singapore' })).toBe('Singapore');
+  });
+
+  test('falls back to the coordinates while there is no place name', () => {
+    expect(formatLocation({ latitude: 46.7712345, longitude: 23.6236789 })).toBe('46.77123, 23.62368');
+  });
+
+  test('shows nothing for no location, including 0,0', () => {
+    expect(formatLocation(null)).toBe('');
+    expect(formatLocation({ latitude: 0, longitude: 0 })).toBe('');
+    expect(validCoords(91, 10)).toBeNull();
+    expect(hasPlaceName({ city: '  ' })).toBe(false);
+  });
+});

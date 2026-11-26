@@ -374,6 +374,26 @@ class AssetDBService {
         }
       }
 
+      // Only from 18: versions 17 and 18 stay un-bumped when their columns are missing so they
+      // retry next launch, and bumping past them here would skip that retry for good.
+      if (currentVersion === 18) {
+        // Version 19: place names for photos whose coordinates arrived after the place-name pass
+        // had already run. That pass used to mark every row with hasGeo = 0 as checked, but for a
+        // photo on the server hasGeo = 0 means "coordinates not fetched yet" (-1 is "has none"),
+        // so once its coordinates came in the row was never looked at again and searching by
+        // place could not find it. Clear the mark on every row that still has no place name.
+        try {
+          const result = await db.runAsync(
+            'UPDATE MediaAsset SET locationChecked = 0 WHERE locationChecked = 1 AND hasGeo != -1 AND locationCity IS NULL AND locationState IS NULL AND locationCountry IS NULL'
+          );
+          console.log(`[AssetDBService] v19 migration: ${result.changes} rows queued for a place name again.`);
+        } catch (e) {
+          console.warn('[AssetDBService] Failed to migrate database to version 19:', e.message);
+        }
+        await db.execAsync('PRAGMA user_version = 19');
+        currentVersion = 19;
+      }
+
       // Whether the refused-upload columns can be named in a query. Checked rather than assumed
       // from user_version so a database that did not take the migration degrades to the old
       // behaviour (refusals not remembered, so uploads are retried as before) instead of failing
@@ -1776,12 +1796,53 @@ class AssetDBService {
   async saveAssetLocation(id, location, locationPinyin) {
     if (!this.db) return;
     try {
+      if (locationPinyin == null) {
+        // The pinyin search key, when the caller didn't work it out (the photo viewer).
+        const combined = [location.city, location.region, location.country].filter(Boolean).join(' ');
+        locationPinyin = combined ? pinyin(combined, { toneType: 'none', type: 'array' }).join('') : null;
+      }
       await this.db.runAsync(
         'UPDATE MediaAsset SET locationCity = ?, locationState = ?, locationCountry = ?, locationPinyin = ?, locationChecked = 1 WHERE id = ?',
         [location.city || null, location.region || null, location.country || null, locationPinyin || null, id]
       );
     } catch (error) {
       console.error('[AssetDBService] Failed to save asset location:', error);
+    }
+  }
+
+  // Where a photo was taken, for the photo viewer. Returns null when the database doesn't know
+  // yet, { none: true } when it knows the photo has no location (hasGeo = -1), else the row id,
+  // coordinates and the place name once the place-name pass has looked it up. A photo can have
+  // two rows (its phone id and its hash), so the most informative row wins.
+  async getAssetLocation(id, hash) {
+    if (!this.db) return null;
+    try {
+      const keys = [id, hash].filter(Boolean);
+      if (keys.length === 0) return null;
+      const placeholders = keys.map(() => '?').join(',');
+      const rows = await this.db.getAllAsync(
+        `SELECT id, hasGeo, latitude, longitude, locationCity, locationState, locationCountry FROM MediaAsset
+         WHERE id IN (${placeholders}) OR hash IN (${placeholders})
+         ORDER BY (locationCity IS NOT NULL OR locationCountry IS NOT NULL) DESC`,
+        [...keys, ...keys]
+      );
+      const row = rows.find(r => r.hasGeo === 1);
+      if (!row) {
+        // "None" only when every row has been read and has none: a row not read yet (0) may
+        // still have coordinates (a server photo whose GPS sync hasn't reached it).
+        return rows.length > 0 && rows.every(r => r.hasGeo === -1) ? { none: true } : null;
+      }
+      return {
+        id: row.id,
+        latitude: row.latitude,
+        longitude: row.longitude,
+        city: row.locationCity,
+        region: row.locationState,
+        country: row.locationCountry,
+      };
+    } catch (error) {
+      console.error('[AssetDBService] Failed to read asset location:', error);
+      return null;
     }
   }
 

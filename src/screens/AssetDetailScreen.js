@@ -12,7 +12,8 @@ import AuthService from '../services/AuthService';
 import MediaService from '../services/MediaService';
 import SyncService from '../services/SyncService';
 import { isLivePhoto } from '../utils/livePhoto';
-import { getCacheKey, formatTakenDate, contentAspectOf, mergeServerMetadata, wantsOriginal, ORIGINAL_SWAP_DELAY_MS } from './assetDetailScreenHelpers';
+import { getCacheKey, formatTakenDate, formatLocation, contentAspectOf, mergeServerMetadata, wantsOriginal, ORIGINAL_SWAP_DELAY_MS } from './assetDetailScreenHelpers';
+import { usePhotoLocation } from '../hooks/usePhotoLocation';
 import { useSettings } from '../context/SettingsContext';
 import RemoteAlbumService from '../services/RemoteAlbumService';
 import AIService from '../services/AIService';
@@ -21,6 +22,7 @@ import axios from 'axios';
 import NetworkQueue from '../services/NetworkQueue';
 import OfflineCacheService from '../services/OfflineCacheService';
 import AssetDBService from '../services/AssetDBService';
+import PhoneAlbumService from '../services/PhoneAlbumService';
 import GalleryStore from '../store/GalleryStore';
 import ZoomableMedia from '../components/ZoomableMedia';
 import { useServerEpoch } from '../hooks/useServerEpoch';
@@ -282,6 +284,7 @@ export default function AssetDetailScreen({ route, navigation }) {
     const { debugMode, liteMode } = useSettings();
     const [useOriginalVideo, setUseOriginalVideo] = useState(false);
     const [isUploading, setIsUploading] = useState(false);
+    const [isSavingAlbums, setIsSavingAlbums] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(0);
     const [currentIndex, setCurrentIndex] = useState(initialIndex || 0);
     // Recovers remote preview/full-size images that fail to load -- either because the
@@ -594,6 +597,8 @@ export default function AssetDetailScreen({ route, navigation }) {
 
     
     const currentAsset = assets[currentIndex] || {};
+    const { location: photoLocation, canAskForPlaceNames, requestPlaceNames } = usePhotoLocation(currentAsset);
+    const locationText = formatLocation(photoLocation);
 
     // Swap the 640 px preview for the original once a photo has been looked at for a while, so
     // zooming is sharp -- but only for the one on screen, and never in a swipe-through.
@@ -896,6 +901,20 @@ export default function AssetDetailScreen({ route, navigation }) {
                 let deletedLocally = false;
 
                 if (scope === 'local' || scope === 'both') {
+                    if (scope === 'local' && currentAsset.status === 'synced') {
+                        // It stays in Lomorage: keep the phone albums it is in, as Free Up Space does.
+                        // Finished before the delete (never left running alongside it, which could
+                        // leave an empty album), shown on screen while it runs. One photo, so a
+                        // failure is logged rather than stopping the delete.
+                        setIsSavingAlbums(true);
+                        try {
+                            await PhoneAlbumService.copyAlbumsToServer([currentAsset.id]);
+                        } catch (e) {
+                            console.warn('[AssetDetail] Saving phone albums failed:', e?.message);
+                        } finally {
+                            setIsSavingAlbums(false);
+                        }
+                    }
                     await MediaService.deleteLocalAsset(currentAsset.id);
                     deletedLocally = true;
                     if (currentAsset.status === 'local' || scope === 'both') isFullyDeleted = true;
@@ -1466,6 +1485,17 @@ export default function AssetDetailScreen({ route, navigation }) {
                 <Text style={styles.subInfoText}>
                     {formatTakenDate(currentAsset)}
                 </Text>
+                {locationText ? (
+                    <View style={styles.locationRow}>
+                        <Ionicons name="location-outline" size={14} color="#666" />
+                        <Text selectable style={styles.locationText} numberOfLines={2}>{locationText}</Text>
+                    </View>
+                ) : null}
+                {canAskForPlaceNames ? (
+                    <TouchableOpacity onPress={requestPlaceNames} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                        <Text style={styles.locationAction}>Show place names</Text>
+                    </TouchableOpacity>
+                ) : null}
             </View>
 
             {userAlbums.length > 0 && (
@@ -1492,6 +1522,12 @@ export default function AssetDetailScreen({ route, navigation }) {
                             <Text style={styles.undoBtnText}>UNDO</Text>
                         </TouchableOpacity>
                     )}
+                </View>
+            )}
+
+            {isSavingAlbums && (
+                <View style={styles.progressOverlay}>
+                    <Text style={styles.progressText}>Saving albums to Lomorage…</Text>
                 </View>
             )}
 
@@ -1662,6 +1698,23 @@ const styles = StyleSheet.create({
     subInfoText: {
         fontSize: 14,
         color: '#666',
+        marginTop: 4,
+    },
+    locationRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginTop: 4,
+        paddingHorizontal: 12,
+    },
+    locationText: {
+        fontSize: 14,
+        color: '#666',
+        marginLeft: 4,
+        flexShrink: 1,
+    },
+    locationAction: {
+        fontSize: 13,
+        color: '#2563eb',
         marginTop: 4,
     },
     slideboxContainer: {

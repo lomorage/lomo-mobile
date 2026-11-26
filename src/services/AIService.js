@@ -1997,6 +1997,11 @@ class AIService {
     }
     } finally {
       this.isProcessing = false;
+      // A place-name run put off (or stopped) because processing held isProcessing, including
+      // processing that returned early without reaching the inner finally.
+      if (this._geocodingDeferred) {
+        this.runBackgroundGeocoding().catch(e => console.error('[AIService] deferred geocoding failed:', e));
+      }
     }
   }
 
@@ -2908,31 +2913,101 @@ class AIService {
     }
   }
 
-  // 2.5 Background Reverse Geocoding queue with batch throttling and distance-based caching
-  async runBackgroundGeocoding() {
+  // 2.5 Background Reverse Geocoding queue with batch throttling and distance-based caching.
+  // It is what searching by place reads. Started when new coordinates arrive (SyncService), when
+  // the viewer is allowed location, and when AI processing finishes -- not during it: like the
+  // GPS sync, it waits so as not to add to the memory and database load of processing.
+  // One run at a time; a call during a run joins it, and makes it look once more at the end,
+  // since the rows that call is about (new coordinates) may have arrived after its last query.
+  runBackgroundGeocoding() {
+    if (this._geocodingRun) {
+      this._geocodingRerun = true;
+      return this._geocodingRun;
+    }
+    if (this.isProcessing) {
+      console.log('[AIService] Deferring geocoding: AI processing is running and starts it when done.');
+      this._geocodingDeferred = true;
+      return Promise.resolve();
+    }
+    this._geocodingDeferred = false;
+    this._geocodingRun = (async () => {
+      // Shared by every batch of this run: rows whose lookup failed this run (left out of later
+      // batches, not marked) and the failures since the last lookup that worked.
+      const run = { failed: new Set(), sinceSuccess: [], stop: false };
+      try {
+        do {
+          this._geocodingRerun = false;
+          let lastFirstId = null;
+          for (;;) {
+            if (this.isProcessing) { run.stop = true; this._geocodingDeferred = true; break; }
+            const batch = await this._geocodeBatch(run);
+            // The same first row again means the last batch changed nothing (its writes
+            // failed): stop instead of spinning on it.
+            if (run.stop || !batch.more || batch.firstId === lastFirstId) break;
+            lastFirstId = batch.firstId;
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+        } while (this._geocodingRerun && !run.stop);
+      } finally {
+        this._geocodingRun = null;
+        this._geocodingRerun = false;
+      }
+    })();
+    return this._geocodingRun;
+  }
+
+  // One batch of up to GEOCODE_BATCH rows. `more` is true when there may be more to do.
+  //
+  // A failed lookup marks nothing on its own: the service may be down (offline, rate limited),
+  // and marking would leave the photo without a place name for good. Two failures in a row stop
+  // the run. A row that failed goes to the back of the queue (this session), so failing rows
+  // can't sit in front of the rest; they are tried again once the others are done, and after
+  // GEOCODE_MAX_FAILURES failures -- counted only once a lookup has worked this session, so not
+  // while offline -- the row is marked done.
+  async _geocodeBatch(run = { failed: new Set(), sinceSuccess: [], stop: false }) {
+    const done = { more: false, firstId: null };
+    const GEOCODE_BATCH = 200;
+    const GEOCODE_MAX_FAILURES = 5;
+    if (!this._geocodeFailures) this._geocodeFailures = new Map(); // id -> failed lookups this session
     const db = AssetDBService.db;
-    if (!db) return;
+    if (!db) return done;
     try {
       console.log('[AIService] Running background geocoding check...');
       
       const { status } = await Location.getForegroundPermissionsAsync();
       if (status !== 'granted') {
         console.log('[AIService] Skip background geocoding: foreground location permission not granted.');
-        return;
+        return done;
       }
 
-      // 1. Mark all assets without geo coordinates as checked
-      await db.runAsync('UPDATE MediaAsset SET locationChecked = 1 WHERE hasGeo = 0 AND locationChecked = 0');
+      // 1. Mark the assets known to have no coordinates as checked. Only hasGeo = -1: 0 means
+      // the coordinates haven't been read yet (SyncService fetches a server photo's later), and
+      // marking those would leave them without a place name for good.
+      await db.runAsync('UPDATE MediaAsset SET locationChecked = 1 WHERE hasGeo = -1 AND locationChecked = 0');
       
       // 2. Fetch pending assets with geo coordinate data
-      const pending = await db.getAllAsync(
-        'SELECT id, latitude, longitude FROM MediaAsset WHERE hasGeo = 1 AND locationChecked = 0 LIMIT 200'
-      );
+      // Rows that never failed first; then rows that failed in an earlier run, once each per run.
+      const pendingSql = `SELECT id, latitude, longitude FROM MediaAsset WHERE hasGeo = 1 AND locationChecked = 0`;
+      const notIn = (ids) => (ids.length ? ` AND id NOT IN (${ids.map(() => '?').join(',')})` : '');
+      const failedBefore = [...this._geocodeFailures.keys()];
+      const skip = [...new Set([...failedBefore, ...run.failed])];
+      let pending = await db.getAllAsync(`${pendingSql}${notIn(skip)} LIMIT ${GEOCODE_BATCH}`, skip);
+      if (pending.length === 0) {
+        const retry = failedBefore.filter(id => !run.failed.has(id)).slice(0, GEOCODE_BATCH);
+        if (retry.length > 0) {
+          pending = await db.getAllAsync(`${pendingSql} AND id IN (${retry.map(() => '?').join(',')})`, retry);
+        }
+      }
       
       if (pending.length === 0) {
         console.log('[AIService] No pending geocoding assets found.');
-        return;
+        return done;
       }
+      const lookupWorked = (id) => {
+        this._geocodeWorked = true;
+        this._geocodeFailures.delete(id);
+        run.sinceSuccess = [];
+      };
       
       console.log(`[AIService] Found ${pending.length} pending geocoding assets. Processing...`);
       
@@ -3009,6 +3084,7 @@ class AIService {
               const loc = result[0];
               console.log(`[AIService] Geocoding resolved: city="${loc.city}", region="${loc.region}", country="${loc.country}"`);
               await AssetDBService.saveAssetLocation(asset.id, loc, computePinyin(loc));
+              lookupWorked(asset.id);
               geocodedCache.push({
                 lat: asset.latitude,
                 lng: asset.longitude,
@@ -3016,6 +3092,7 @@ class AIService {
               });
             } else {
               console.log(`[AIService] Geocoding returned empty results for asset ${asset.id}.`);
+              lookupWorked(asset.id);
               await AssetDBService.markLocationChecked(asset.id);
             }
             
@@ -3023,16 +3100,31 @@ class AIService {
             await new Promise(resolve => setTimeout(resolve, 3000));
           } catch (geocodeErr) {
             console.warn(`[AIService] reverseGeocodeAsync failed for asset ${asset.id}:`, geocodeErr.message);
-            // Mark checked as failed to prevent loop blocking, will retry if db cleared
-            await AssetDBService.markLocationChecked(asset.id);
-            // Sleep 5 seconds on failure before retrying next
+            run.failed.add(asset.id);
+            run.sinceSuccess.push(asset.id);
+            const failures = (this._geocodeFailures.get(asset.id) || 0) + 1;
+            this._geocodeFailures.set(asset.id, failures);
+            if (this._geocodeWorked && failures >= GEOCODE_MAX_FAILURES) {
+              // Lookups work, and this one has failed time after time: it's the coordinate.
+              this._geocodeFailures.delete(asset.id);
+              await AssetDBService.markLocationChecked(asset.id);
+            }
+            if (run.sinceSuccess.length >= 2) {
+              // Two in a row: the service is failing, not the coordinates. Try again next run.
+              console.log('[AIService] Geocoding stopped: lookups are failing; retrying on the next run.');
+              run.stop = true;
+              return done;
+            }
+            // Sleep 5 seconds on failure before trying the next one
             await new Promise(resolve => setTimeout(resolve, 5000));
           }
         }
       }
       console.log('[AIService] Background geocoding processing batch complete.');
+      return { more: pending.length === GEOCODE_BATCH, firstId: pending[0].id };
     } catch (e) {
       console.error('[AIService] Failed in runBackgroundGeocoding:', e);
+      return done;
     }
   }
 

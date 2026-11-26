@@ -8,6 +8,7 @@ import AssetDBService from '../services/AssetDBService';
 import BackupSafetyService from '../services/BackupSafetyService';
 import { ANDROID_DELETE_CHUNK, buildDeleteConfirmation, deleteInChunks, isVerificationStale } from './freeUpSpaceHelpers';
 import MediaService from '../services/MediaService';
+import PhoneAlbumService from '../services/PhoneAlbumService';
 import { describeCounts, summarizeBackup } from '../utils/backupSummary';
 import { formatBytesLog } from '../utils/formatters';
 import { useServerEpoch } from '../hooks/useServerEpoch';
@@ -40,6 +41,7 @@ export default function FreeUpSpaceScreen({ navigation }) {
     const [selectedIds, setSelectedIds] = useState(new Set());
     const [isDeleting, setIsDeleting] = useState(false);
     const [verifyProgress, setVerifyProgress] = useState(null); // { done, total } while checking
+    const [savingAlbums, setSavingAlbums] = useState(false);
     const [previewVideoUri, setPreviewVideoUri] = useState(null);
     const mounted = useRef(true);
 
@@ -171,6 +173,69 @@ export default function FreeUpSpaceScreen({ navigation }) {
         }
     };
 
+    // Which phone albums the photos are in is lost once they leave the phone, so it is copied to
+    // the server first. If that fails the user decides: the photos themselves are safe either way.
+    // Both the copy and that question can take a while, so a backup check that has gone stale is
+    // done again before deleting -- just the check: restarting the whole flow would redo the copy,
+    // which on a big library could go stale again every time.
+    const saveAlbumsThenDelete = async (idsToDelete, verifiedAt) => {
+        const deleteIfStillVerified = async () => {
+            if (!isVerificationStale(verifiedAt)) return deleteVerified(idsToDelete);
+            let check;
+            setIsDeleting(true);
+            setVerifyProgress({ done: 0, total: idsToDelete.length });
+            try {
+                check = await BackupSafetyService.checkAll(idsToDelete, (done, total) => {
+                    if (mounted.current) setVerifyProgress({ done, total });
+                });
+            } catch (e) {
+                console.error('[FreeUpSpaceScreen] Safety re-check failed:', e);
+                if (mounted.current) Alert.alert("Couldn't Verify Backup", "Nothing was deleted. Please make sure your Lomorage computer is on and try again.");
+                return undefined;
+            } finally {
+                if (mounted.current) {
+                    setIsDeleting(false);
+                    setVerifyProgress(null);
+                }
+            }
+            if (!mounted.current) return undefined;
+            const { message, deletable } = buildDeleteConfirmation(check, allItems, formatSize);
+            if (deletable.length === 0) {
+                Alert.alert("Not Safe to Delete Yet", message);
+                return undefined;
+            }
+            if (check.unsafe.length === 0 && !check.weakEvidence) return deleteVerified(deletable);
+            // Not what the user confirmed: show the new answer before deleting.
+            Alert.alert("Delete from Device", message, [
+                { text: "Cancel", style: "cancel" },
+                { text: "Delete", style: "destructive", onPress: () => deleteVerified(deletable) },
+            ]);
+            return undefined;
+        };
+        setIsDeleting(true);
+        setSavingAlbums(true);
+        try {
+            await PhoneAlbumService.copyAlbumsToServer(idsToDelete);
+        } catch (e) {
+            console.warn('[FreeUpSpaceScreen] Saving phone albums failed:', e?.message);
+            if (!mounted.current) return;
+            setIsDeleting(false);
+            setSavingAlbums(false);
+            Alert.alert(
+                "Couldn't Save Albums",
+                "Your photos are safe on your Lomorage computer, but we couldn't save which albums they are in on this phone. If you delete them now, those albums won't be kept in Lomorage.",
+                [
+                    { text: "Cancel", style: "cancel" },
+                    { text: "Delete Anyway", style: "destructive", onPress: deleteIfStillVerified },
+                ]
+            );
+            return;
+        }
+        if (!mounted.current) return;
+        setSavingAlbums(false);
+        await deleteIfStillVerified();
+    };
+
     const handleDelete = async () => {
         if (selectedIds.size === 0) return;
 
@@ -208,7 +273,7 @@ export default function FreeUpSpaceScreen({ navigation }) {
                     text: "Delete",
                     style: "destructive",
                     // The dialog may have sat open while things changed on the computer.
-                    onPress: () => (isVerificationStale(verifiedAt) ? handleDelete() : deleteVerified(deletable)),
+                    onPress: () => (isVerificationStale(verifiedAt) ? handleDelete() : saveAlbumsThenDelete(deletable, verifiedAt)),
                 }
             ]
         );
@@ -324,6 +389,8 @@ export default function FreeUpSpaceScreen({ navigation }) {
                         <Text style={styles.footerText}>
                             Checking with your Lomorage computer… {verifyProgress.done.toLocaleString('en-US')} of {verifyProgress.total.toLocaleString('en-US')}
                         </Text>
+                    ) : savingAlbums ? (
+                        <Text style={styles.footerText}>Saving your albums to Lomorage…</Text>
                     ) : (
                         <>
                             <Text style={styles.footerText}>Selected: {selectedIds.size.toLocaleString('en-US')}</Text>

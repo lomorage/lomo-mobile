@@ -1339,6 +1339,17 @@ class SyncService {
     return applied;
   }
 
+  // New coordinates came in: look up their place names (city, region, country) so searching by
+  // place finds them. Required lazily, as elsewhere here, since AIService pulls in much of the app.
+  _lookUpPlaceNames() {
+    try {
+      require('./AIService').default.runBackgroundGeocoding()
+        .catch(e => console.warn('[SyncService] place name lookup failed:', e?.message));
+    } catch (e) {
+      console.warn('[SyncService] place name lookup unavailable:', e?.message);
+    }
+  }
+
   async syncRemoteGPS() {
     return await MetricsTracker.measure('SyncService_syncRemoteGPS', async () => {
       if (this._isSyncingGPS) {
@@ -1468,6 +1479,7 @@ class SyncService {
         if (hasUpdates) {
           const { DeviceEventEmitter } = require('react-native');
           DeviceEventEmitter.emit('remoteAssetsUpdated');
+          this._lookUpPlaceNames();
         }
       } finally {
         this._isSyncingGPS = false;
@@ -1567,6 +1579,7 @@ class SyncService {
         if (hasUpdates) {
           const { DeviceEventEmitter } = require('react-native');
           DeviceEventEmitter.emit('remoteAssetsUpdated');
+          this._lookUpPlaceNames();
         }
       } finally {
         this._isSyncingLocalGPS = false;
