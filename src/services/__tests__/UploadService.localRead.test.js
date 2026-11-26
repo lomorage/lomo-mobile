@@ -59,7 +59,7 @@ describe('UploadService failures while reading the item', () => {
         await expect(UploadService._executeUpload(iosAsset)).rejects.toMatchObject({ localReadFailed: true });
     });
 
-    test('a failure talking to the server is not marked localReadFailed, and the temp copy is deleted', async () => {
+    test('a failure talking to the server is not marked localReadFailed, and the temp copy is kept for the retry', async () => {
         MediaService.getAssetInfo.mockResolvedValue({ uri: iosAsset.uri, filename: 'IMG_1.HEIC', creationTime: 1 });
         jest.spyOn(UploadService, 'checkUploadStatus').mockRejectedValue(new Error('Network request failed'));
 
@@ -67,6 +67,16 @@ describe('UploadService failures while reading the item', () => {
 
         expect(error.message).toBe('Network request failed');
         expect(error.localReadFailed).toBeUndefined();
+        expect(FileSystem.deleteAsync).not.toHaveBeenCalledWith('file:///mock-cache/ABC1L0001.raw', expect.anything());
+    });
+
+    test('a copy that failed partway is deleted, so the next attempt does not reuse it', async () => {
+        MediaService.getAssetInfo.mockResolvedValue({ uri: iosAsset.uri, filename: 'IMG_1.HEIC', creationTime: 1 });
+        FileSystem.getInfoAsync.mockResolvedValueOnce({ exists: false });
+        FileSystem.copyAsync.mockRejectedValueOnce(new Error('iCloud download failed'));
+
+        await UploadService._executeUpload(iosAsset).catch(() => {});
+
         expect(FileSystem.deleteAsync).toHaveBeenCalledWith('file:///mock-cache/ABC1L0001.raw', { idempotent: true });
     });
 });

@@ -179,4 +179,19 @@ describe('circuit breaker backoff', () => {
         expect(AutoBackupManager.retryCount).toBe(2);
         expect(AutoBackupManager.pauseReason).toBe('Network error. Resuming in 30s...');
     });
+
+    test('past the last step it keeps retrying every 2 minutes instead of stopping for good', async () => {
+        jest.useFakeTimers();
+        UploadService.uploadAsset.mockRejectedValue(new Error('Network request failed'));
+
+        for (const [trip, wait] of [[1, 5000], [2, 30000], [3, 120000], [4, 120000], [5, 120000]]) {
+            AutoBackupManager.isBackingUp = false;
+            AutoBackupManager.consecutiveErrors = 4;
+            await AutoBackupManager._uploadSingle(localAsset(`x${trip}`));
+            expect(AutoBackupManager.retryCount).toBe(trip);
+            expect(AutoBackupManager.pauseReason).toBe(`Network error. Resuming in ${wait / 1000}s...`);
+            jest.advanceTimersByTime(wait);
+            expect(AutoBackupManager.isPaused).toBe(false);
+        }
+    });
 });

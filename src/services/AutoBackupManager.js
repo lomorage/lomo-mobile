@@ -763,9 +763,12 @@ class AutoBackupManager {
 
             // Circuit Breaker TRIPPED! Global Exponential Backoff
             this.retryCount++;
-            const backoffDelays = [5000, 30000, 120000]; // 5s, 30s, 2min
-            if (this.retryCount <= backoffDelays.length) {
-                const delay = backoffDelays[this.retryCount - 1];
+            const backoffDelays = [5000, 30000, 120000]; // 5s, 30s, then every 2min
+            // Never locks: now that the backoff step survives each automatic resume, a lock after
+            // the last step would stop backup for good after a few minutes of NAS reboot or Wi-Fi
+            // drop, with nothing to restart it. It keeps trying every 2 minutes instead.
+            {
+                const delay = backoffDelays[Math.min(this.retryCount, backoffDelays.length) - 1];
                 this.retryMessage = `Network error. Resuming in ${delay / 1000}s...`;
                 console.log(`[AutoBackup] Circuit Breaker tripped! Backing off for ${delay}ms`);
                 this.pause(this.retryMessage);
@@ -778,9 +781,6 @@ class AutoBackupManager {
                     this.consecutiveErrors = 0;
                     this.resume({ keepBackoff: true });
                 }, delay);
-            } else {
-                console.error('[AutoBackup] Max retries exceeded. Circuit Breaker locked open permanently.');
-                this.pause('Backup failed. Check network or server.');
             }
             return false;
         } finally {

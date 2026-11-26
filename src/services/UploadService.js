@@ -534,6 +534,8 @@ class UploadService {
                 // which has a completely different hash than the original HEIC. 
                 // Copying the ph:// URI directly extracts the exact original file bytes.
                 uploadUri = `${FileSystem.cacheDirectory}${asset.id.replace(/[^a-zA-Z0-9]/g, '')}.raw`;
+                // Before the copy: a copy that fails partway must be deleted, not reused next time.
+                tempFileToClean = uploadUri;
                 const tempInfo = await FileSystem.getInfoAsync(uploadUri);
                 if (!tempInfo.exists) {
                     await FileSystem.copyAsync({ from: asset.uri, to: uploadUri });
@@ -757,8 +759,14 @@ class UploadService {
             // A failed upload used to leave its full-size copy (the .raw exact-bytes file or the
             // Live Photo zip) in the cache until the item eventually succeeded. Items that keep
             // failing -- iCloud-only originals -- left one copy each, on phones that are short of
-            // space to begin with. The copy is recreated from the library on the next attempt.
-            if (tempFileToClean) await FileSystem.deleteAsync(tempFileToClean, { idempotent: true }).catch(()=>{});
+            // space to begin with. So the copy goes when reading failed (it may be partial, and
+            // would be reused as is) or the server refused the file for good. After a network or
+            // server error it stays, so the retry resumes from it instead of copying the whole
+            // original again (an iCloud download for offloaded ones); StorageService removes
+            // copies left over after a day.
+            if (tempFileToClean && (stage === 'read' || error?.permanentReject)) {
+                await FileSystem.deleteAsync(tempFileToClean, { idempotent: true }).catch(()=>{});
+            }
             throw error;
         }
     }

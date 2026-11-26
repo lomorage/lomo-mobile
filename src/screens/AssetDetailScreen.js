@@ -1194,7 +1194,10 @@ export default function AssetDetailScreen({ route, navigation }) {
                                         contentFit="contain"
                                         cachePolicy="memory-disk"
                                         transition={0}
-                                        onError={usingLocalCache ? undefined : (originalUri ? () => { failedOriginals.current.add(item.hash); setOriginalHash(null); } : handleRemoteImageError)}
+                                        onError={originalUri
+                                            // The original failed (offline, server down): back to the preview or the offline copy, and don't try it again.
+                                            ? () => { failedOriginals.current.add(item.hash); setOriginalHash(null); }
+                                            : (usingLocalCache ? undefined : handleRemoteImageError)}
                                         onLoad={(event) => {
                                             if (event.source) {
                                                 console.log('[AssetDetailScreen] Image loaded for item:', loadedDimsKey, 'source size:', event.source.width, event.source.height);
