@@ -8,6 +8,7 @@ import { Cloud, CheckCircle, Smartphone, PlayCircle, PauseCircle, Settings as Se
 import MediaService from '../services/MediaService';
 import SyncService from '../services/SyncService';
 import OfflineCacheService from '../services/OfflineCacheService';
+import StorageService from '../services/StorageService';
 import AssetDBService from '../services/AssetDBService';
 import AutoBackupManager from '../services/AutoBackupManager';
 import AIService from '../services/AIService';
@@ -1180,11 +1181,14 @@ export default function HomeScreen({ navigation, route }) {
     useEffect(() => {
         isMounted.current = true;
         loadAndSync();
+        // Keep the rebuildable cache within the user's limit (throttled inside).
+        StorageService.prune().catch(() => {});
 
         const subscription = AppState.addEventListener('change', nextAppState => {
             if (appState.current.match(/inactive|background/) && nextAppState === 'active') {
                 if (isMounted.current) {
                     loadAndSync();
+                    StorageService.prune().catch(() => {});
                 }
             }
             appState.current = nextAppState;

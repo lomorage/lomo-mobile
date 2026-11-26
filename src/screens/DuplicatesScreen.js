@@ -24,6 +24,7 @@ import AssetDBService from '../services/AssetDBService';
 import MediaService from '../services/MediaService';
 import { deleteRemoteKeepingFailures, keptMessage } from '../utils/remoteCleanup';
 import AuthService from '../services/AuthService';
+import StorageService from '../services/StorageService';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Device from 'expo-device';
 import { useSettings } from '../context/SettingsContext';
@@ -320,7 +321,9 @@ function CompareItemPage({ item, index, isSelected, onToggle, setModalMeta, isFo
                         }));
                         setLoading(false);
                     } else {
-                        const localPath = `${FileSystem.cacheDirectory}${item.hash}`;
+                        // In the managed view cache, so StorageService keeps these originals
+                        // within the user's cache limit (they used to stay in the cache root).
+                        const localPath = `${await StorageService.viewCacheDir()}${item.hash}`;
                         const fileInfo = await FileSystem.getInfoAsync(localPath, { size: true });
                         let targetUri = localPath;
                         let fileSize = 0;

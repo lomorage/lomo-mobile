@@ -1,10 +1,21 @@
 import * as FileSystem from 'expo-file-system/legacy';
+import * as SecureStore from 'expo-secure-store';
 import { DeviceEventEmitter } from 'react-native';
 import AssetDBService from './AssetDBService';
 import RemoteAlbumService from './RemoteAlbumService';
 import AuthService from './AuthService';
+import MediaService from './MediaService';
 
-const CACHE_DIR = FileSystem.documentDirectory + 'lomo_favorites/';
+export const FAVORITES_CACHE_DIR = FileSystem.documentDirectory + 'lomo_favorites/';
+const CACHE_DIR = FAVORITES_CACHE_DIR;
+
+// Version of what the offline copies are. 1 (unset): the stored original -- videos included --
+// in Documents, which iOS never clears: a phone with a few favorite videos lost GBs to copies
+// nothing ever showed (every reader skips localCachePath for videos). 2: the 640 px preview the
+// server already keeps, photos only. Copies of an older version are deleted once, then fetched
+// again as previews.
+const CACHE_FORMAT_KEY = 'lomo_favorites_cache_format';
+const CACHE_FORMAT = '2';
 
 class OfflineCacheService {
   constructor() {
@@ -53,6 +64,8 @@ class OfflineCacheService {
 
       console.log('[OfflineCacheService] SQLite favorites synced. Triggering cleanup and download.');
       
+      await this.migrateCacheFormat();
+
       // 3. Clean up un-favorited cached files
       await this.cleanupRemovedFavorites();
       
@@ -97,7 +110,25 @@ class OfflineCacheService {
   }
 
   /**
-   * Downloads high-res thumbnails for favorite assets that aren't cached yet.
+   * Deletes offline copies made in an older format (full originals, videos) once, so they are
+   * fetched again as previews. See CACHE_FORMAT.
+   */
+  async migrateCacheFormat() {
+    if (!AssetDBService.db) return;
+    try {
+      if ((await SecureStore.getItemAsync(CACHE_FORMAT_KEY)) === CACHE_FORMAT) return;
+      await FileSystem.deleteAsync(CACHE_DIR, { idempotent: true });
+      await this.ensureCacheDirectory();
+      await AssetDBService.db.runAsync('UPDATE MediaAsset SET localCachePath = NULL WHERE localCachePath IS NOT NULL');
+      await SecureStore.setItemAsync(CACHE_FORMAT_KEY, CACHE_FORMAT);
+      console.log('[OfflineCacheService] Removed offline copies in the old format (originals); previews will be fetched.');
+    } catch (error) {
+      console.warn('[OfflineCacheService] Failed to migrate the offline copies:', error?.message);
+    }
+  }
+
+  /**
+   * Downloads the 640 px preview of favorite photos that aren't cached yet.
    */
   async downloadPendingFavorites() {
     const assetsToCache = await AssetDBService.getFavoriteAssetsToCache();
@@ -115,14 +146,15 @@ class OfflineCacheService {
       return;
     }
 
+    await this.ensureCacheDirectory();
     for (const asset of assetsToCache) {
-      // Only cache images for now (or high-res thumbnails of videos)
-      const ext = asset.mediaType === 'video' ? 'mp4' : 'jpg';
-      const fileUri = `${CACHE_DIR}${asset.hash}.${ext}`;
-      
-      // For images, we pull a 1200px width preview. For videos, maybe a preview frame or just the video if small?
-      // Since video caching can be huge, we'll just cache the high-res image preview for videos too, so it looks good offline.
-      const remoteUri = `${serverUrl}/asset/${asset.hash}?token=${token}`;
+      // The 640 px preview, one of the sizes the server pre-generates (see MediaService
+      // getPreviewUrl): enough to browse favorites offline, and when online the viewer still
+      // swaps in the original after a few seconds. The extension is only a name; the image
+      // loader reads the format from the bytes (JPEG, or WebP on servers that offer it).
+      const fileUri = `${CACHE_DIR}${asset.hash}.jpg`;
+      const remoteUri = MediaService.getPreviewUrl(asset.hash, 'photo', true);
+      if (!remoteUri) continue;
 
       try {
         const downloadRes = await FileSystem.downloadAsync(remoteUri, fileUri);
@@ -131,6 +163,7 @@ class OfflineCacheService {
           console.log(`[OfflineCacheService] Cached ${asset.hash} at ${downloadRes.uri}`);
         } else {
           console.error(`[OfflineCacheService] Failed to download ${asset.hash}, status: ${downloadRes.status}`);
+          await FileSystem.deleteAsync(fileUri, { idempotent: true }).catch(() => {});
         }
       } catch (error) {
         console.error(`[OfflineCacheService] Exception downloading ${asset.hash}:`, error);

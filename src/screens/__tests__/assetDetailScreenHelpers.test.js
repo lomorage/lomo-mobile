@@ -96,11 +96,13 @@ describe('mergeServerMetadata', () => {
 describe('wantsOriginal', () => {
   const photo = { status: 'remote', hash: 'h', mediaType: 'photo' };
   it('is true for a remote photo', () => expect(wantsOriginal(photo)).toBe(true));
-  it('is false for videos, local items, no hash and offline copies', () => {
+  it('is true for a favorite with an offline copy: that copy is only a 640 px preview', () => {
+    expect(wantsOriginal({ ...photo, localCachePath: 'file:///x' })).toBe(true);
+  });
+  it('is false for videos, local items and no hash', () => {
     expect(wantsOriginal({ ...photo, mediaType: 'video' })).toBe(false);
     expect(wantsOriginal({ ...photo, status: 'local' })).toBe(false);
     expect(wantsOriginal({ ...photo, hash: '' })).toBe(false);
-    expect(wantsOriginal({ ...photo, localCachePath: 'file:///x' })).toBe(false);
     expect(wantsOriginal(undefined)).toBe(false);
   });
 });

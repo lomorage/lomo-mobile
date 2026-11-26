@@ -1127,8 +1127,10 @@ export default function AssetDetailScreen({ route, navigation }) {
         // Offline Cache overriding logic:
         const usingLocalCache = item.status === 'remote' && item.localCachePath && item.mediaType !== 'video';
         if (usingLocalCache) {
+            // The offline copy is a 640 px preview: shown at once, and kept on screen (also
+            // when offline) if the original that replaces it after a while can't be loaded.
             thumbUri = item.localCachePath;
-            staticImageUri = item.localCachePath;
+            staticImageUri = originalUri || item.localCachePath;
         } else {
             // Recover from a stale/slow server URL or a transient load failure -- see
             // serverEpoch/retryEpoch above. Bare URLs alone won't re-trigger the loader.
@@ -1192,7 +1194,10 @@ export default function AssetDetailScreen({ route, navigation }) {
                                         contentFit="contain"
                                         cachePolicy="memory-disk"
                                         transition={0}
-                                        onError={usingLocalCache ? undefined : (originalUri ? () => { failedOriginals.current.add(item.hash); setOriginalHash(null); } : handleRemoteImageError)}
+                                        onError={originalUri
+                                            // The original failed (offline, server down): back to the preview or the offline copy, and don't try it again.
+                                            ? () => { failedOriginals.current.add(item.hash); setOriginalHash(null); }
+                                            : (usingLocalCache ? undefined : handleRemoteImageError)}
                                         onLoad={(event) => {
                                             if (event.source) {
                                                 console.log('[AssetDetailScreen] Image loaded for item:', loadedDimsKey, 'source size:', event.source.width, event.source.height);

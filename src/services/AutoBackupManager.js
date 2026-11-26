@@ -26,6 +26,10 @@ export const BACKGROUND_LOCATION_TASK = 'LOMO_LOCATION_TASK';
 const STALE_BACKUP_REMINDER_ID = 'LOMO_BACKUP_STALE_REMINDER';
 const STALE_BACKUP_REMINDER_DELAY_SECONDS = 8 * 60 * 60; // 8 hours
 
+// How long an asset whose bytes couldn't be read from the photo library (e.g. an iCloud-only
+// original that won't download) sits out before the backup tries it again.
+export const UNREADABLE_RETRY_MS = 30 * 60 * 1000;
+
 class AutoBackupManager {
     constructor({ backgroundTask = false } = {}) {
         this.isBackingUp = false;
@@ -52,6 +56,14 @@ class AutoBackupManager {
         // hash row is missing, so the refusal also has to be kept here or the queue would offer
         // the asset again (and the refusal would cost the session its concurrency).
         this.rejectedIds = new Set();
+        // Assets whose bytes couldn't be read from the photo library (UploadService
+        // localReadFailed) -> when that happened. Typically originals kept only in iCloud that
+        // can't be downloaded right now. They used to be counted as network errors: five in a
+        // row tripped the circuit breaker, resume() rebuilt the queue in library order with the
+        // same items first, and the backup retried them every 5s forever while nothing behind
+        // them was ever uploaded. Now they sit out for UNREADABLE_RETRY_MS and everything else
+        // keeps going.
+        this.unreadableIds = new Map();
 
         if (!backgroundTask) {
           DeviceEventEmitter.addListener('settingsChanged', (settings) => {
@@ -332,9 +344,30 @@ class AutoBackupManager {
         }
     }
 
-    /** Local assets the backup should still attempt: not yet uploaded and not refused. */
+    /** Whether this asset failed to read from the library recently and is sitting out. */
+    _isSetAside(assetId) {
+        const at = this.unreadableIds.get(assetId);
+        if (at === undefined) return false;
+        if (Date.now() - at < UNREADABLE_RETRY_MS) return true;
+        this.unreadableIds.delete(assetId);
+        return false;
+    }
+
+    /** How many assets are currently sitting out because they couldn't be read. */
+    _setAsideCount() {
+        let count = 0;
+        for (const id of Array.from(this.unreadableIds.keys())) {
+            if (this._isSetAside(id)) count++;
+        }
+        return count;
+    }
+
+    /**
+     * Local assets the backup should still attempt: not yet uploaded, not refused, and not
+     * sitting out after a failed read.
+     */
     _queueable(assets) {
-        return assets.filter(a => a.status === 'local' && !this._isRejected(a.id));
+        return assets.filter(a => a.status === 'local' && !this._isRejected(a.id) && !this._isSetAside(a.id));
     }
 
     // Called whenever the gallery is updated
@@ -481,7 +514,7 @@ class AutoBackupManager {
                             console.log(`[AutoBackup] Network stable. Recovering concurrency to ${this.currentMaxConcurrency}`);
                         }
                     } else if (!this.isPaused && adaptiveConcurrencyEnabled && this.currentMaxConcurrency > 1
-                               && !this._isRejected(asset.id)) {
+                               && !this._isRejected(asset.id) && !this._isSetAside(asset.id)) {
                         // AIMD Multiplicative Decrease: Slash concurrency on error to protect backend.
                         // A file the server refused outright says nothing about the network, so it
                         // must not cost the whole session its concurrency.
@@ -645,6 +678,8 @@ class AutoBackupManager {
                 // Tell the UI this specific asset finished
                 DeviceEventEmitter.emit('assetUpdated', updatedAsset);
                 this.consecutiveErrors = 0; // Reset on success
+                this.retryCount = 0; // an upload got through: the next breaker trip starts at 5s again
+                this.unreadableIds.delete(asset.id);
                 this.completedSessionCount++;
                 if (!this.sessionFirstUploadLogged) {
                     this.sessionFirstUploadLogged = true;
@@ -703,6 +738,18 @@ class AutoBackupManager {
                 return false;
             }
 
+            if (error.localReadFailed && !this.isPaused) {
+                // The phone couldn't hand over this item's bytes (iCloud-only original that won't
+                // download, a file that vanished). Nothing went wrong with the network or the
+                // server, so it neither counts towards the circuit breaker nor goes back on the
+                // queue: it sits out for UNREADABLE_RETRY_MS and the rest of the backup carries on.
+                // Checked after isPaused because pause() cancels uploads mid-read too.
+                console.warn(`[AutoBackup] Could not read ${asset.id} from the library: ${error.message}. Setting it aside for now.`);
+                this.unreadableIds.set(asset.id, Date.now());
+                this.emitState();
+                return false;
+            }
+
             this.consecutiveErrors++;
 
             // Circuit Breaker: Only pause the ENTIRE system if we have 5 consecutive failures
@@ -716,22 +763,24 @@ class AutoBackupManager {
 
             // Circuit Breaker TRIPPED! Global Exponential Backoff
             this.retryCount++;
-            const backoffDelays = [5000, 30000, 120000]; // 5s, 30s, 2min
-            if (this.retryCount <= backoffDelays.length) {
-                const delay = backoffDelays[this.retryCount - 1];
+            const backoffDelays = [5000, 30000, 120000]; // 5s, 30s, then every 2min
+            // Never locks: now that the backoff step survives each automatic resume, a lock after
+            // the last step would stop backup for good after a few minutes of NAS reboot or Wi-Fi
+            // drop, with nothing to restart it. It keeps trying every 2 minutes instead.
+            {
+                const delay = backoffDelays[Math.min(this.retryCount, backoffDelays.length) - 1];
                 this.retryMessage = `Network error. Resuming in ${delay / 1000}s...`;
                 console.log(`[AutoBackup] Circuit Breaker tripped! Backing off for ${delay}ms`);
                 this.pause(this.retryMessage);
                 this._retryTimer = setTimeout(() => {
                     this._retryTimer = null;
                     this.retryMessage = null;
-                    // Reset consecutive errors so we have 5 more chances after waking up
-                    this.consecutiveErrors = 0; 
-                    this.resume();
+                    // Reset consecutive errors so we have 5 more chances after waking up,
+                    // but keep retryCount: resume() used to zero it, so every trip waited
+                    // 5s again and the 30s / 2min steps were never reached.
+                    this.consecutiveErrors = 0;
+                    this.resume({ keepBackoff: true });
                 }, delay);
-            } else {
-                console.error('[AutoBackup] Max retries exceeded. Circuit Breaker locked open permanently.');
-                this.pause('Backup failed. Check network or server.');
             }
             return false;
         } finally {
@@ -777,11 +826,19 @@ class AutoBackupManager {
         this.emitState();
     }
 
-    resume() {
+    /**
+     * keepBackoff: set when the circuit breaker's own timer resumes, so the next trip waits for
+     * the next, longer step. A resume from the user (or settings) starts the backoff over.
+     */
+    resume({ keepBackoff = false } = {}) {
         this.isPaused = false;
         this.pauseReason = null;
         this.consecutiveErrors = 0;
-        this.retryCount = 0;
+        if (!keepBackoff) {
+            this.retryCount = 0;
+            // The user asked to try again: give the set-aside items another go now.
+            this.unreadableIds.clear();
+        }
         this.retryMessage = null;
         // Re-evaluate queue and start
         this.syncQueueWithGallery();
@@ -835,6 +892,8 @@ class AutoBackupManager {
             pendingCount: pending,
             completedCount: completed,
             totalCount: completed + pending,
+            // Couldn't be read from the photo library just now (e.g. iCloud-only); retried later.
+            unreadableCount: this._setAsideCount(),
             currentAssetId: this.currentAssetId
         });
     }
