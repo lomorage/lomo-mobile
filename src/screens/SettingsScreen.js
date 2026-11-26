@@ -69,7 +69,7 @@ const AiLiveCard = ({ status, styles }) => {
                 <View style={[styles.statBarFill, { width: `${aiPct(current, total)}%` }]} />
             </View>
             <View style={styles.liveMetaRow}>
-                <Text style={styles.liveMetaText}>{current.toLocaleString()} / {total.toLocaleString()}</Text>
+                <Text style={styles.liveMetaText}>{(current || 0).toLocaleString()} / {(total || 0).toLocaleString()}</Text>
                 <Text style={styles.liveMetaText}>{rate > 0 ? `${rate} photos/sec${etaText ? ` · ${etaText}` : ''}` : 'Starting…'}</Text>
             </View>
             {recentFinds && recentFinds.length > 0 && (
@@ -298,8 +298,8 @@ export default function SettingsScreen({ navigation, route }) {
         // which doesn't event out per-count-change — so poll it instead of trying to
         // catch every transition. Cheap COUNT queries, and only while this screen is open.
         const refreshAiDetail = () => {
-            AIService.getDetailedIndexStatus().then(setAiDetailedStatus);
-            AIService.getIdleBlockReason().then(setAiBlockReason);
+            AIService.getDetailedIndexStatus().then(setAiDetailedStatus).catch(() => {});
+            AIService.getIdleBlockReason().then(setAiBlockReason).catch(() => {});
         };
         refreshAiDetail();
         const aiDetailInterval = setInterval(refreshAiDetail, 6000);
@@ -1183,9 +1183,9 @@ export default function SettingsScreen({ navigation, route }) {
                             )}
                         </View>
                         <Text style={styles.settingDescription}>{serverUrl || 'Not configured'}</Text>
-                        {serverName && <Text style={styles.serverBadge}>Identity: {serverName}</Text>}
-                        {localUrl && <Text style={{fontSize: 12, color: '#666', marginTop: 8}}>• Local: {localUrl}</Text>}
-                        {remoteUrl && <Text style={{fontSize: 12, color: '#666', marginTop: 2}}>• Remote: {remoteUrl}</Text>}
+                        {!!serverName && <Text style={styles.serverBadge}>Identity: {serverName}</Text>}
+                        {!!localUrl && <Text style={{fontSize: 12, color: '#666', marginTop: 8}}>• Local: {localUrl}</Text>}
+                        {!!remoteUrl && <Text style={{fontSize: 12, color: '#666', marginTop: 2}}>• Remote: {remoteUrl}</Text>}
                     </View>
                     <Server color="#4A5568" size={24} />
                 </View>
@@ -1521,60 +1521,60 @@ export default function SettingsScreen({ navigation, route }) {
                             }
                         />
                     )}
-                </View>
-            </Modal>
 
-            {/* Full Screen Asset Viewer Modal */}
-            <Modal
-                visible={selectedAssetIndexToView !== null}
-                transparent={true}
-                animationType="fade"
-                onRequestClose={() => setSelectedAssetIndexToView(null)}
-            >
-                {selectedAssetIndexToView !== null && (
-                    <View style={{ flex: 1, backgroundColor: '#000' }}>
-                        <TouchableOpacity 
-                            style={{ position: 'absolute', top: Platform.OS === 'ios' ? 65 : 45, right: 20, zIndex: 10, padding: 15, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 30 }}
-                            onPress={() => setSelectedAssetIndexToView(null)}
-                            hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
-                        >
-                            <X color="#fff" size={28} />
-                        </TouchableOpacity>
-                        
-                        <FlatList
-                            data={previewAssets}
-                            horizontal
-                            pagingEnabled
-                            keyExtractor={(item) => item.id}
-                            initialScrollIndex={selectedAssetIndexToView}
-                            getItemLayout={(data, index) => ({
-                                length: Dimensions.get('window').width,
-                                offset: Dimensions.get('window').width * index,
-                                index,
-                            })}
-                            onViewableItemsChanged={onViewableItemsChanged}
-                            viewabilityConfig={viewabilityConfig}
-                            renderItem={({ item, index }) => (
-                                <View style={{ width: Dimensions.get('window').width, flex: 1 }}>
-                                    {/* Always mount the image so there is no flash when switching to/from video player */}
-                                    <Image 
-                                        source={{ uri: item.uri }} 
-                                        style={{ flex: 1 }} 
-                                        contentFit="contain"
-                                    />
-                                    {/* Conditionally overlay the video player when active */}
-                                    {item.mediaType === 'video' && selectedAssetIndexToView === index && (
-                                        <View style={StyleSheet.absoluteFillObject}>
-                                            <SimpleVideoPlayer uri={item.uri} isActive={true} />
+                    {/* Full Screen Asset Viewer Modal: nested in the preview so iOS presents it over the sheet instead of failing to present it from the root. */}
+                    <Modal
+                        visible={selectedAssetIndexToView !== null}
+                        transparent={true}
+                        animationType="fade"
+                        onRequestClose={() => setSelectedAssetIndexToView(null)}
+                    >
+                        {selectedAssetIndexToView !== null && (
+                            <View style={{ flex: 1, backgroundColor: '#000' }}>
+                                <TouchableOpacity 
+                                    style={{ position: 'absolute', top: Platform.OS === 'ios' ? 65 : 45, right: 20, zIndex: 10, padding: 15, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 30 }}
+                                    onPress={() => setSelectedAssetIndexToView(null)}
+                                    hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
+                                >
+                                    <X color="#fff" size={28} />
+                                </TouchableOpacity>
+                                
+                                <FlatList
+                                    data={previewAssets}
+                                    horizontal
+                                    pagingEnabled
+                                    keyExtractor={(item) => item.id}
+                                    initialScrollIndex={selectedAssetIndexToView}
+                                    getItemLayout={(data, index) => ({
+                                        length: Dimensions.get('window').width,
+                                        offset: Dimensions.get('window').width * index,
+                                        index,
+                                    })}
+                                    onViewableItemsChanged={onViewableItemsChanged}
+                                    viewabilityConfig={viewabilityConfig}
+                                    renderItem={({ item, index }) => (
+                                        <View style={{ width: Dimensions.get('window').width, flex: 1 }}>
+                                            {/* Always mount the image so there is no flash when switching to/from video player */}
+                                            <Image 
+                                                source={{ uri: item.uri }} 
+                                                style={{ flex: 1 }} 
+                                                contentFit="contain"
+                                            />
+                                            {/* Conditionally overlay the video player when active */}
+                                            {item.mediaType === 'video' && selectedAssetIndexToView === index && (
+                                                <View style={StyleSheet.absoluteFillObject}>
+                                                    <SimpleVideoPlayer uri={item.uri} isActive={true} />
+                                                </View>
+                                            )}
                                         </View>
                                     )}
-                                </View>
-                            )}
-                            onEndReached={loadMorePreviewAssets}
-                            onEndReachedThreshold={0.5}
-                        />
-                    </View>
-                )}
+                                    onEndReached={loadMorePreviewAssets}
+                                    onEndReachedThreshold={0.5}
+                                />
+                            </View>
+                        )}
+                    </Modal>
+                </View>
             </Modal>
         </View>
     );
